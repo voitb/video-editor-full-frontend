@@ -1,6 +1,7 @@
 import { useCallback, useEffect } from 'react';
 import { useVideoWorker } from './hooks/useVideoWorker';
 import { useSpriteWorker } from './hooks/useSpriteWorker';
+import { useTimelineViewport } from './hooks/useTimelineViewport';
 import { VideoPreview } from './components/VideoPreview';
 import { Timeline } from './components/Timeline';
 import { Controls } from './components/Controls';
@@ -13,12 +14,32 @@ function App() {
   // Initialize sprite worker with sample data
   const { sprites, isGenerating, progress } = useSpriteWorker(sampleData, state.duration);
 
+  // Initialize timeline viewport for zoom/pan
+  const {
+    viewport,
+    zoomIn,
+    zoomOut,
+    zoomToFit,
+    canZoomIn,
+    canZoomOut,
+  } = useTimelineViewport({
+    durationUs: secondsToUs(state.duration),
+    currentTimeUs: secondsToUs(state.currentTime),
+  });
+
   // Request sample data when video is ready (for sprite generation)
   useEffect(() => {
     if (state.isReady && !sampleData) {
       requestSampleData();
     }
   }, [state.isReady, sampleData, requestSampleData]);
+
+  // Reset viewport when a new video is loaded (duration changes)
+  useEffect(() => {
+    if (state.duration > 0) {
+      zoomToFit();
+    }
+  }, [state.duration, zoomToFit]);
 
   const handleCanvasReady = useCallback(
     (canvas: HTMLCanvasElement) => {
@@ -106,6 +127,12 @@ function App() {
                   sprites={sprites}
                   isGeneratingSprites={isGenerating}
                   spriteProgress={progress}
+                  viewport={viewport}
+                  onZoomIn={zoomIn}
+                  onZoomOut={zoomOut}
+                  onZoomToFit={zoomToFit}
+                  canZoomIn={canZoomIn}
+                  canZoomOut={canZoomOut}
                 />
               </div>
 

@@ -12,6 +12,13 @@ export interface EditorState {
   } | null;
 }
 
+// Timeline viewport state for zoom/pan
+export interface TimelineViewport {
+  startTimeUs: number;   // Visible start time (microseconds)
+  endTimeUs: number;     // Visible end time (microseconds)
+  zoomLevel: number;     // 1.0 = 100% (full video visible), 10.0 = 10x zoom (1/10th visible)
+}
+
 // Sample data for sprite generation
 export interface TransferableSample {
   index: number;

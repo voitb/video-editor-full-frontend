@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import type { SpriteData } from '../hooks/useSpriteWorker';
+import type { TimelineViewport } from '../types/editor';
 import { SPRITE_CONFIG } from '../worker/spriteTypes';
 
 interface TimelineSpritesProps {
@@ -7,6 +8,7 @@ interface TimelineSpritesProps {
   duration: number; // seconds
   isGenerating: boolean;
   progress: { generated: number; total: number } | null;
+  viewport: TimelineViewport;
 }
 
 export function TimelineSprites({
@@ -14,31 +16,44 @@ export function TimelineSprites({
   duration,
   isGenerating,
   progress,
+  viewport,
 }: TimelineSpritesProps) {
-  // Calculate sprite positions along the timeline
+  // Calculate visible duration from viewport
+  const visibleDurationUs = viewport.endTimeUs - viewport.startTimeUs;
+  const durationUs = duration * 1_000_000;
+
+  // Calculate sprite positions relative to viewport with culling
   const spriteElements = useMemo(() => {
-    if (sprites.length === 0 || duration === 0) return [];
+    if (sprites.length === 0 || duration === 0 || visibleDurationUs === 0) return [];
 
-    const durationUs = duration * 1_000_000;
+    // Filter and map sprites to visible range
+    return sprites
+      .map((sprite, index) => {
+        // Calculate sprite end time (next sprite's time or video end)
+        const nextSprite = sprites[index + 1];
+        const spriteEndUs = nextSprite ? nextSprite.timeUs : durationUs;
 
-    return sprites.map((sprite, index) => {
-      // Calculate position as percentage of timeline
-      const leftPercent = (sprite.timeUs / durationUs) * 100;
+        // Viewport culling: skip sprites entirely outside viewport
+        // Include sprites that overlap with viewport (partial visibility)
+        if (spriteEndUs < viewport.startTimeUs || sprite.timeUs > viewport.endTimeUs) {
+          return null;
+        }
 
-      // Calculate width based on interval between sprites
-      const nextSprite = sprites[index + 1];
-      const widthPercent = nextSprite
-        ? ((nextSprite.timeUs - sprite.timeUs) / durationUs) * 100
-        : ((durationUs - sprite.timeUs) / durationUs) * 100;
+        // Calculate position as percentage of VIEWPORT (not total duration)
+        const leftPercent = ((sprite.timeUs - viewport.startTimeUs) / visibleDurationUs) * 100;
 
-      return {
-        key: `sprite-${sprite.timeUs}`,
-        leftPercent,
-        widthPercent: Math.min(widthPercent, 100 - leftPercent),
-        sprite,
-      };
-    });
-  }, [sprites, duration]);
+        // Calculate width based on interval between sprites, relative to viewport
+        const widthPercent = ((spriteEndUs - sprite.timeUs) / visibleDurationUs) * 100;
+
+        return {
+          key: `sprite-${sprite.timeUs}`,
+          leftPercent,
+          widthPercent: Math.max(0, Math.min(widthPercent, 100 - leftPercent)),
+          sprite,
+        };
+      })
+      .filter((element): element is NonNullable<typeof element> => element !== null);
+  }, [sprites, duration, viewport.startTimeUs, viewport.endTimeUs, visibleDurationUs, durationUs]);
 
   if (duration === 0) {
     return null;

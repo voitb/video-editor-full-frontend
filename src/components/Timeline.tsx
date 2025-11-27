@@ -2,6 +2,7 @@ import { useRef, useCallback, useState, useEffect } from 'react';
 import { secondsToUs, usToSeconds } from '../utils/time';
 import { TimelineSprites } from './TimelineSprites';
 import type { SpriteData } from '../hooks/useSpriteWorker';
+import type { TimelineViewport } from '../types/editor';
 
 // Constants
 const SEEK_THROTTLE_MS = 50; // Throttle for decoder seeks (not visual updates)
@@ -18,6 +19,13 @@ interface TimelineProps {
   sprites?: SpriteData[];
   isGeneratingSprites?: boolean;
   spriteProgress?: { generated: number; total: number } | null;
+  // Viewport/zoom props
+  viewport: TimelineViewport;
+  onZoomIn: () => void;
+  onZoomOut: () => void;
+  onZoomToFit: () => void;
+  canZoomIn: boolean;
+  canZoomOut: boolean;
 }
 
 export function Timeline({
@@ -30,7 +38,16 @@ export function Timeline({
   sprites = [],
   isGeneratingSprites = false,
   spriteProgress = null,
+  viewport,
+  onZoomIn,
+  onZoomOut,
+  onZoomToFit,
+  canZoomIn,
+  canZoomOut,
 }: TimelineProps) {
+  // Calculate visible duration from viewport
+  const visibleDurationUs = viewport.endTimeUs - viewport.startTimeUs;
+  const visibleDurationSec = usToSeconds(visibleDurationUs);
   const trackRef = useRef<HTMLDivElement>(null);
   const lastSeekRef = useRef<number>(0); // Initialized on first use, not during render
   const cachedRectRef = useRef<DOMRect | null>(null); // Cache getBoundingClientRect during drag
@@ -45,10 +62,19 @@ export function Timeline({
   const inactiveRightRef = useRef<HTMLDivElement>(null);
   const dragPositionRef = useRef<number | null>(null); // Store position during drag
 
-  // Calculate percentages (simple calculations, no memoization needed)
-  const inPercent = (usToSeconds(inPoint) / duration) * 100;
-  const outPercent = (usToSeconds(outPoint) / duration) * 100;
-  const playheadPercent = (currentTime / duration) * 100;
+  // Helper to convert time to viewport-relative percentage
+  const timeToViewportPercent = useCallback(
+    (timeUs: number): number => {
+      if (visibleDurationUs === 0) return 0;
+      return ((timeUs - viewport.startTimeUs) / visibleDurationUs) * 100;
+    },
+    [viewport.startTimeUs, visibleDurationUs]
+  );
+
+  // Calculate percentages relative to viewport (not total duration)
+  const inPercent = timeToViewportPercent(inPoint);
+  const outPercent = timeToViewportPercent(outPoint);
+  const playheadPercent = timeToViewportPercent(secondsToUs(currentTime));
 
   const getTimeFromMouseX = useCallback(
     (clientX: number): number => {
@@ -59,9 +85,10 @@ export function Timeline({
 
       const x = clientX - rect.left;
       const percent = Math.max(0, Math.min(1, x / rect.width));
-      return secondsToUs(percent * duration);
+      // Convert percentage to time within current viewport
+      return viewport.startTimeUs + percent * visibleDurationUs;
     },
-    [duration]
+    [viewport.startTimeUs, visibleDurationUs]
   );
 
   const handleMouseDown = useCallback(
@@ -114,6 +141,32 @@ export function Timeline({
     }
   }, []);
 
+  // Mouse wheel zoom handler (Ctrl/Cmd + scroll)
+  useEffect(() => {
+    const track = trackRef.current;
+    if (!track) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      // Only zoom when Ctrl (Windows/Linux) or Cmd (Mac) is held
+      if (!e.ctrlKey && !e.metaKey) return;
+
+      e.preventDefault();
+
+      // Zoom in/out based on scroll direction
+      if (e.deltaY < 0) {
+        onZoomIn();
+      } else {
+        onZoomOut();
+      }
+    };
+
+    track.addEventListener('wheel', handleWheel, { passive: false });
+
+    return () => {
+      track.removeEventListener('wheel', handleWheel);
+    };
+  }, [onZoomIn, onZoomOut]);
+
   useEffect(() => {
     if (!isDragging) return;
 
@@ -122,10 +175,10 @@ export function Timeline({
 
       if (isDragging === 'playhead') {
         const clampedTimeUs = Math.max(inPoint, Math.min(timeUs, outPoint));
-        const clampedTimeSec = usToSeconds(clampedTimeUs);
 
         // DIRECT DOM UPDATE: Zero re-renders during drag
-        const percent = (clampedTimeSec / duration) * 100;
+        // Calculate viewport-relative percentage
+        const percent = ((clampedTimeUs - viewport.startTimeUs) / visibleDurationUs) * 100;
         updatePlayheadDOM(percent);
 
         // Store position for commit on mouseup
@@ -141,8 +194,9 @@ export function Timeline({
         }
       } else if (isDragging === 'in') {
         const newInPoint = Math.max(0, Math.min(timeUs, outPoint - MIN_TRIM_DURATION_US));
-        const newInPercent = (usToSeconds(newInPoint) / duration) * 100;
-        const currentOutPercent = (usToSeconds(outPoint) / duration) * 100;
+        // Calculate viewport-relative percentages
+        const newInPercent = ((newInPoint - viewport.startTimeUs) / visibleDurationUs) * 100;
+        const currentOutPercent = ((outPoint - viewport.startTimeUs) / visibleDurationUs) * 100;
 
         // DIRECT DOM UPDATE for trim handles
         updateTrimHandlesDOM(newInPercent, currentOutPercent);
@@ -165,8 +219,9 @@ export function Timeline({
       } else if (isDragging === 'out') {
         const maxUs = secondsToUs(duration);
         const newOutPoint = Math.max(inPoint + MIN_TRIM_DURATION_US, Math.min(timeUs, maxUs));
-        const currentInPercent = (usToSeconds(inPoint) / duration) * 100;
-        const newOutPercent = (usToSeconds(newOutPoint) / duration) * 100;
+        // Calculate viewport-relative percentages
+        const currentInPercent = ((inPoint - viewport.startTimeUs) / visibleDurationUs) * 100;
+        const newOutPercent = ((newOutPoint - viewport.startTimeUs) / visibleDurationUs) * 100;
 
         // DIRECT DOM UPDATE for trim handles
         updateTrimHandlesDOM(currentInPercent, newOutPercent);
@@ -213,7 +268,7 @@ export function Timeline({
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [isDragging, getTimeFromMouseX, inPoint, outPoint, duration, onSeek, onTrimChange, currentTime, updatePlayheadDOM, updateTrimHandlesDOM]);
+  }, [isDragging, getTimeFromMouseX, inPoint, outPoint, duration, onSeek, onTrimChange, currentTime, updatePlayheadDOM, updateTrimHandlesDOM, viewport.startTimeUs, visibleDurationUs]);
 
   if (duration === 0) {
     return (
@@ -237,6 +292,7 @@ export function Timeline({
           duration={duration}
           isGenerating={isGeneratingSprites}
           progress={spriteProgress}
+          viewport={viewport}
         />
 
         {/* Active region (between in and out points) - semi-transparent to show sprites */}
@@ -308,10 +364,50 @@ export function Timeline({
         </div>
       </div>
 
-      {/* Time labels */}
-      <div className="flex justify-between text-xs text-gray-400 mt-1">
-        <span>0:00</span>
-        <span>{Math.floor(duration / 60)}:{String(Math.floor(duration % 60)).padStart(2, '0')}</span>
+      {/* Time labels and zoom controls */}
+      <div className="flex justify-between items-center text-xs text-gray-400 mt-1">
+        {/* Viewport time range */}
+        <span>
+          {Math.floor(usToSeconds(viewport.startTimeUs) / 60)}:
+          {String(Math.floor(usToSeconds(viewport.startTimeUs) % 60)).padStart(2, '0')}
+        </span>
+
+        {/* Zoom controls */}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={onZoomOut}
+            disabled={!canZoomOut}
+            className="px-2 py-0.5 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed rounded text-sm"
+            title="Zoom Out"
+          >
+            −
+          </button>
+          <span className="min-w-[50px] text-center">
+            {Math.round(viewport.zoomLevel * 100)}%
+          </span>
+          <button
+            onClick={onZoomIn}
+            disabled={!canZoomIn}
+            className="px-2 py-0.5 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed rounded text-sm"
+            title="Zoom In"
+          >
+            +
+          </button>
+          <button
+            onClick={onZoomToFit}
+            disabled={viewport.zoomLevel === 1}
+            className="px-2 py-0.5 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed rounded text-sm"
+            title="Zoom to Fit"
+          >
+            Fit
+          </button>
+        </div>
+
+        {/* Viewport end time */}
+        <span>
+          {Math.floor(usToSeconds(viewport.endTimeUs) / 60)}:
+          {String(Math.floor(usToSeconds(viewport.endTimeUs) % 60)).padStart(2, '0')}
+        </span>
       </div>
     </div>
   );
