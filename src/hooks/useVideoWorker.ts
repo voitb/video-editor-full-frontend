@@ -16,6 +16,12 @@ interface UseVideoWorkerReturn {
 
 export function useVideoWorker(): UseVideoWorkerReturn {
   const workerRef = useRef<Worker | null>(null);
+  // Queue for canvas init message if called before worker is ready
+  const pendingCanvasRef = useRef<{
+    message: WorkerCommand;
+    transfer: OffscreenCanvas;
+  } | null>(null);
+
   const [state, setState] = useState<EditorState>({
     duration: 0,
     currentTime: 0,
@@ -30,6 +36,13 @@ export function useVideoWorker(): UseVideoWorkerReturn {
   useEffect(() => {
     const worker = new VideoWorker();
     workerRef.current = worker;
+
+    // Send any queued canvas init message
+    if (pendingCanvasRef.current) {
+      const { message, transfer } = pendingCanvasRef.current;
+      worker.postMessage(message, [transfer]);
+      pendingCanvasRef.current = null;
+    }
 
     worker.onmessage = (e: MessageEvent<WorkerResponse>) => {
       const { type } = e.data;
@@ -87,16 +100,16 @@ export function useVideoWorker(): UseVideoWorkerReturn {
   }, []);
 
   const initCanvas = useCallback((canvas: HTMLCanvasElement) => {
-    // Wait a tick to ensure worker is initialized
-    setTimeout(() => {
-      if (workerRef.current) {
-        const offscreen = canvas.transferControlToOffscreen();
-        workerRef.current.postMessage(
-          { type: 'INIT_CANVAS', payload: { canvas: offscreen } } as WorkerCommand,
-          [offscreen]
-        );
-      }
-    }, 0);
+    const offscreen = canvas.transferControlToOffscreen();
+    const message: WorkerCommand = { type: 'INIT_CANVAS', payload: { canvas: offscreen } };
+
+    if (workerRef.current) {
+      // Worker is ready - send immediately
+      workerRef.current.postMessage(message, [offscreen]);
+    } else {
+      // Worker not ready yet - queue for when it initializes
+      pendingCanvasRef.current = { message, transfer: offscreen };
+    }
   }, []);
 
   const loadFile = useCallback((file: File) => {

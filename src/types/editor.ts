@@ -1,12 +1,3 @@
-// Video clip on the timeline
-export interface VideoClip {
-  id: string;
-  sourceId: string;      // Reference to loaded file
-  inPoint: number;       // Start time in source (microseconds)
-  outPoint: number;      // End time in source (microseconds)
-  timelineStart: number; // Position on timeline (microseconds)
-}
-
 // Editor state
 export interface EditorState {
   duration: number;      // Total duration in seconds

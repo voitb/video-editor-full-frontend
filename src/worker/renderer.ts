@@ -3,12 +3,36 @@ export class WebGLRenderer {
   private gl: WebGL2RenderingContext;
   private program: WebGLProgram;
   private texture: WebGLTexture;
+  private vao: WebGLVertexArrayObject;
+  private contextLost = false;
 
   constructor(canvas: OffscreenCanvas) {
     this.canvas = canvas;
     const gl = canvas.getContext('webgl2');
     if (!gl) throw new Error('WebGL2 not supported');
     this.gl = gl;
+
+    // Handle WebGL context loss/restore
+    canvas.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      this.contextLost = true;
+      console.warn('[Renderer] WebGL context lost');
+    });
+
+    canvas.addEventListener('webglcontextrestored', () => {
+      console.log('[Renderer] WebGL context restored');
+      this.contextLost = false;
+      this.initialize();
+    });
+
+    this.program = null!;
+    this.texture = null!;
+    this.vao = null!;
+    this.initialize();
+  }
+
+  private initialize(): void {
+    const { gl } = this;
 
     // Vertex shader - simple pass-through
     const vsSource = `#version 300 es
@@ -57,20 +81,34 @@ export class WebGLRenderer {
       gl.STATIC_DRAW
     );
 
-    const vao = gl.createVertexArray();
-    gl.bindVertexArray(vao);
+    // Vertex stride and offset constants
+    const VERTEX_STRIDE = 16; // 4 floats * 4 bytes
+    const TEXCOORD_OFFSET = 8; // 2 floats * 4 bytes
+
+    this.vao = gl.createVertexArray()!;
+    gl.bindVertexArray(this.vao);
 
     const positionLoc = gl.getAttribLocation(this.program, 'a_position');
     const texCoordLoc = gl.getAttribLocation(this.program, 'a_texCoord');
 
     gl.enableVertexAttribArray(positionLoc);
-    gl.vertexAttribPointer(positionLoc, 2, gl.FLOAT, false, 16, 0);
+    gl.vertexAttribPointer(positionLoc, 2, gl.FLOAT, false, VERTEX_STRIDE, 0);
     gl.enableVertexAttribArray(texCoordLoc);
-    gl.vertexAttribPointer(texCoordLoc, 2, gl.FLOAT, false, 16, 8);
+    gl.vertexAttribPointer(texCoordLoc, 2, gl.FLOAT, false, VERTEX_STRIDE, TEXCOORD_OFFSET);
   }
 
+  /**
+   * Draws a VideoFrame to the canvas.
+   * IMPORTANT: This method takes ownership of the frame and will close it.
+   * Callers should NOT call frame.close() after calling this method.
+   */
   draw(frame: VideoFrame): void {
     try {
+      // Skip rendering if context is lost
+      if (this.contextLost) {
+        return;
+      }
+
       const { gl } = this;
 
       // Clear to black first (for letterboxing)
@@ -99,6 +137,9 @@ export class WebGLRenderer {
       gl.viewport(viewportX, viewportY, viewportWidth, viewportHeight);
       gl.useProgram(this.program);
 
+      // Bind VAO before drawing (ensures correct vertex attribute state)
+      gl.bindVertexArray(this.vao);
+
       // Upload texture from VideoFrame (zero-copy on GPU if possible)
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, this.texture);
@@ -112,7 +153,15 @@ export class WebGLRenderer {
       }
     } catch (e) {
       console.error('[Renderer] Draw error:', e);
+    } finally {
+      // Always close the frame to prevent GPU memory leaks
+      frame.close();
     }
+  }
+
+  /** Returns true if the WebGL context is currently lost */
+  isContextLost(): boolean {
+    return this.contextLost;
   }
 
   clear(): void {

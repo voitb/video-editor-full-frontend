@@ -23,7 +23,7 @@ export function Timeline({
   onTrimChange,
 }: TimelineProps) {
   const trackRef = useRef<HTMLDivElement>(null);
-  const lastSeekRef = useRef<number>(Date.now());
+  const lastSeekRef = useRef<number>(0); // Initialized on first use, not during render
   const cachedRectRef = useRef<DOMRect | null>(null); // Cache getBoundingClientRect during drag
   const [isDragging, setIsDragging] = useState<'playhead' | 'in' | 'out' | null>(null);
 

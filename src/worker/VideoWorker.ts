@@ -3,55 +3,93 @@ import type { MP4File, MP4Sample, MP4Info, MP4VideoTrack } from 'mp4box';
 import { WebGLRenderer } from './renderer';
 import type { WorkerCommand, WorkerResponse } from '../types/editor';
 
-// State
-let renderer: WebGLRenderer | null = null;
-let mp4File: MP4File | null = null;
-let decoder: VideoDecoder | null = null;
-let videoTrackInfo: MP4VideoTrack | null = null;
+// ============================================================================
+// STATE MACHINE
+// ============================================================================
+// Explicit states for the video worker to make state transitions clear
+// and prevent invalid state combinations.
 
-// Sample storage for seeking
-const samples: MP4Sample[] = [];
+type WorkerState = 'idle' | 'loading' | 'ready' | 'seeking' | 'playing';
 
-// Keyframe index for O(log n) keyframe lookup during seeks
-const keyframeIndices: number[] = [];
+interface VideoWorkerState {
+  // Current state machine state
+  state: WorkerState;
 
-// Playback state
-let isPlaying = false;
-let trimInPoint = 0;
-let trimOutPoint = Infinity;
-let lastRenderedTime = 0;
-let playbackStartTime = 0;
-let playbackStartWallTime = 0;
-let playbackMinTimestamp = 0; // Skip frames before this timestamp during playback
+  // Playback flags
+  isPlaying: boolean;
+  isSeeking: boolean;
 
-// Seeking state
-let isSeeking = false;
-let seekTargetFrameCount = 0;
-let seekCurrentFrameCount = 0;
-let seekVersion = 0;        // Increments with each new seek to invalidate old frames
-let currentSeekVersion = 0; // Version of the current active seek operation
-let seekInProgress = false; // Mutex to prevent concurrent seeks
-let pendingSeekTime: number | null = null; // Queue for next seek request
+  // Core resources (null when idle)
+  renderer: WebGLRenderer | null;
+  mp4File: MP4File | null;
+  decoder: VideoDecoder | null;
+  videoTrackInfo: MP4VideoTrack | null;
 
-// Pause state - guards against in-flight decoder frames after pause
-let pauseRequested = false;
+  // Video data
+  samples: MP4Sample[];
+  keyframeIndices: number[];  // O(log n) keyframe lookup
+  frameQueue: { frame: VideoFrame; timestamp: number }[];
 
-// Playback start guards
-let startPlaybackInProgress = false;  // Prevent concurrent startPlayback calls
-let needsWallClockSync = false;       // Delay wall clock sync until first frame is ready
+  // Trim bounds (microseconds)
+  trimInPoint: number;
+  trimOutPoint: number;
 
-// Frame queue for playback - buffer decoded frames for smooth rendering
-const frameQueue: { frame: VideoFrame; timestamp: number }[] = [];
-const MAX_QUEUE_SIZE = 8; // Buffer up to 8 frames ahead
+  // Playback timing
+  lastRenderedTime: number;
+  playbackStartTime: number;
+  playbackStartWallTime: number;
+  playbackMinTimestamp: number;
+  needsWallClockSync: boolean;
+  lastQueuedSampleIndex: number;
 
-// Legacy pending frame for seek operations
-let pendingFrame: VideoFrame | null = null;
+  // Seeking
+  seekVersion: number;
+  currentSeekVersion: number;
+  seekTargetFrameCount: number;
+  seekCurrentFrameCount: number;
+  seekInProgress: boolean;
+  pendingSeekTime: number | null;
 
-// Flag to track if we need to seek to first frame
-let needsInitialSeek = false;
+  // Guards
+  pauseRequested: boolean;
+  startPlaybackInProgress: boolean;
+  needsInitialSeek: boolean;
+}
 
-// Track which sample we've queued for decoding
-let lastQueuedSampleIndex = -1;
+// Single source of truth for all worker state
+const workerState: VideoWorkerState = {
+  state: 'idle',
+  isPlaying: false,
+  isSeeking: false,
+  renderer: null,
+  mp4File: null,
+  decoder: null,
+  videoTrackInfo: null,
+  samples: [],
+  keyframeIndices: [],
+  frameQueue: [],
+  trimInPoint: 0,
+  trimOutPoint: Infinity,
+  lastRenderedTime: 0,
+  playbackStartTime: 0,
+  playbackStartWallTime: 0,
+  playbackMinTimestamp: 0,
+  needsWallClockSync: false,
+  lastQueuedSampleIndex: -1,
+  seekVersion: 0,
+  currentSeekVersion: 0,
+  seekTargetFrameCount: 0,
+  seekCurrentFrameCount: 0,
+  seekInProgress: false,
+  pendingSeekTime: null,
+  pauseRequested: false,
+  startPlaybackInProgress: false,
+  needsInitialSeek: false,
+};
+
+// Convenience accessor for state
+const state = workerState;
+const MAX_QUEUE_SIZE = 8;
 
 // Send message to main thread
 function postResponse(response: WorkerResponse): void {
@@ -65,7 +103,7 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
   switch (type) {
     case 'INIT_CANVAS': {
       const { canvas } = e.data.payload;
-      renderer = new WebGLRenderer(canvas);
+      state.renderer = new WebGLRenderer(canvas);
       break;
     }
 
@@ -93,8 +131,8 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
 
     case 'SET_TRIM': {
       const { inPoint, outPoint } = e.data.payload;
-      trimInPoint = inPoint;
-      trimOutPoint = outPoint;
+      state.trimInPoint = inPoint;
+      state.trimOutPoint = outPoint;
       // Don't auto-seek during trim drag - let user control playhead separately
       // Playback will start from in-point if current position is before it
       break;
@@ -105,14 +143,14 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
 function handleDecodedFrame(frame: VideoFrame): void {
   // CRITICAL: Check version FIRST before any processing
   // This prevents stale frames from being logged or processed at all
-  if (currentSeekVersion !== seekVersion) {
+  if (state.currentSeekVersion !== state.seekVersion) {
     frame.close();
     return;
   }
 
   // CRITICAL: Discard frames if pause is in progress
   // This prevents in-flight decoder frames from corrupting lastRenderedTime
-  if (pauseRequested) {
+  if (state.pauseRequested) {
     frame.close();
     return;
   }
@@ -120,82 +158,83 @@ function handleDecodedFrame(frame: VideoFrame): void {
   const timestamp = frame.timestamp ?? 0;
 
   // If seeking, only render the last frame
-  if (isSeeking) {
-    seekCurrentFrameCount++;
-    if (seekCurrentFrameCount < seekTargetFrameCount) {
+  if (state.isSeeking) {
+    state.seekCurrentFrameCount++;
+    if (state.seekCurrentFrameCount < state.seekTargetFrameCount) {
       // Intermediate frame during seek - close immediately
       frame.close();
       return;
     }
     // This is the target frame - clear seeking state and render immediately
-    isSeeking = false;
-    pendingFrame?.close();
-    pendingFrame = frame;
+    state.isSeeking = false;
 
-    if (renderer) {
-      renderer.draw(frame);
-      lastRenderedTime = timestamp;
+    if (state.renderer) {
+      // state.renderer.draw() takes ownership of frame and will close it
+      state.renderer.draw(frame);
+      state.lastRenderedTime = timestamp;
       postResponse({
         type: 'TIME_UPDATE',
-        payload: { currentTimeUs: lastRenderedTime },
+        payload: { currentTimeUs: state.lastRenderedTime },
       });
+    } else {
+      // No renderer - must close frame ourselves
+      frame.close();
     }
     return;
   }
 
   // During playback, add frame to queue for synchronized rendering
-  if (isPlaying) {
+  if (state.isPlaying) {
     // Skip frames before the playback start position (these are just for decoder priming)
-    if (timestamp < playbackMinTimestamp) {
+    if (timestamp < state.playbackMinTimestamp) {
       frame.close();
       return;
     }
     // Add to queue (sorted by timestamp)
-    frameQueue.push({ frame, timestamp });
+    state.frameQueue.push({ frame, timestamp });
     return;
   }
 
   // Not playing and not seeking - render immediately (e.g., initial frame)
-  pendingFrame?.close();
-  pendingFrame = frame;
-
-  if (renderer) {
-    renderer.draw(frame);
-    lastRenderedTime = timestamp;
+  if (state.renderer) {
+    // state.renderer.draw() takes ownership of frame and will close it
+    state.renderer.draw(frame);
+    state.lastRenderedTime = timestamp;
     postResponse({
       type: 'TIME_UPDATE',
-      payload: { currentTimeUs: lastRenderedTime },
+      payload: { currentTimeUs: state.lastRenderedTime },
     });
+  } else {
+    // No renderer - must close frame ourselves
+    frame.close();
   }
 }
 
 async function loadFile(file: File): Promise<void> {
   // Reset state
-  samples.length = 0;
-  keyframeIndices.length = 0;
-  pendingFrame?.close();
-  pendingFrame = null;
-  isPlaying = false;
-  isSeeking = false;
-  pauseRequested = false;
-  startPlaybackInProgress = false;
-  needsWallClockSync = false;
-  lastQueuedSampleIndex = -1;
-  seekVersion = 0;
-  currentSeekVersion = 0;
-  seekInProgress = false;
-  pendingSeekTime = null;
+  state.samples.length = 0;
+  state.keyframeIndices.length = 0;
+  state.isPlaying = false;
+  state.isSeeking = false;
+  state.pauseRequested = false;
+  state.startPlaybackInProgress = false;
+  state.needsWallClockSync = false;
+  state.lastQueuedSampleIndex = -1;
+  state.seekVersion = 0;
+  state.currentSeekVersion = 0;
+  state.seekInProgress = false;
+  state.pendingSeekTime = null;
 
   // Clear frame queue
-  for (const { frame } of frameQueue) {
+  for (const { frame } of state.frameQueue) {
     frame.close();
   }
-  frameQueue.length = 0;
+  state.frameQueue.length = 0;
 
-  mp4File = createFile();
+  state.mp4File = createFile();
 
   // Configure decoder
-  decoder = new VideoDecoder({
+  state.decoder = new VideoDecoder({
     output: handleDecodedFrame,
     error: (e) => {
       console.error('Decoder error:', e);
@@ -203,67 +242,67 @@ async function loadFile(file: File): Promise<void> {
     },
   });
 
-  mp4File.onReady = (info: MP4Info) => {
-    videoTrackInfo = info.videoTracks[0];
-    if (!videoTrackInfo) {
+  state.mp4File.onReady = (info: MP4Info) => {
+    state.videoTrackInfo = info.videoTracks[0];
+    if (!state.videoTrackInfo) {
       postResponse({ type: 'ERROR', payload: { message: 'No video track found' } });
       return;
     }
 
-    const description = getCodecDescription(mp4File!, videoTrackInfo.id);
+    const description = getCodecDescription(state.mp4File!, state.videoTrackInfo.id);
 
-    decoder?.configure({
-      codec: videoTrackInfo.codec,
-      codedWidth: videoTrackInfo.video.width,
-      codedHeight: videoTrackInfo.video.height,
+    state.decoder?.configure({
+      codec: state.videoTrackInfo.codec,
+      codedWidth: state.videoTrackInfo.video.width,
+      codedHeight: state.videoTrackInfo.video.height,
       description: description ?? undefined,
     });
 
     // Set extraction options to get all samples
-    mp4File?.setExtractionOptions(videoTrackInfo.id, null, { nbSamples: Infinity });
-    mp4File?.start();
+    state.mp4File?.setExtractionOptions(state.videoTrackInfo.id, null, { nbSamples: Infinity });
+    state.mp4File?.start();
 
     // Calculate duration - use track duration if movie duration is 0
     let durationSeconds: number;
     if (info.duration > 0 && info.timescale > 0) {
       durationSeconds = info.duration / info.timescale;
-    } else if (videoTrackInfo.duration > 0 && videoTrackInfo.timescale > 0) {
-      durationSeconds = videoTrackInfo.duration / videoTrackInfo.timescale;
+    } else if (state.videoTrackInfo.duration > 0 && state.videoTrackInfo.timescale > 0) {
+      durationSeconds = state.videoTrackInfo.duration / state.videoTrackInfo.timescale;
     } else {
       // Fallback: estimate from nb_samples (assume 30fps)
-      durationSeconds = videoTrackInfo.nb_samples / 30;
+      durationSeconds = state.videoTrackInfo.nb_samples / 30;
     }
 
-    trimOutPoint = durationSeconds * 1_000_000; // microseconds
+    state.trimOutPoint = durationSeconds * 1_000_000; // microseconds
 
     postResponse({
       type: 'READY',
       payload: {
         duration: durationSeconds,
-        width: videoTrackInfo.video.width,
-        height: videoTrackInfo.video.height,
+        width: state.videoTrackInfo.video.width,
+        height: state.videoTrackInfo.video.height,
       },
     });
   };
 
-  mp4File.onSamples = (_id: number, _user: unknown, newSamples: MP4Sample[]) => {
-    const wasEmpty = samples.length === 0;
+  state.mp4File.onSamples = (_id: number, _user: unknown, newSamples: MP4Sample[]) => {
+    const wasEmpty = state.samples.length === 0;
     for (const sample of newSamples) {
-      const sampleIndex = samples.length;
-      samples.push(sample);
+      const sampleIndex = state.samples.length;
+      state.samples.push(sample);
       // Build keyframe index for O(log n) lookup during seeks
       if (sample.is_sync) {
-        keyframeIndices.push(sampleIndex);
+        state.keyframeIndices.push(sampleIndex);
       }
     }
     // Seek to first frame when samples first arrive
-    if (wasEmpty && samples.length > 0 && needsInitialSeek) {
-      needsInitialSeek = false;
+    if (wasEmpty && state.samples.length > 0 && state.needsInitialSeek) {
+      state.needsInitialSeek = false;
       void seekTo(0);
     }
   };
 
-  mp4File.onError = (e: Error) => {
+  state.mp4File.onError = (e: Error) => {
     postResponse({ type: 'ERROR', payload: { message: e.message } });
   };
 
@@ -274,191 +313,187 @@ async function loadFile(file: File): Promise<void> {
   mp4Buffer.fileStart = 0;
 
   // Set flag to seek to first frame once samples are loaded
-  needsInitialSeek = true;
+  state.needsInitialSeek = true;
 
-  mp4File.appendBuffer(mp4Buffer);
-  mp4File.flush();
+  state.mp4File.appendBuffer(mp4Buffer);
+  state.mp4File.flush();
 }
 
 async function seekTo(timeUs: number): Promise<void> {
-  if (!decoder || samples.length === 0) return;
-  if (decoder.state !== 'configured') return;
+  if (!state.decoder || state.samples.length === 0) return;
+  if (state.decoder.state !== 'configured') return;
 
-  if (seekInProgress) {
-    pendingSeekTime = timeUs;
+  if (state.seekInProgress) {
+    state.pendingSeekTime = timeUs;
     return;
   }
 
-  seekInProgress = true;
+  state.seekInProgress = true;
 
   try {
     await performSeek(timeUs);
   } finally {
-    seekInProgress = false;
+    state.seekInProgress = false;
 
-    if (pendingSeekTime !== null) {
-      const nextSeek = pendingSeekTime;
-      pendingSeekTime = null;
+    if (state.pendingSeekTime !== null) {
+      const nextSeek = state.pendingSeekTime;
+      state.pendingSeekTime = null;
       void seekTo(nextSeek);
     }
   }
 }
 
 async function performSeek(timeUs: number): Promise<void> {
-  if (!decoder || decoder.state !== 'configured') return;
+  if (!state.decoder || state.decoder.state !== 'configured') return;
 
-  seekVersion++;
-  const thisSeekVersion = seekVersion;
+  state.seekVersion++;
+  const thisSeekVersion = state.seekVersion;
 
   // Clamp to trim bounds
-  const targetUs = Math.max(trimInPoint, Math.min(timeUs, trimOutPoint));
+  const targetUs = Math.max(state.trimInPoint, Math.min(timeUs, state.trimOutPoint));
   const targetSeconds = targetUs / 1_000_000;
 
   // Find sample index at or after target time
-  let sampleIndex = samples.findIndex((s) => {
-    const sampleTime = s.cts / s.timescale;
+  let sampleIndex = state.samples.findIndex((sample) => {
+    const sampleTime = sample.cts / sample.timescale;
     return sampleTime >= targetSeconds;
   });
 
   if (sampleIndex === -1) {
-    sampleIndex = samples.length - 1;
+    sampleIndex = state.samples.length - 1;
   }
 
   // Find previous keyframe using O(log n) binary search
   const keyframeIndex = findPreviousKeyframe(sampleIndex);
 
   // Flush decoder to clear any pending frames
-  await decoder.flush();
-
-  // Close pending frame
-  pendingFrame?.close();
-  pendingFrame = null;
+  await state.decoder.flush();
 
   // Clear frame queue
-  for (const { frame } of frameQueue) {
+  for (const { frame } of state.frameQueue) {
     frame.close();
   }
-  frameQueue.length = 0;
+  state.frameQueue.length = 0;
 
-  isSeeking = true;
-  currentSeekVersion = thisSeekVersion;
-  seekTargetFrameCount = sampleIndex - keyframeIndex + 1;
-  seekCurrentFrameCount = 0;
+  state.isSeeking = true;
+  state.currentSeekVersion = thisSeekVersion;
+  state.seekTargetFrameCount = sampleIndex - keyframeIndex + 1;
+  state.seekCurrentFrameCount = 0;
 
   // Reset the queued sample index for playback
-  lastQueuedSampleIndex = sampleIndex;
+  state.lastQueuedSampleIndex = sampleIndex;
 
   // Decode frames from keyframe to target
   try {
     for (let i = keyframeIndex; i <= sampleIndex; i++) {
-      if (decoder.state !== 'configured') break;
-      const sample = samples[i];
+      if (state.decoder.state !== 'configured') break;
+      const sample = state.samples[i];
       const chunk = new EncodedVideoChunk({
         type: sample.is_sync ? 'key' : 'delta',
         timestamp: (sample.cts * 1_000_000) / sample.timescale,
         duration: (sample.duration * 1_000_000) / sample.timescale,
         data: sample.data,
       });
-      decoder.decode(chunk);
+      state.decoder.decode(chunk);
     }
 
-    if (decoder.state === 'configured') {
-      await decoder.flush();
+    if (state.decoder.state === 'configured') {
+      await state.decoder.flush();
     }
   } catch (e) {
     console.error('[Worker] Seek decode error:', e);
-    isSeeking = false;
+    state.isSeeking = false;
   }
 }
 
 async function startPlayback(): Promise<void> {
   // Guard against concurrent startPlayback calls (critical for async function)
-  if (startPlaybackInProgress || isPlaying || !decoder || samples.length === 0) return;
-  if (decoder.state !== 'configured') return;
+  if (state.startPlaybackInProgress || state.isPlaying || !state.decoder || state.samples.length === 0) return;
+  if (state.decoder.state !== 'configured') return;
 
-  startPlaybackInProgress = true;
+  state.startPlaybackInProgress = true;
 
   try {
     // If current position is outside trim range, seek to in-point first
-    let startTimeUs = lastRenderedTime;
-    const nearOutPoint = startTimeUs >= trimOutPoint - 100000; // 100ms tolerance
-    const beforeInPoint = startTimeUs < trimInPoint;
+    let startTimeUs = state.lastRenderedTime;
+    const nearOutPoint = startTimeUs >= state.trimOutPoint - 100000; // 100ms tolerance
+    const beforeInPoint = startTimeUs < state.trimInPoint;
 
     if (beforeInPoint || nearOutPoint) {
-      await seekTo(trimInPoint);
-      startTimeUs = lastRenderedTime;
+      await seekTo(state.trimInPoint);
+      startTimeUs = state.lastRenderedTime;
     }
 
     // Clear any existing queued frames AFTER potential seek
-    for (const { frame } of frameQueue) {
+    for (const { frame } of state.frameQueue) {
       frame.close();
     }
-    frameQueue.length = 0;
+    state.frameQueue.length = 0;
 
-    isPlaying = true;
-    playbackStartTime = startTimeUs;
+    state.isPlaying = true;
+    state.playbackStartTime = startTimeUs;
     // DON'T set playbackStartWallTime here - wait for first frame to sync
-    needsWallClockSync = true;  // Will sync when first renderable frame is ready
+    state.needsWallClockSync = true;  // Will sync when first renderable frame is ready
     // FIX: +1 to skip frames at or before the already-rendered seek position
     // This prevents duplicate render of the same frame after seekTo()
-    playbackMinTimestamp = startTimeUs + 1;
+    state.playbackMinTimestamp = startTimeUs + 1;
 
     // Find the sample index for start time
-    let currentSampleIndex = samples.findIndex((s) => {
-      const sampleTime = (s.cts * 1_000_000) / s.timescale;
+    let currentSampleIndex = state.samples.findIndex((sample) => {
+      const sampleTime = (sample.cts * 1_000_000) / sample.timescale;
       return sampleTime >= startTimeUs;
     });
     if (currentSampleIndex === -1) currentSampleIndex = 0;
 
     const keyframeIndex = findPreviousKeyframe(currentSampleIndex);
-    const endIndex = Math.min(currentSampleIndex + MAX_QUEUE_SIZE, samples.length - 1);
+    const endIndex = Math.min(currentSampleIndex + MAX_QUEUE_SIZE, state.samples.length - 1);
     for (let i = keyframeIndex; i <= endIndex; i++) {
       decodeFrame(i);
     }
-    lastQueuedSampleIndex = endIndex;
+    state.lastQueuedSampleIndex = endIndex;
 
     postResponse({ type: 'PLAYBACK_STATE', payload: { isPlaying: true } });
 
     // Start playback loop - wall clock will sync on first renderable frame
     requestAnimationFrame(playbackLoop);
   } finally {
-    startPlaybackInProgress = false;
+    state.startPlaybackInProgress = false;
   }
 }
 
 async function pausePlayback(): Promise<void> {
-  pauseRequested = true;
-  isPlaying = false;
-  needsWallClockSync = false;
+  state.pauseRequested = true;
+  state.isPlaying = false;
+  state.needsWallClockSync = false;
 
-  if (decoder && decoder.state === 'configured') {
-    await decoder.flush();
+  if (state.decoder && state.decoder.state === 'configured') {
+    await state.decoder.flush();
   }
 
-  for (const { frame } of frameQueue) {
+  for (const { frame } of state.frameQueue) {
     frame.close();
   }
-  frameQueue.length = 0;
+  state.frameQueue.length = 0;
 
-  pauseRequested = false;
+  state.pauseRequested = false;
 
   postResponse({ type: 'PLAYBACK_STATE', payload: { isPlaying: false } });
 }
 
 function playbackLoop(): void {
-  if (!isPlaying || !decoder || decoder.state !== 'configured') {
-    if (isPlaying) {
+  if (!state.isPlaying || !state.decoder || state.decoder.state !== 'configured') {
+    if (state.isPlaying) {
       void pausePlayback();  // Now async
     }
     return;
   }
 
-  if (needsWallClockSync) {
-    const firstRenderableFrame = frameQueue.find(f => f.timestamp >= playbackMinTimestamp);
+  if (state.needsWallClockSync) {
+    const firstRenderableFrame = state.frameQueue.find(f => f.timestamp >= state.playbackMinTimestamp);
     if (firstRenderableFrame) {
-      playbackStartWallTime = performance.now();
-      playbackStartTime = firstRenderableFrame.timestamp;
-      needsWallClockSync = false;
+      state.playbackStartWallTime = performance.now();
+      state.playbackStartTime = firstRenderableFrame.timestamp;
+      state.needsWallClockSync = false;
     } else {
       requestAnimationFrame(playbackLoop);
       return;
@@ -466,32 +501,32 @@ function playbackLoop(): void {
   }
 
   // Calculate target time based on wall clock
-  const elapsed = performance.now() - playbackStartWallTime;
-  const targetUs = playbackStartTime + elapsed * 1000; // elapsed is ms, convert to us
+  const elapsed = performance.now() - state.playbackStartWallTime;
+  const targetUs = state.playbackStartTime + elapsed * 1000; // elapsed is ms, convert to us
 
   // Check if we've reached the trim out point
-  if (targetUs >= trimOutPoint) {
+  if (targetUs >= state.trimOutPoint) {
     void pausePlayback();  // Now async
     return;
   }
 
   // Keep the decoder fed - but limit by decoder queue size, not frameQueue
   // frameQueue fills asynchronously, so we use decoder.decodeQueueSize to avoid over-queueing
-  const inFlightCount = decoder.decodeQueueSize + frameQueue.length;
+  const inFlightCount = state.decoder.decodeQueueSize + state.frameQueue.length;
   if (
     inFlightCount < MAX_QUEUE_SIZE &&
-    lastQueuedSampleIndex + 1 < samples.length
+    state.lastQueuedSampleIndex + 1 < state.samples.length
   ) {
     // Queue one more frame per animation frame to maintain steady decode
-    lastQueuedSampleIndex++;
-    decodeFrame(lastQueuedSampleIndex);
+    state.lastQueuedSampleIndex++;
+    decodeFrame(state.lastQueuedSampleIndex);
   }
 
   // Find the best frame to display from the queue
   // Look for the frame closest to (but not after) targetUs
   let bestFrameIndex = -1;
-  for (let i = 0; i < frameQueue.length; i++) {
-    if (frameQueue[i].timestamp <= targetUs) {
+  for (let i = 0; i < state.frameQueue.length; i++) {
+    if (state.frameQueue[i].timestamp <= targetUs) {
       bestFrameIndex = i;
     } else {
       break; // Queue is sorted by decode order (which matches timestamp order)
@@ -502,33 +537,41 @@ function playbackLoop(): void {
   if (bestFrameIndex >= 0) {
     // Close all frames before the best one
     for (let i = 0; i < bestFrameIndex; i++) {
-      frameQueue[i].frame.close();
+      state.frameQueue[i].frame.close();
     }
 
     // Get the frame to render
-    const { frame, timestamp } = frameQueue[bestFrameIndex];
+    const { frame, timestamp } = state.frameQueue[bestFrameIndex];
 
     // Remove rendered and older frames from queue
-    frameQueue.splice(0, bestFrameIndex + 1);
+    state.frameQueue.splice(0, bestFrameIndex + 1);
 
-    // Render the frame
-    if (renderer) {
-      renderer.draw(frame);
-      lastRenderedTime = timestamp;
+    // Frame dropping: skip frames that are too far behind target time
+    // This prevents stuttering on slower devices by maintaining real-time sync
+    const MAX_FRAME_LAG_US = 100_000; // 100ms maximum acceptable lag
+    const frameLag = targetUs - timestamp;
+
+    if (frameLag > MAX_FRAME_LAG_US) {
+      // Frame is too late - drop it to catch up
+      frame.close();
+    } else if (state.renderer) {
+      // Render the frame - state.renderer.draw() takes ownership and will close it
+      state.renderer.draw(frame);
+      state.lastRenderedTime = timestamp;
       postResponse({
         type: 'TIME_UPDATE',
         payload: { currentTimeUs: timestamp },
       });
+    } else {
+      // No renderer - must close frame ourselves
+      frame.close();
     }
-
-    // Close the frame after rendering
-    frame.close();
   }
 
   // Check if we've reached end of video (all samples queued, decoded, and rendered)
-  const allSamplesQueued = lastQueuedSampleIndex >= samples.length - 1;
-  const nothingInFlight = decoder.decodeQueueSize === 0;
-  const queueEmpty = frameQueue.length === 0;
+  const allSamplesQueued = state.lastQueuedSampleIndex >= state.samples.length - 1;
+  const nothingInFlight = state.decoder.decodeQueueSize === 0;
+  const queueEmpty = state.frameQueue.length === 0;
   if (allSamplesQueued && nothingInFlight && queueEmpty) {
     void pausePlayback();  // Now async
     return;
@@ -539,9 +582,9 @@ function playbackLoop(): void {
 }
 
 function decodeFrame(sampleIndex: number): void {
-  if (!decoder || decoder.state !== 'configured') return;
+  if (!state.decoder || state.decoder.state !== 'configured') return;
 
-  const sample = samples[sampleIndex];
+  const sample = state.samples[sampleIndex];
   const chunk = new EncodedVideoChunk({
     type: sample.is_sync ? 'key' : 'delta',
     timestamp: (sample.cts * 1_000_000) / sample.timescale,
@@ -550,7 +593,7 @@ function decodeFrame(sampleIndex: number): void {
   });
 
   try {
-    decoder.decode(chunk);
+    state.decoder.decode(chunk);
   } catch (e) {
     console.error('[Worker] Decode error:', e);
     void pausePlayback();  // Now async
@@ -560,15 +603,15 @@ function decodeFrame(sampleIndex: number): void {
 // Binary search to find the keyframe at or before the target sample index
 // Returns the index in samples[] (not in keyframeIndices[])
 function findPreviousKeyframe(targetSampleIndex: number): number {
-  if (keyframeIndices.length === 0) return 0;
+  if (state.keyframeIndices.length === 0) return 0;
 
   // Binary search for largest keyframe index <= targetSampleIndex
   let left = 0;
-  let right = keyframeIndices.length - 1;
+  let right = state.keyframeIndices.length - 1;
 
   while (left < right) {
     const mid = Math.ceil((left + right) / 2);
-    if (keyframeIndices[mid] <= targetSampleIndex) {
+    if (state.keyframeIndices[mid] <= targetSampleIndex) {
       left = mid;
     } else {
       right = mid - 1;
@@ -576,7 +619,7 @@ function findPreviousKeyframe(targetSampleIndex: number): number {
   }
 
   // Return the sample index at this keyframe position
-  return keyframeIndices[left] <= targetSampleIndex ? keyframeIndices[left] : 0;
+  return state.keyframeIndices[left] <= targetSampleIndex ? state.keyframeIndices[left] : 0;
 }
 
 // Helper to extract codec description (AVCC/HVCC) from MP4Box
