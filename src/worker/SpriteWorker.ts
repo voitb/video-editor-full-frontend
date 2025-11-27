@@ -82,7 +82,7 @@ self.onmessage = async (e: MessageEvent<SpriteWorkerCommand>) => {
 
       // Calculate total duration from samples
       const lastSample = state.samples[state.samples.length - 1];
-      const totalDurationUs = (lastSample.cts * 1_000_000) / lastSample.timescale;
+      const totalDurationUs = ((lastSample.cts + lastSample.duration) * 1_000_000) / lastSample.timescale;
 
       await generateSprites(0, totalDurationUs, intervalUs);
       break;
@@ -144,9 +144,6 @@ async function generateSprites(
       return;
     }
 
-    // Find keyframes for each timestamp
-    const keyframesToDecode = findKeyframesForTimestamps(timestamps);
-
     // Initialize decoder
     await initDecoder();
     if (!state.decoder || state.decoder.state !== 'configured') {
@@ -167,15 +164,14 @@ async function generateSprites(
     let sheetStartTimeUs = timestamps[0];
     let sheetIndex = 0;
 
-    // Decode keyframes and generate thumbnails
-    for (let i = 0; i < keyframesToDecode.length; i++) {
+    // Decode exact frames at each timestamp
+    for (let i = 0; i < timestamps.length; i++) {
       if (state.generationAborted) break;
 
-      const keyframeIndex = keyframesToDecode[i];
       const targetTimeUs = timestamps[i];
 
-      // Decode the keyframe
-      const frame = await decodeKeyframe(keyframeIndex);
+      // Decode the exact frame at target time (not just keyframe)
+      const frame = await decodeFrameAtTime(targetTimeUs);
       if (!frame) continue;
 
       try {
@@ -213,7 +209,7 @@ async function generateSprites(
           type: 'PROGRESS',
           payload: {
             generated: i + 1,
-            total: keyframesToDecode.length,
+            total: timestamps.length,
           },
         });
 
@@ -297,9 +293,18 @@ async function initDecoder(): Promise<void> {
   }
   frameResolve = null;
 
+  // Clear any collected frames
+  for (const frame of collectedFrames) {
+    frame.close();
+  }
+  collectedFrames = [];
+
   return new Promise((resolve) => {
     state.decoder = new VideoDecoder({
-      output: handleDecodedFrame,
+      output: (frame) => {
+        // Push frames to collection for batch decoding
+        collectedFrames.push(frame);
+      },
       error: (e) => {
         console.error('[SpriteWorker] Decoder error:', e);
       },
@@ -320,93 +325,97 @@ async function initDecoder(): Promise<void> {
 let pendingFrame: VideoFrame | null = null;
 let frameResolve: ((frame: VideoFrame | null) => void) | null = null;
 
-function handleDecodedFrame(frame: VideoFrame): void {
-  if (frameResolve) {
-    frameResolve(frame);
-    frameResolve = null;
-  } else {
-    pendingFrame = frame;
-  }
-}
+// Collected frames during batch decode
+let collectedFrames: VideoFrame[] = [];
 
-async function decodeKeyframe(sampleIndex: number): Promise<VideoFrame | null> {
+/**
+ * Decode the exact frame at a target time by decoding from the previous keyframe
+ * through all delta frames up to the target.
+ */
+async function decodeFrameAtTime(targetTimeUs: number): Promise<VideoFrame | null> {
   if (!state.decoder || state.decoder.state !== 'configured') {
     return null;
   }
 
-  const sample = state.samples[sampleIndex];
-  if (!sample) return null;
+  const targetSeconds = targetTimeUs / 1_000_000;
 
-  // Clear any pending frame
-  if (pendingFrame) {
-    pendingFrame.close();
-    pendingFrame = null;
+  // Find sample at or after target time
+  let targetSampleIndex = state.samples.findIndex((sample) => {
+    const sampleTime = sample.cts / sample.timescale;
+    return sampleTime >= targetSeconds;
+  });
+
+  if (targetSampleIndex === -1) {
+    targetSampleIndex = state.samples.length - 1;
   }
 
-  return new Promise((resolve) => {
-    frameResolve = resolve;
+  // Find previous keyframe
+  const keyframeIndex = findPreviousKeyframe(targetSampleIndex);
 
-    const chunk = new EncodedVideoChunk({
-      type: 'key', // Keyframes only
-      timestamp: (sample.cts * 1_000_000) / sample.timescale,
-      duration: (sample.duration * 1_000_000) / sample.timescale,
-      data: sample.data,
+  // Clear any pending frames
+  for (const frame of collectedFrames) {
+    frame.close();
+  }
+  collectedFrames = [];
+
+  // Reset decoder to clear any previous state, then reconfigure
+  if (state.decoder.state !== 'closed') {
+    state.decoder.reset();
+    state.decoder.configure({
+      codec: state.codec,
+      codedWidth: state.videoWidth,
+      codedHeight: state.videoHeight,
+      description: state.codecDescription ?? undefined,
     });
+  }
 
-    try {
-      state.decoder!.decode(chunk);
-      state.decoder!.flush().then(() => {
-        // If we have a pending frame, return it
-        if (pendingFrame) {
-          const frame = pendingFrame;
-          pendingFrame = null;
-          if (frameResolve) {
-            frameResolve(frame);
-            frameResolve = null;
-          }
-        } else if (frameResolve) {
-          // No frame received
-          frameResolve(null);
-          frameResolve = null;
-        }
+  try {
+    // Queue all samples from keyframe to target (without flushing between)
+    for (let i = keyframeIndex; i <= targetSampleIndex; i++) {
+      const sample = state.samples[i];
+      if (!sample) continue;
+
+      const isKeyframe = state.keyframeIndices.includes(i);
+
+      const chunk = new EncodedVideoChunk({
+        type: isKeyframe ? 'key' : 'delta',
+        timestamp: (sample.cts * 1_000_000) / sample.timescale,
+        duration: (sample.duration * 1_000_000) / sample.timescale,
+        data: sample.data,
       });
-    } catch (e) {
-      console.error('[SpriteWorker] Decode error:', e);
-      if (frameResolve) {
-        frameResolve(null);
-        frameResolve = null;
-      }
+
+      state.decoder.decode(chunk);
     }
-  });
+
+    // Now flush to process all queued chunks
+    await state.decoder.flush();
+
+    // Return the last frame (closest to target time)
+    if (collectedFrames.length > 0) {
+      // Close all intermediate frames, keep only the last one
+      const lastFrame = collectedFrames[collectedFrames.length - 1];
+      for (let i = 0; i < collectedFrames.length - 1; i++) {
+        collectedFrames[i].close();
+      }
+      collectedFrames = [];
+      return lastFrame;
+    }
+
+    return null;
+  } catch (e) {
+    console.error('[SpriteWorker] Decode error:', e);
+    // Clean up any collected frames on error
+    for (const frame of collectedFrames) {
+      frame.close();
+    }
+    collectedFrames = [];
+    return null;
+  }
 }
 
 // ============================================================================
 // KEYFRAME UTILITIES
 // ============================================================================
-
-function findKeyframesForTimestamps(timestamps: number[]): number[] {
-  const keyframes: number[] = [];
-
-  for (const targetUs of timestamps) {
-    const targetSeconds = targetUs / 1_000_000;
-
-    // Find sample at or after target time
-    let sampleIndex = state.samples.findIndex((sample) => {
-      const sampleTime = sample.cts / sample.timescale;
-      return sampleTime >= targetSeconds;
-    });
-
-    if (sampleIndex === -1) {
-      sampleIndex = state.samples.length - 1;
-    }
-
-    // Find previous keyframe using binary search
-    const keyframeIndex = findPreviousKeyframe(sampleIndex);
-    keyframes.push(keyframeIndex);
-  }
-
-  return keyframes;
-}
 
 function findPreviousKeyframe(targetSampleIndex: number): number {
   if (state.keyframeIndices.length === 0) return 0;
