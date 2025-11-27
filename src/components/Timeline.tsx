@@ -1,5 +1,7 @@
 import { useRef, useCallback, useState, useEffect } from 'react';
 import { secondsToUs, usToSeconds } from '../utils/time';
+import { TimelineSprites } from './TimelineSprites';
+import type { SpriteData } from '../hooks/useSpriteWorker';
 
 // Constants
 const SEEK_THROTTLE_MS = 50; // Throttle for decoder seeks (not visual updates)
@@ -12,6 +14,10 @@ interface TimelineProps {
   outPoint: number; // microseconds
   onSeek: (timeUs: number) => void;
   onTrimChange: (inPoint: number, outPoint: number) => void;
+  // Sprite props
+  sprites?: SpriteData[];
+  isGeneratingSprites?: boolean;
+  spriteProgress?: { generated: number; total: number } | null;
 }
 
 export function Timeline({
@@ -21,6 +27,9 @@ export function Timeline({
   outPoint,
   onSeek,
   onTrimChange,
+  sprites = [],
+  isGeneratingSprites = false,
+  spriteProgress = null,
 }: TimelineProps) {
   const trackRef = useRef<HTMLDivElement>(null);
   const lastSeekRef = useRef<number>(0); // Initialized on first use, not during render
@@ -219,13 +228,21 @@ export function Timeline({
       {/* Timeline track */}
       <div
         ref={trackRef}
-        className="relative w-full h-12 bg-gray-800 rounded cursor-pointer"
+        className="relative w-full h-12 bg-gray-800 rounded cursor-pointer overflow-hidden"
         onClick={handleTrackClick}
       >
-        {/* Active region (between in and out points) */}
+        {/* Sprite thumbnails (background layer) */}
+        <TimelineSprites
+          sprites={sprites}
+          duration={duration}
+          isGenerating={isGeneratingSprites}
+          progress={spriteProgress}
+        />
+
+        {/* Active region (between in and out points) - semi-transparent to show sprites */}
         <div
           ref={activeRegionRef}
-          className="absolute top-0 h-full bg-gray-600"
+          className="absolute top-0 h-full bg-gray-600/30"
           style={{
             left: `${inPercent}%`,
             width: `${outPercent - inPercent}%`,

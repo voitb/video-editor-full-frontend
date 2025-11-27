@@ -1,17 +1,19 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
-import type { WorkerCommand, WorkerResponse, EditorState } from '../types/editor';
+import type { WorkerCommand, WorkerResponse, EditorState, SpriteInitData } from '../types/editor';
 
 // Import worker using Vite's worker syntax
 import VideoWorker from '../worker/VideoWorker?worker';
 
 interface UseVideoWorkerReturn {
   state: EditorState;
+  sampleData: SpriteInitData | null;
   initCanvas: (canvas: HTMLCanvasElement) => void;
   loadFile: (file: File) => void;
   seek: (timeUs: number) => void;
   play: () => void;
   pause: () => void;
   setTrim: (inPoint: number, outPoint: number) => void;
+  requestSampleData: () => void;
 }
 
 export function useVideoWorker(): UseVideoWorkerReturn {
@@ -31,6 +33,8 @@ export function useVideoWorker(): UseVideoWorkerReturn {
     videoHeight: 0,
     clip: null,
   });
+
+  const [sampleData, setSampleData] = useState<SpriteInitData | null>(null);
 
   // Initialize worker
   useEffect(() => {
@@ -79,6 +83,11 @@ export function useVideoWorker(): UseVideoWorkerReturn {
             ...prev,
             isPlaying,
           }));
+          break;
+        }
+
+        case 'SAMPLES_FOR_SPRITES': {
+          setSampleData(e.data.payload);
           break;
         }
 
@@ -136,13 +145,19 @@ export function useVideoWorker(): UseVideoWorkerReturn {
     }));
   }, [sendCommand]);
 
+  const requestSampleData = useCallback(() => {
+    sendCommand({ type: 'GET_SAMPLES_FOR_SPRITES' });
+  }, [sendCommand]);
+
   return {
     state,
+    sampleData,
     initCanvas,
     loadFile,
     seek,
     play,
     pause,
     setTrim,
+    requestSampleData,
   };
 }

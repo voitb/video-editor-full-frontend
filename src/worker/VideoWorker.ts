@@ -1,7 +1,7 @@
 import { createFile, DataStream } from 'mp4box';
 import type { MP4File, MP4Sample, MP4Info, MP4VideoTrack } from 'mp4box';
 import { WebGLRenderer } from './renderer';
-import type { WorkerCommand, WorkerResponse } from '../types/editor';
+import type { WorkerCommand, WorkerResponse, TransferableSample } from '../types/editor';
 
 // ============================================================================
 // STATE MACHINE
@@ -24,6 +24,9 @@ interface VideoWorkerState {
   mp4File: MP4File | null;
   decoder: VideoDecoder | null;
   videoTrackInfo: MP4VideoTrack | null;
+
+  // Codec description for sprite worker
+  codecDescription: Uint8Array | null;
 
   // Video data
   samples: MP4Sample[];
@@ -65,6 +68,7 @@ const workerState: VideoWorkerState = {
   mp4File: null,
   decoder: null,
   videoTrackInfo: null,
+  codecDescription: null,
   samples: [],
   keyframeIndices: [],
   frameQueue: [],
@@ -135,6 +139,41 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
       state.trimOutPoint = outPoint;
       // Don't auto-seek during trim drag - let user control playhead separately
       // Playback will start from in-point if current position is before it
+      break;
+    }
+
+    case 'GET_SAMPLES_FOR_SPRITES': {
+      // Expose sample data for sprite generation
+      if (state.samples.length === 0 || !state.videoTrackInfo) {
+        postResponse({ type: 'ERROR', payload: { message: 'No video loaded' } });
+        break;
+      }
+
+      // Convert samples to transferable format with ArrayBuffer data
+      const transferableSamples: TransferableSample[] = state.samples.map((sample, index) => {
+        // sample.data is ArrayBuffer - make a copy to transfer
+        const dataCopy = sample.data.slice(0);
+        return {
+          index,
+          cts: sample.cts,
+          timescale: sample.timescale,
+          is_sync: sample.is_sync,
+          duration: sample.duration,
+          data: dataCopy,
+        };
+      });
+
+      postResponse({
+        type: 'SAMPLES_FOR_SPRITES',
+        payload: {
+          samples: transferableSamples,
+          keyframeIndices: [...state.keyframeIndices],
+          videoWidth: state.videoTrackInfo.video.width,
+          videoHeight: state.videoTrackInfo.video.height,
+          codecDescription: state.codecDescription,
+          codec: state.videoTrackInfo.codec,
+        },
+      });
       break;
     }
   }
@@ -250,6 +289,7 @@ async function loadFile(file: File): Promise<void> {
     }
 
     const description = getCodecDescription(state.mp4File!, state.videoTrackInfo.id);
+    state.codecDescription = description; // Store for sprite worker
 
     state.decoder?.configure({
       codec: state.videoTrackInfo.codec,

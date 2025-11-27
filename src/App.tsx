@@ -1,12 +1,24 @@
-import { useCallback } from 'react';
+import { useCallback, useEffect } from 'react';
 import { useVideoWorker } from './hooks/useVideoWorker';
+import { useSpriteWorker } from './hooks/useSpriteWorker';
 import { VideoPreview } from './components/VideoPreview';
 import { Timeline } from './components/Timeline';
 import { Controls } from './components/Controls';
 import { secondsToUs } from './utils/time';
 
 function App() {
-  const { state, initCanvas, loadFile, seek, play, pause, setTrim } = useVideoWorker();
+  const { state, sampleData, initCanvas, loadFile, seek, play, pause, setTrim, requestSampleData } =
+    useVideoWorker();
+
+  // Initialize sprite worker with sample data
+  const { sprites, isGenerating, progress } = useSpriteWorker(sampleData, state.duration);
+
+  // Request sample data when video is ready (for sprite generation)
+  useEffect(() => {
+    if (state.isReady && !sampleData) {
+      requestSampleData();
+    }
+  }, [state.isReady, sampleData, requestSampleData]);
 
   const handleCanvasReady = useCallback(
     (canvas: HTMLCanvasElement) => {
@@ -91,6 +103,9 @@ function App() {
                   outPoint={state.clip?.outPoint ?? secondsToUs(state.duration)}
                   onSeek={handleSeek}
                   onTrimChange={handleTrimChange}
+                  sprites={sprites}
+                  isGeneratingSprites={isGenerating}
+                  spriteProgress={progress}
                 />
               </div>
 
