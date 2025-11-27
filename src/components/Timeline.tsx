@@ -1,6 +1,7 @@
 import { useRef, useCallback, useState, useEffect } from 'react';
 import { secondsToUs, usToSeconds } from '../utils/time';
 import { TimelineSprites } from './TimelineSprites';
+import { TimelineMinimap } from './TimelineMinimap';
 import type { SpriteData } from '../hooks/useSpriteWorker';
 import type { TimelineViewport } from '../types/editor';
 
@@ -26,6 +27,7 @@ interface TimelineProps {
   onZoomToFit: () => void;
   canZoomIn: boolean;
   canZoomOut: boolean;
+  onViewportChange: (viewport: TimelineViewport) => void;
 }
 
 export function Timeline({
@@ -44,6 +46,7 @@ export function Timeline({
   onZoomToFit,
   canZoomIn,
   canZoomOut,
+  onViewportChange,
 }: TimelineProps) {
   // Calculate visible duration from viewport
   const visibleDurationUs = viewport.endTimeUs - viewport.startTimeUs;
@@ -280,6 +283,13 @@ export function Timeline({
 
   return (
     <div className="w-full">
+      {/* Minimap (only visible when zoomed in) */}
+      <TimelineMinimap
+        totalDurationUs={secondsToUs(duration)}
+        viewport={viewport}
+        onViewportChange={onViewportChange}
+      />
+
       {/* Timeline track */}
       <div
         ref={trackRef}

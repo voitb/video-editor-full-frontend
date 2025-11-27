@@ -20,6 +20,7 @@ function App() {
     zoomIn,
     zoomOut,
     zoomToFit,
+    setViewport,
     canZoomIn,
     canZoomOut,
   } = useTimelineViewport({
@@ -131,6 +132,7 @@ function App() {
                   onZoomIn={zoomIn}
                   onZoomOut={zoomOut}
                   onZoomToFit={zoomToFit}
+                  onViewportChange={setViewport}
                   canZoomIn={canZoomIn}
                   canZoomOut={canZoomOut}
                 />
