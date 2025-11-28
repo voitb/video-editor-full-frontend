@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react';
+import { useEffect } from 'react';
 import { useVideoWorker } from './hooks/useVideoWorker';
 import { useSpriteWorker } from './hooks/useSpriteWorker';
 import { useTimelineViewport } from './hooks/useTimelineViewport';
@@ -42,36 +42,13 @@ function App() {
     }
   }, [state.duration, zoomToFit]);
 
-  const handleCanvasReady = useCallback(
-    (canvas: HTMLCanvasElement) => {
-      initCanvas(canvas);
-    },
-    [initCanvas]
-  );
-
-  const handleFileChange = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (file) {
-        loadFile(file);
-      }
-    },
-    [loadFile]
-  );
-
-  const handleSeek = useCallback(
-    (timeUs: number) => {
-      seek(timeUs);
-    },
-    [seek]
-  );
-
-  const handleTrimChange = useCallback(
-    (inPoint: number, outPoint: number) => {
-      setTrim(inPoint, outPoint);
-    },
-    [setTrim]
-  );
+  // Simple event handler - no useCallback needed for native input elements
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      loadFile(file);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-gray-900 text-white p-4">
@@ -81,7 +58,7 @@ function App() {
         {/* Video Preview */}
         <div className="flex justify-center mb-6">
           <VideoPreview
-            onCanvasReady={handleCanvasReady}
+            onCanvasReady={initCanvas}
             width={640}
             height={360}
           />
@@ -123,8 +100,8 @@ function App() {
                   currentTime={state.currentTime}
                   inPoint={state.clip?.inPoint ?? 0}
                   outPoint={state.clip?.outPoint ?? secondsToUs(state.duration)}
-                  onSeek={handleSeek}
-                  onTrimChange={handleTrimChange}
+                  onSeek={seek}
+                  onTrimChange={setTrim}
                   sprites={sprites}
                   isGeneratingSprites={isGenerating}
                   spriteProgress={progress}

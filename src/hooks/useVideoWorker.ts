@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import type { WorkerCommand, WorkerResponse, EditorState, SpriteInitData } from '../types/editor';
 
 // Import worker using Vite's worker syntax
@@ -104,50 +104,53 @@ export function useVideoWorker(): UseVideoWorkerReturn {
     };
   }, []);
 
-  const sendCommand = useCallback((command: WorkerCommand) => {
-    workerRef.current?.postMessage(command);
-  }, []);
-
+  // Canvas initialization - useCallback with empty deps for stability
+  // (used as prop, consumers might rely on stable reference)
   const initCanvas = useCallback((canvas: HTMLCanvasElement) => {
-    const offscreen = canvas.transferControlToOffscreen();
-    const message: WorkerCommand = { type: 'INIT_CANVAS', payload: { canvas: offscreen } };
+    try {
+      const offscreen = canvas.transferControlToOffscreen();
+      const message: WorkerCommand = { type: 'INIT_CANVAS', payload: { canvas: offscreen } };
 
-    if (workerRef.current) {
-      // Worker is ready - send immediately
-      workerRef.current.postMessage(message, [offscreen]);
-    } else {
-      // Worker not ready yet - queue for when it initializes
-      pendingCanvasRef.current = { message, transfer: offscreen };
+      if (workerRef.current) {
+        workerRef.current.postMessage(message, [offscreen]);
+      } else {
+        pendingCanvasRef.current = { message, transfer: offscreen };
+      }
+    } catch (error) {
+      console.error('Failed to initialize canvas:', error);
+      // Canvas may have already been transferred or is invalid
     }
   }, []);
 
+  // Command functions - useCallback with empty deps
+  // These only access workerRef which is stable, so empty deps is correct
   const loadFile = useCallback((file: File) => {
-    sendCommand({ type: 'LOAD_FILE', payload: { file } });
-  }, [sendCommand]);
+    workerRef.current?.postMessage({ type: 'LOAD_FILE', payload: { file } });
+  }, []);
 
   const seek = useCallback((timeUs: number) => {
-    sendCommand({ type: 'SEEK', payload: { timeUs } });
-  }, [sendCommand]);
+    workerRef.current?.postMessage({ type: 'SEEK', payload: { timeUs } });
+  }, []);
 
   const play = useCallback(() => {
-    sendCommand({ type: 'PLAY' });
-  }, [sendCommand]);
+    workerRef.current?.postMessage({ type: 'PLAY' });
+  }, []);
 
   const pause = useCallback(() => {
-    sendCommand({ type: 'PAUSE' });
-  }, [sendCommand]);
+    workerRef.current?.postMessage({ type: 'PAUSE' });
+  }, []);
 
   const setTrim = useCallback((inPoint: number, outPoint: number) => {
-    sendCommand({ type: 'SET_TRIM', payload: { inPoint, outPoint } });
+    workerRef.current?.postMessage({ type: 'SET_TRIM', payload: { inPoint, outPoint } });
     setState((prev) => ({
       ...prev,
       clip: { inPoint, outPoint },
     }));
-  }, [sendCommand]);
+  }, []);
 
   const requestSampleData = useCallback(() => {
-    sendCommand({ type: 'GET_SAMPLES_FOR_SPRITES' });
-  }, [sendCommand]);
+    workerRef.current?.postMessage({ type: 'GET_SAMPLES_FOR_SPRITES' });
+  }, []);
 
   return {
     state,

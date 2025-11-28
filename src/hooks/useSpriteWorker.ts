@@ -6,6 +6,23 @@ import { SpriteCache, getOptimalBudget } from '../utils/spriteCache';
 // Import worker using Vite's worker syntax
 import SpriteWorkerModule from '../worker/SpriteWorker?worker';
 
+/**
+ * Calculate adaptive sprite interval based on video duration.
+ * Pure function - no need to be inside the hook.
+ */
+function calculateInterval(durationSeconds: number): number {
+  // For short videos (<2 min): 1 sprite per second
+  // For medium videos (2-10 min): 1 sprite per 2 seconds
+  // For longer videos: 1 sprite per 5 seconds
+  if (durationSeconds < 120) {
+    return 1_000_000; // 1 second in microseconds
+  }
+  if (durationSeconds < 600) {
+    return 2_000_000; // 2 seconds
+  }
+  return 5_000_000; // 5 seconds
+}
+
 export interface SpriteData {
   timeUs: number;
   x: number;
@@ -106,20 +123,6 @@ export function useSpriteWorker(
     } as SpriteWorkerCommand);
   }, [sampleData]);
 
-  // Calculate adaptive interval based on duration
-  const calculateInterval = useCallback((durationSeconds: number): number => {
-    // For short videos (<2 min): 1 sprite per second
-    // For medium videos (2-10 min): 1 sprite per 2 seconds
-    // For longer videos: 1 sprite per 5 seconds
-    if (durationSeconds < 120) {
-      return 1_000_000; // 1 second in microseconds
-    } else if (durationSeconds < 600) {
-      return 2_000_000; // 2 seconds
-    } else {
-      return 5_000_000; // 5 seconds
-    }
-  }, []);
-
   // Generate sprites (eager loading)
   const generateSprites = useCallback(
     (intervalUs?: number) => {
@@ -139,7 +142,7 @@ export function useSpriteWorker(
         payload: { intervalUs: interval },
       } as SpriteWorkerCommand);
     },
-    [sampleData, duration, calculateInterval]
+    [sampleData, duration]
   );
 
   // Clear all sprites

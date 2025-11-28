@@ -182,12 +182,21 @@ export class SpriteCache {
   private async bitmapToBlobUrl(bitmap: ImageBitmap): Promise<string> {
     // Create an OffscreenCanvas to draw the bitmap
     const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-    const ctx = canvas.getContext('2d')!;
+    const ctx = canvas.getContext('2d');
+
+    if (!ctx) {
+      throw new Error('Failed to get 2D rendering context from OffscreenCanvas');
+    }
+
     ctx.drawImage(bitmap, 0, 0);
 
-    // Convert to blob
-    const blob = await canvas.convertToBlob({ type: 'image/png' });
-    return URL.createObjectURL(blob);
+    // Convert to blob with error handling
+    try {
+      const blob = await canvas.convertToBlob({ type: 'image/png' });
+      return URL.createObjectURL(blob);
+    } catch (error) {
+      throw new Error(`Failed to convert bitmap to blob: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
   }
 }
 
@@ -195,12 +204,18 @@ export class SpriteCache {
 // DEVICE-ADAPTIVE BUDGET
 // ============================================================================
 
+// Type extension for Navigator with deviceMemory (Device Memory API)
+interface NavigatorWithDeviceMemory extends Navigator {
+  deviceMemory?: number;
+}
+
 /**
  * Calculate optimal memory budget based on device capabilities
  */
 export function getOptimalBudget(): number {
-  // Use deviceMemory API if available
-  const memory = (navigator as unknown as { deviceMemory?: number }).deviceMemory ?? 4;
+  // Use deviceMemory API if available (Chrome/Edge only)
+  const nav = navigator as NavigatorWithDeviceMemory;
+  const memory = nav.deviceMemory ?? 4; // Default to 4GB if not available
 
   if (memory <= 2) {
     return 10 * 1024 * 1024; // 10MB for low-end devices

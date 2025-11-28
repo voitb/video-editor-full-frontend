@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback } from 'react';
 import type { TimelineViewport } from '../types/editor';
 
 // Constants
@@ -34,11 +34,8 @@ export function useTimelineViewport({
     zoomLevel: 1,
   }));
 
-  // Calculate visible duration
-  const visibleDurationUs = useMemo(
-    () => viewport.endTimeUs - viewport.startTimeUs,
-    [viewport.endTimeUs, viewport.startTimeUs]
-  );
+  // Calculate visible duration - simple arithmetic, no need for useMemo
+  const visibleDurationUs = viewport.endTimeUs - viewport.startTimeUs;
 
   // Check if we can zoom in/out
   const canZoomIn = viewport.zoomLevel < MAX_ZOOM_LEVEL;

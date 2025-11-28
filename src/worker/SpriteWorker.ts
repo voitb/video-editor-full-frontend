@@ -291,7 +291,7 @@ async function initDecoder(): Promise<void> {
     pendingFrame.close();
     pendingFrame = null;
   }
-  frameResolve = null;
+  _frameResolve = null;
 
   // Clear any collected frames
   for (const frame of collectedFrames) {
@@ -323,7 +323,9 @@ async function initDecoder(): Promise<void> {
 
 // Frame storage for async decode
 let pendingFrame: VideoFrame | null = null;
-let frameResolve: ((frame: VideoFrame | null) => void) | null = null;
+// Note: frameResolve reserved for potential future async frame handling
+let _frameResolve: ((frame: VideoFrame | null) => void) | null = null;
+void _frameResolve; // Silence unused variable warning
 
 // Collected frames during batch decode
 let collectedFrames: VideoFrame[] = [];
@@ -359,15 +361,14 @@ async function decodeFrameAtTime(targetTimeUs: number): Promise<VideoFrame | nul
   collectedFrames = [];
 
   // Reset decoder to clear any previous state, then reconfigure
-  if (state.decoder.state !== 'closed') {
-    state.decoder.reset();
-    state.decoder.configure({
-      codec: state.codec,
-      codedWidth: state.videoWidth,
-      codedHeight: state.videoHeight,
-      description: state.codecDescription ?? undefined,
-    });
-  }
+  // Note: At this point decoder.state is 'configured' (checked above)
+  state.decoder.reset();
+  state.decoder.configure({
+    codec: state.codec,
+    codedWidth: state.videoWidth,
+    codedHeight: state.videoHeight,
+    description: state.codecDescription ?? undefined,
+  });
 
   try {
     // Queue all samples from keyframe to target (without flushing between)
