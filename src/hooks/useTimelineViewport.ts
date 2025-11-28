@@ -1,10 +1,8 @@
 import { useState, useCallback } from 'react';
 import type { TimelineViewport } from '../types/editor';
+import { TIMELINE } from '../constants';
 
-// Constants
-const MIN_VISIBLE_DURATION_US = 1_000_000; // 1 second minimum (max 10x zoom)
-const MAX_ZOOM_LEVEL = 10; // Maximum zoom level
-const ZOOM_STEP = 1.5; // Zoom multiplier per step
+const { MIN_VISIBLE_DURATION_US, MAX_ZOOM_LEVEL, ZOOM_STEP } = TIMELINE;
 
 interface UseTimelineViewportOptions {
   durationUs: number; // Total video duration in microseconds

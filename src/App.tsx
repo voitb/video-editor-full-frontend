@@ -6,6 +6,9 @@ import { VideoPreview } from './components/VideoPreview';
 import { Timeline } from './components/Timeline';
 import { Controls } from './components/Controls';
 import { secondsToUs } from './utils/time';
+import { VIDEO_PREVIEW, TIME, FILE_VALIDATION } from './constants';
+
+const { MICROSECONDS_PER_SECOND } = TIME;
 
 function App() {
   const { state, sampleData, initCanvas, loadFile, seek, play, pause, setTrim, requestSampleData } =
@@ -42,12 +45,26 @@ function App() {
     }
   }, [state.duration, zoomToFit]);
 
-  // Simple event handler - no useCallback needed for native input elements
+  // File validation and loading
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      loadFile(file);
+    if (!file) return;
+
+    // Validate file size
+    if (file.size > FILE_VALIDATION.MAX_FILE_SIZE) {
+      alert(`File is too large. Maximum size is ${FILE_VALIDATION.MAX_FILE_SIZE / 1024 / 1024}MB.`);
+      e.target.value = ''; // Reset input
+      return;
     }
+
+    // Validate file type
+    if (!file.type.startsWith('video/')) {
+      alert('Please select a valid video file.');
+      e.target.value = ''; // Reset input
+      return;
+    }
+
+    loadFile(file);
   };
 
   return (
@@ -59,8 +76,8 @@ function App() {
         <div className="flex justify-center mb-6">
           <VideoPreview
             onCanvasReady={initCanvas}
-            width={640}
-            height={360}
+            width={VIDEO_PREVIEW.WIDTH}
+            height={VIDEO_PREVIEW.HEIGHT}
           />
         </div>
 
@@ -119,13 +136,13 @@ function App() {
               {state.clip && (
                 <div className="text-xs text-gray-400 flex gap-4">
                   <span>
-                    In: {(state.clip.inPoint / 1_000_000).toFixed(2)}s
+                    In: {(state.clip.inPoint / MICROSECONDS_PER_SECOND).toFixed(2)}s
                   </span>
                   <span>
-                    Out: {(state.clip.outPoint / 1_000_000).toFixed(2)}s
+                    Out: {(state.clip.outPoint / MICROSECONDS_PER_SECOND).toFixed(2)}s
                   </span>
                   <span>
-                    Duration: {((state.clip.outPoint - state.clip.inPoint) / 1_000_000).toFixed(2)}s
+                    Duration: {((state.clip.outPoint - state.clip.inPoint) / MICROSECONDS_PER_SECOND).toFixed(2)}s
                   </span>
                 </div>
               )}

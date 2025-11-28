@@ -1,9 +1,9 @@
 import { useRef, useState, useEffect, useCallback } from 'react';
 import type { RefObject } from 'react';
 import { secondsToUs } from '../utils/time';
+import { TIMELINE } from '../constants';
 
-const SEEK_THROTTLE_MS = 50;
-const MIN_TRIM_DURATION_US = 100_000; // 100ms minimum trim duration
+const { SEEK_THROTTLE_MS, MIN_TRIM_DURATION_US } = TIMELINE;
 
 interface UseTimelineTrimOptions {
   /** Reference to the track container element */

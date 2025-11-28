@@ -5,6 +5,11 @@ import {
   type TransferableSample,
   type SpriteMetadata,
 } from './spriteTypes';
+import { TIME } from '../constants';
+import { createWorkerLogger } from '../utils/logger';
+
+const { MICROSECONDS_PER_SECOND } = TIME;
+const logger = createWorkerLogger('SpriteWorker');
 
 // ============================================================================
 // STATE
@@ -78,11 +83,11 @@ self.onmessage = async (e: MessageEvent<SpriteWorkerCommand>) => {
 
     case 'GENERATE_ALL_SPRITES': {
       const { intervalUs } = e.data.payload;
-      if (state.samples.length === 0) break;
+      const lastSample = state.samples[state.samples.length - 1];
+      if (!lastSample) break;
 
       // Calculate total duration from samples
-      const lastSample = state.samples[state.samples.length - 1];
-      const totalDurationUs = ((lastSample.cts + lastSample.duration) * 1_000_000) / lastSample.timescale;
+      const totalDurationUs = ((lastSample.cts + lastSample.duration) * MICROSECONDS_PER_SECOND) / lastSample.timescale;
 
       await generateSprites(0, totalDurationUs, intervalUs);
       break;
@@ -161,7 +166,7 @@ async function generateSprites(
 
     let currentSprites: SpriteMetadata[] = [];
     let spriteIndex = 0;
-    let sheetStartTimeUs = timestamps[0];
+    let sheetStartTimeUs = timestamps[0] ?? 0;
     let sheetIndex = 0;
 
     // Decode exact frames at each timestamp
@@ -169,6 +174,7 @@ async function generateSprites(
       if (state.generationAborted) break;
 
       const targetTimeUs = timestamps[i];
+      if (targetTimeUs === undefined) continue;
 
       // Decode the exact frame at target time (not just keyframe)
       const frame = await decodeFrameAtTime(targetTimeUs);
@@ -246,6 +252,7 @@ async function generateSprites(
 
     // Send final partial sheet if any sprites remaining
     if (currentSprites.length > 0 && !state.generationAborted) {
+      const finalTimeUs = timestamps[timestamps.length - 1] ?? sheetStartTimeUs;
       const bitmap = sheetCanvas.transferToImageBitmap();
       postResponse({
         type: 'SPRITE_SHEET_READY',
@@ -253,7 +260,7 @@ async function generateSprites(
           sheetId: `sheet-${sheetIndex}`,
           bitmap,
           startTimeUs: sheetStartTimeUs,
-          endTimeUs: timestamps[timestamps.length - 1],
+          endTimeUs: finalTimeUs,
           sprites: currentSprites,
         },
       });
@@ -291,7 +298,6 @@ async function initDecoder(): Promise<void> {
     pendingFrame.close();
     pendingFrame = null;
   }
-  _frameResolve = null;
 
   // Clear any collected frames
   for (const frame of collectedFrames) {
@@ -306,7 +312,7 @@ async function initDecoder(): Promise<void> {
         collectedFrames.push(frame);
       },
       error: (e) => {
-        console.error('[SpriteWorker] Decoder error:', e);
+        logger.error('Decoder error:', e);
       },
     });
 
@@ -323,9 +329,6 @@ async function initDecoder(): Promise<void> {
 
 // Frame storage for async decode
 let pendingFrame: VideoFrame | null = null;
-// Note: frameResolve reserved for potential future async frame handling
-let _frameResolve: ((frame: VideoFrame | null) => void) | null = null;
-void _frameResolve; // Silence unused variable warning
 
 // Collected frames during batch decode
 let collectedFrames: VideoFrame[] = [];
@@ -339,7 +342,7 @@ async function decodeFrameAtTime(targetTimeUs: number): Promise<VideoFrame | nul
     return null;
   }
 
-  const targetSeconds = targetTimeUs / 1_000_000;
+  const targetSeconds = targetTimeUs / MICROSECONDS_PER_SECOND;
 
   // Find sample at or after target time
   let targetSampleIndex = state.samples.findIndex((sample) => {
@@ -380,8 +383,8 @@ async function decodeFrameAtTime(targetTimeUs: number): Promise<VideoFrame | nul
 
       const chunk = new EncodedVideoChunk({
         type: isKeyframe ? 'key' : 'delta',
-        timestamp: (sample.cts * 1_000_000) / sample.timescale,
-        duration: (sample.duration * 1_000_000) / sample.timescale,
+        timestamp: (sample.cts * MICROSECONDS_PER_SECOND) / sample.timescale,
+        duration: (sample.duration * MICROSECONDS_PER_SECOND) / sample.timescale,
         data: sample.data,
       });
 
@@ -395,8 +398,12 @@ async function decodeFrameAtTime(targetTimeUs: number): Promise<VideoFrame | nul
     if (collectedFrames.length > 0) {
       // Close all intermediate frames, keep only the last one
       const lastFrame = collectedFrames[collectedFrames.length - 1];
+      if (!lastFrame) {
+        collectedFrames = [];
+        return null;
+      }
       for (let i = 0; i < collectedFrames.length - 1; i++) {
-        collectedFrames[i].close();
+        collectedFrames[i]?.close();
       }
       collectedFrames = [];
       return lastFrame;
@@ -404,7 +411,7 @@ async function decodeFrameAtTime(targetTimeUs: number): Promise<VideoFrame | nul
 
     return null;
   } catch (e) {
-    console.error('[SpriteWorker] Decode error:', e);
+    logger.error('Decode error:', e);
     // Clean up any collected frames on error
     for (const frame of collectedFrames) {
       frame.close();
@@ -427,12 +434,14 @@ function findPreviousKeyframe(targetSampleIndex: number): number {
 
   while (left < right) {
     const mid = Math.ceil((left + right) / 2);
-    if (state.keyframeIndices[mid] <= targetSampleIndex) {
+    const midValue = state.keyframeIndices[mid];
+    if (midValue !== undefined && midValue <= targetSampleIndex) {
       left = mid;
     } else {
       right = mid - 1;
     }
   }
 
-  return state.keyframeIndices[left] <= targetSampleIndex ? state.keyframeIndices[left] : 0;
+  const leftValue = state.keyframeIndices[left];
+  return leftValue !== undefined && leftValue <= targetSampleIndex ? leftValue : 0;
 }

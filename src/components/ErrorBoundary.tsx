@@ -1,4 +1,5 @@
 import { Component, type ReactNode } from 'react';
+import { logger } from '../utils/logger';
 
 interface Props {
   children: ReactNode;
@@ -19,9 +20,37 @@ export class ErrorBoundary extends Component<Props, State> {
     return { hasError: true, error };
   }
 
-  componentDidCatch(error: Error, errorInfo: React.ErrorInfo): void {
-    console.error('[ErrorBoundary] Caught error:', error, errorInfo);
+  componentDidMount(): void {
+    // Handle global errors (including worker errors)
+    window.addEventListener('error', this.handleWindowError);
+    // Handle unhandled promise rejections
+    window.addEventListener('unhandledrejection', this.handlePromiseRejection);
   }
+
+  componentWillUnmount(): void {
+    window.removeEventListener('error', this.handleWindowError);
+    window.removeEventListener('unhandledrejection', this.handlePromiseRejection);
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo): void {
+    logger.error('ErrorBoundary caught error:', error, errorInfo);
+  }
+
+  private handleWindowError = (event: ErrorEvent): void => {
+    // Only catch errors that aren't already handled
+    if (event.error) {
+      logger.error('Window error:', event.error);
+      // Don't show error boundary for recoverable errors
+      // Uncomment the next line to catch all global errors
+      // this.setState({ hasError: true, error: event.error });
+    }
+  };
+
+  private handlePromiseRejection = (event: PromiseRejectionEvent): void => {
+    logger.error('Unhandled promise rejection:', event.reason);
+    // Don't show error boundary for promise rejections by default
+    // These are usually recoverable (e.g., failed network requests)
+  };
 
   handleReset = (): void => {
     this.setState({ hasError: false, error: null });

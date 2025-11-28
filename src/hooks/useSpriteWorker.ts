@@ -2,9 +2,13 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import type { SpriteInitData } from '../types/editor';
 import type { SpriteWorkerCommand, SpriteWorkerResponse } from '../worker/spriteTypes';
 import { SpriteCache, getOptimalBudget } from '../utils/spriteCache';
+import { TIME } from '../constants';
+import { logger } from '../utils/logger';
 
 // Import worker using Vite's worker syntax
 import SpriteWorkerModule from '../worker/SpriteWorker?worker';
+
+const { MICROSECONDS_PER_SECOND } = TIME;
 
 /**
  * Calculate adaptive sprite interval based on video duration.
@@ -15,12 +19,12 @@ function calculateInterval(durationSeconds: number): number {
   // For medium videos (2-10 min): 1 sprite per 2 seconds
   // For longer videos: 1 sprite per 5 seconds
   if (durationSeconds < 120) {
-    return 1_000_000; // 1 second in microseconds
+    return MICROSECONDS_PER_SECOND; // 1 second in microseconds
   }
   if (durationSeconds < 600) {
-    return 2_000_000; // 2 seconds
+    return 2 * MICROSECONDS_PER_SECOND; // 2 seconds
   }
-  return 5_000_000; // 5 seconds
+  return 5 * MICROSECONDS_PER_SECOND; // 5 seconds
 }
 
 export interface SpriteData {
@@ -98,7 +102,7 @@ export function useSpriteWorker(
         }
 
         case 'ERROR': {
-          console.error('[useSpriteWorker] Error:', e.data.payload.message);
+          logger.error('useSpriteWorker Error:', e.data.payload.message);
           setIsGenerating(false);
           setProgress(null);
           break;
@@ -135,7 +139,7 @@ export function useSpriteWorker(
       const interval = intervalUs ?? calculateInterval(duration);
 
       setIsGenerating(true);
-      setProgress({ generated: 0, total: Math.ceil((duration * 1_000_000) / interval) });
+      setProgress({ generated: 0, total: Math.ceil((duration * MICROSECONDS_PER_SECOND) / interval) });
 
       workerRef.current.postMessage({
         type: 'GENERATE_ALL_SPRITES',
@@ -165,6 +169,7 @@ export function useSpriteWorker(
       }, 100);
       return () => clearTimeout(timer);
     }
+    return undefined;
   }, [sampleData, duration, sprites.length, isGenerating, generateSprites]);
 
   return {

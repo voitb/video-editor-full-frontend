@@ -1,9 +1,13 @@
+import { createWorkerLogger } from '../utils/logger';
+
+const logger = createWorkerLogger('Renderer');
+
 export class WebGLRenderer {
   private canvas: OffscreenCanvas;
   private gl: WebGL2RenderingContext;
-  private program: WebGLProgram;
-  private texture: WebGLTexture;
-  private vao: WebGLVertexArrayObject;
+  private program: WebGLProgram | null = null;
+  private texture: WebGLTexture | null = null;
+  private vao: WebGLVertexArrayObject | null = null;
   private contextLost = false;
 
   constructor(canvas: OffscreenCanvas) {
@@ -16,18 +20,15 @@ export class WebGLRenderer {
     canvas.addEventListener('webglcontextlost', (e) => {
       e.preventDefault();
       this.contextLost = true;
-      console.warn('[Renderer] WebGL context lost');
+      logger.warn('WebGL context lost');
     });
 
     canvas.addEventListener('webglcontextrestored', () => {
-      console.log('[Renderer] WebGL context restored');
+      logger.log('WebGL context restored');
       this.contextLost = false;
       this.initialize();
     });
 
-    this.program = null!;
-    this.texture = null!;
-    this.vao = null!;
     this.initialize();
   }
 
@@ -104,12 +105,12 @@ export class WebGLRenderer {
    */
   draw(frame: VideoFrame): void {
     try {
-      // Skip rendering if context is lost
-      if (this.contextLost) {
+      // Skip rendering if context is lost or not initialized
+      if (this.contextLost || !this.program || !this.vao || !this.texture) {
         return;
       }
 
-      const { gl } = this;
+      const { gl, program, vao, texture } = this;
 
       // Clear to black first (for letterboxing)
       gl.clearColor(0, 0, 0, 1);
@@ -135,24 +136,24 @@ export class WebGLRenderer {
       }
 
       gl.viewport(viewportX, viewportY, viewportWidth, viewportHeight);
-      gl.useProgram(this.program);
+      gl.useProgram(program);
 
       // Bind VAO before drawing (ensures correct vertex attribute state)
-      gl.bindVertexArray(this.vao);
+      gl.bindVertexArray(vao);
 
       // Upload texture from VideoFrame (zero-copy on GPU if possible)
       gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, this.texture);
+      gl.bindTexture(gl.TEXTURE_2D, texture);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, frame);
 
       gl.drawArrays(gl.TRIANGLES, 0, 6);
 
       const err = gl.getError();
       if (err !== gl.NO_ERROR) {
-        console.error('[Renderer] WebGL error:', err);
+        logger.error('WebGL error:', err);
       }
     } catch (e) {
-      console.error('[Renderer] Draw error:', e);
+      logger.error('Draw error:', e);
     } finally {
       // Always close the frame to prevent GPU memory leaks
       frame.close();
@@ -182,7 +183,7 @@ export class WebGLRenderer {
       gl.shaderSource(shader, source);
       gl.compileShader(shader);
       if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-        console.error('Shader compile error:', gl.getShaderInfoLog(shader));
+        logger.error('Shader compile error:', gl.getShaderInfoLog(shader));
         gl.deleteShader(shader);
         return null;
       }
@@ -199,7 +200,7 @@ export class WebGLRenderer {
     gl.linkProgram(program);
 
     if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-      console.error('Program link error:', gl.getProgramInfoLog(program));
+      logger.error('Program link error:', gl.getProgramInfoLog(program));
       throw new Error('Failed to link program');
     }
 

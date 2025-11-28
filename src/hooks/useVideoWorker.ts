@@ -1,8 +1,12 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import type { WorkerCommand, WorkerResponse, EditorState, SpriteInitData } from '../types/editor';
+import { TIME } from '../constants';
+import { logger } from '../utils/logger';
 
 // Import worker using Vite's worker syntax
 import VideoWorker from '../worker/VideoWorker?worker';
+
+const { MICROSECONDS_PER_SECOND } = TIME;
 
 interface UseVideoWorkerReturn {
   state: EditorState;
@@ -62,7 +66,7 @@ export function useVideoWorker(): UseVideoWorkerReturn {
             isReady: true,
             clip: {
               inPoint: 0,
-              outPoint: duration * 1_000_000,
+              outPoint: duration * MICROSECONDS_PER_SECOND,
             },
           }));
           break;
@@ -72,7 +76,7 @@ export function useVideoWorker(): UseVideoWorkerReturn {
           const { currentTimeUs } = e.data.payload;
           setState((prev) => ({
             ...prev,
-            currentTime: currentTimeUs / 1_000_000, // Convert to seconds
+            currentTime: currentTimeUs / MICROSECONDS_PER_SECOND, // Convert to seconds
           }));
           break;
         }
@@ -92,7 +96,7 @@ export function useVideoWorker(): UseVideoWorkerReturn {
         }
 
         case 'ERROR': {
-          console.error('Worker error:', e.data.payload.message);
+          logger.error('Worker error:', e.data.payload.message);
           break;
         }
       }
@@ -117,7 +121,7 @@ export function useVideoWorker(): UseVideoWorkerReturn {
         pendingCanvasRef.current = { message, transfer: offscreen };
       }
     } catch (error) {
-      console.error('Failed to initialize canvas:', error);
+      logger.error('Failed to initialize canvas:', error);
       // Canvas may have already been transferred or is invalid
     }
   }, []);

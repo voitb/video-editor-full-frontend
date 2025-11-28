@@ -1,7 +1,8 @@
 import { useRef, useState, useEffect, useCallback } from 'react';
 import type { RefObject } from 'react';
+import { TIMELINE } from '../constants';
 
-const SEEK_THROTTLE_MS = 50; // Throttle for decoder seeks
+const { SEEK_THROTTLE_MS } = TIMELINE;
 
 interface UseTimelineDragOptions {
   /** Reference to the track container element */
@@ -27,8 +28,6 @@ interface UseTimelineDragReturn {
   handlePlayheadMouseDown: (e: React.MouseEvent) => void;
   /** Handler for track click (seek to position) */
   handleTrackClick: (e: React.MouseEvent) => void;
-  /** Current playhead position during drag (null when not dragging) */
-  dragPosition: number | null;
 }
 
 /**
@@ -155,6 +154,5 @@ export function useTimelineDrag({
     isDragging,
     handlePlayheadMouseDown,
     handleTrackClick,
-    dragPosition: dragPositionRef.current,
   };
 }

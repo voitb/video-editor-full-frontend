@@ -2,6 +2,10 @@ import { createFile, DataStream } from 'mp4box';
 import type { MP4File, MP4Sample, MP4Info, MP4VideoTrack } from 'mp4box';
 import { WebGLRenderer } from './renderer';
 import type { WorkerCommand, WorkerResponse, TransferableSample } from '../types/editor';
+import { PLAYBACK, TIME } from '../constants';
+import { createWorkerLogger } from '../utils/logger';
+
+const logger = createWorkerLogger('VideoWorker');
 
 // ============================================================================
 // STATE MACHINE
@@ -93,7 +97,8 @@ const workerState: VideoWorkerState = {
 
 // Convenience accessor for state
 const state = workerState;
-const MAX_QUEUE_SIZE = 8;
+const { MAX_QUEUE_SIZE, MAX_FRAME_LAG_US } = PLAYBACK;
+const { MICROSECONDS_PER_SECOND } = TIME;
 
 // Send message to main thread
 function postResponse(response: WorkerResponse): void {
@@ -276,13 +281,13 @@ async function loadFile(file: File): Promise<void> {
   state.decoder = new VideoDecoder({
     output: handleDecodedFrame,
     error: (e) => {
-      console.error('Decoder error:', e);
+      logger.error('Decoder error:', e);
       postResponse({ type: 'ERROR', payload: { message: e.message } });
     },
   });
 
   state.mp4File.onReady = (info: MP4Info) => {
-    state.videoTrackInfo = info.videoTracks[0];
+    state.videoTrackInfo = info.videoTracks[0] ?? null;
     if (!state.videoTrackInfo) {
       postResponse({ type: 'ERROR', payload: { message: 'No video track found' } });
       return;
@@ -313,7 +318,7 @@ async function loadFile(file: File): Promise<void> {
       durationSeconds = state.videoTrackInfo.nb_samples / 30;
     }
 
-    state.trimOutPoint = durationSeconds * 1_000_000; // microseconds
+    state.trimOutPoint = durationSeconds * MICROSECONDS_PER_SECOND; // microseconds
 
     postResponse({
       type: 'READY',
@@ -391,7 +396,7 @@ async function performSeek(timeUs: number): Promise<void> {
 
   // Clamp to trim bounds
   const targetUs = Math.max(state.trimInPoint, Math.min(timeUs, state.trimOutPoint));
-  const targetSeconds = targetUs / 1_000_000;
+  const targetSeconds = targetUs / MICROSECONDS_PER_SECOND;
 
   // Find sample index at or after target time
   let sampleIndex = state.samples.findIndex((sample) => {
@@ -409,7 +414,7 @@ async function performSeek(timeUs: number): Promise<void> {
   // CRITICAL: Validate keyframe before flushing decoder
   // WebCodecs requires first frame after flush() to be a key frame
   if (!state.samples[keyframeIndex]?.is_sync) {
-    console.warn('[VideoWorker:performSeek] Keyframe validation failed', {
+    logger.warn('performSeek: Keyframe validation failed', {
       keyframeIndex,
       sampleIndex,
       is_sync: state.samples[keyframeIndex]?.is_sync,
@@ -440,6 +445,7 @@ async function performSeek(timeUs: number): Promise<void> {
     for (let i = keyframeIndex; i <= sampleIndex; i++) {
       if (state.decoder.state !== 'configured') break;
       const sample = state.samples[i];
+      if (!sample) continue;
 
       // Determine chunk type - first frame MUST be key after flush
       const isFirstChunk = i === keyframeIndex;
@@ -447,7 +453,7 @@ async function performSeek(timeUs: number): Promise<void> {
 
       // Double-check first chunk is a key frame (defensive)
       if (isFirstChunk && chunkType !== 'key') {
-        console.warn('[VideoWorker:performSeek] First chunk after flush is not a key frame', {
+        logger.warn('performSeek: First chunk after flush is not a key frame', {
           index: i,
           is_sync: sample.is_sync,
         });
@@ -456,8 +462,8 @@ async function performSeek(timeUs: number): Promise<void> {
 
       const chunk = new EncodedVideoChunk({
         type: chunkType,
-        timestamp: (sample.cts * 1_000_000) / sample.timescale,
-        duration: (sample.duration * 1_000_000) / sample.timescale,
+        timestamp: (sample.cts * MICROSECONDS_PER_SECOND) / sample.timescale,
+        duration: (sample.duration * MICROSECONDS_PER_SECOND) / sample.timescale,
         data: sample.data,
       });
       state.decoder.decode(chunk);
@@ -484,7 +490,7 @@ async function performSeek(timeUs: number): Promise<void> {
       state.needsWallClockSync = true;
     }
   } catch (e) {
-    console.warn('[VideoWorker:performSeek] Decode error during seek', {
+    logger.warn('performSeek: Decode error during seek', {
       error: (e as Error).message,
       keyframeIndex,
       sampleIndex,
@@ -533,7 +539,7 @@ async function startPlayback(): Promise<void> {
 
     // Find the sample index for start time
     let currentSampleIndex = state.samples.findIndex((sample) => {
-      const sampleTime = (sample.cts * 1_000_000) / sample.timescale;
+      const sampleTime = (sample.cts * MICROSECONDS_PER_SECOND) / sample.timescale;
       return sampleTime >= startTimeUs;
     });
     if (currentSampleIndex === -1) currentSampleIndex = 0;
@@ -542,7 +548,7 @@ async function startPlayback(): Promise<void> {
 
     // CRITICAL: Validate keyframe before decoding
     if (!state.samples[keyframeIndex]?.is_sync) {
-      console.warn('[VideoWorker:startPlayback] Keyframe validation failed', {
+      logger.warn('startPlayback: Keyframe validation failed', {
         keyframeIndex,
         currentSampleIndex,
         is_sync: state.samples[keyframeIndex]?.is_sync,
@@ -638,7 +644,7 @@ function playbackLoop(): void {
 
   // Re-validate decoder state before queueing (may have changed during async operations)
   if (state.decoder.state !== 'configured') {
-    console.warn('[VideoWorker:playbackLoop] Decoder not configured during playback');
+    logger.warn('playbackLoop: Decoder not configured during playback');
     void pausePlayback();
     return;
   }
@@ -657,7 +663,9 @@ function playbackLoop(): void {
   // Look for the frame closest to (but not after) targetUs
   let bestFrameIndex = -1;
   for (let i = 0; i < state.frameQueue.length; i++) {
-    if (state.frameQueue[i].timestamp <= targetUs) {
+    const queuedFrame = state.frameQueue[i];
+    if (!queuedFrame) continue;
+    if (queuedFrame.timestamp <= targetUs) {
       bestFrameIndex = i;
     } else {
       break; // Queue is sorted by decode order (which matches timestamp order)
@@ -668,18 +676,19 @@ function playbackLoop(): void {
   if (bestFrameIndex >= 0) {
     // Close all frames before the best one
     for (let i = 0; i < bestFrameIndex; i++) {
-      state.frameQueue[i].frame.close();
+      state.frameQueue[i]?.frame.close();
     }
 
     // Get the frame to render
-    const { frame, timestamp } = state.frameQueue[bestFrameIndex];
+    const bestFrame = state.frameQueue[bestFrameIndex];
+    if (!bestFrame) return;
+    const { frame, timestamp } = bestFrame;
 
     // Remove rendered and older frames from queue
     state.frameQueue.splice(0, bestFrameIndex + 1);
 
     // Frame dropping: skip frames that are too far behind target time
     // This prevents stuttering on slower devices by maintaining real-time sync
-    const MAX_FRAME_LAG_US = 100_000; // 100ms maximum acceptable lag
     const frameLag = targetUs - timestamp;
 
     if (frameLag > MAX_FRAME_LAG_US) {
@@ -718,14 +727,14 @@ function decodeFrame(sampleIndex: number): void {
   // Validate sample exists
   const sample = state.samples[sampleIndex];
   if (!sample) {
-    console.warn('[VideoWorker:decodeFrame] Invalid sample index:', sampleIndex);
+    logger.warn('decodeFrame: Invalid sample index:', sampleIndex);
     return;
   }
 
   const chunk = new EncodedVideoChunk({
     type: sample.is_sync ? 'key' : 'delta',
-    timestamp: (sample.cts * 1_000_000) / sample.timescale,
-    duration: (sample.duration * 1_000_000) / sample.timescale,
+    timestamp: (sample.cts * MICROSECONDS_PER_SECOND) / sample.timescale,
+    duration: (sample.duration * MICROSECONDS_PER_SECOND) / sample.timescale,
     data: sample.data,
   });
 
@@ -734,7 +743,7 @@ function decodeFrame(sampleIndex: number): void {
   } catch (e) {
     // On any decode error, pause playback gracefully
     // The seek state checks in playbackLoop should prevent most errors
-    console.warn('[VideoWorker:decodeFrame] Decode error, pausing playback', {
+    logger.warn('decodeFrame: Decode error, pausing playback', {
       error: (e as Error).message,
       sampleIndex,
       is_sync: sample.is_sync,
@@ -746,15 +755,16 @@ function decodeFrame(sampleIndex: number): void {
 // Binary search to find the keyframe at or before the target sample index
 // Returns the index in samples[] (not in keyframeIndices[])
 function findPreviousKeyframe(targetSampleIndex: number): number {
-  if (state.keyframeIndices.length === 0) {
-    console.warn('[VideoWorker:findPreviousKeyframe] No keyframes available, defaulting to index 0');
+  const firstKeyframe = state.keyframeIndices[0];
+  if (firstKeyframe === undefined) {
+    logger.warn('findPreviousKeyframe: No keyframes available, defaulting to index 0');
     return 0;
   }
 
   // Validate target is within bounds
   if (targetSampleIndex < 0 || targetSampleIndex >= state.samples.length) {
-    console.warn('[VideoWorker:findPreviousKeyframe] Invalid targetSampleIndex:', targetSampleIndex);
-    return state.keyframeIndices[0];
+    logger.warn('findPreviousKeyframe: Invalid targetSampleIndex:', targetSampleIndex);
+    return firstKeyframe;
   }
 
   // Binary search for largest keyframe index <= targetSampleIndex
@@ -763,22 +773,24 @@ function findPreviousKeyframe(targetSampleIndex: number): number {
 
   while (left < right) {
     const mid = Math.ceil((left + right) / 2);
-    if (state.keyframeIndices[mid] <= targetSampleIndex) {
+    const midValue = state.keyframeIndices[mid];
+    if (midValue !== undefined && midValue <= targetSampleIndex) {
       left = mid;
     } else {
       right = mid - 1;
     }
   }
 
-  const result = state.keyframeIndices[left] <= targetSampleIndex ? state.keyframeIndices[left] : 0;
+  const leftValue = state.keyframeIndices[left];
+  const result = leftValue !== undefined && leftValue <= targetSampleIndex ? leftValue : 0;
 
   // Validate result is actually a keyframe
   if (!state.samples[result]?.is_sync) {
-    console.warn('[VideoWorker:findPreviousKeyframe] Result is not a sync frame, using first keyframe', {
+    logger.warn('findPreviousKeyframe: Result is not a sync frame, using first keyframe', {
       result,
       is_sync: state.samples[result]?.is_sync,
     });
-    return state.keyframeIndices[0];
+    return firstKeyframe;
   }
 
   return result;
@@ -797,7 +809,7 @@ function getCodecDescription(file: MP4File, trackId: number): Uint8Array | null 
       }
     }
   } catch (e) {
-    console.warn('Failed to get codec description:', e);
+    logger.warn('Failed to get codec description:', e);
   }
   return null;
 }

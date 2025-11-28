@@ -2,6 +2,9 @@ import { useMemo } from 'react';
 import type { SpriteData } from '../hooks/useSpriteWorker';
 import type { TimelineViewport } from '../types/editor';
 import { SPRITE_CONFIG } from '../worker/spriteTypes';
+import { TIME } from '../constants';
+
+const { MICROSECONDS_PER_SECOND } = TIME;
 
 interface TimelineSpritesProps {
   sprites: SpriteData[];
@@ -20,7 +23,7 @@ export function TimelineSprites({
 }: TimelineSpritesProps) {
   // Calculate visible duration from viewport
   const visibleDurationUs = viewport.endTimeUs - viewport.startTimeUs;
-  const durationUs = duration * 1_000_000;
+  const durationUs = duration * MICROSECONDS_PER_SECOND;
 
   // Calculate sprite positions relative to viewport with culling
   const spriteElements = useMemo(() => {
