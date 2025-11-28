@@ -1,5 +1,7 @@
 import {
-  getSpriteConfig,
+  getAspectAwareSpriteConfig,
+  getDeviceTier,
+  SPRITE_TIMEOUTS,
   type SpriteWorkerCommand,
   type SpriteWorkerResponse,
   type TransferableSample,
@@ -11,6 +13,52 @@ import { findPreviousKeyframe as findPreviousKeyframeUtil } from '../utils/keyfr
 
 const { MICROSECONDS_PER_SECOND } = TIME;
 const logger = createWorkerLogger('SpriteWorker');
+
+// ============================================================================
+// TIMEOUT UTILITY
+// ============================================================================
+
+/**
+ * Wrap a promise with a timeout. Throws TimeoutError if operation takes too long.
+ */
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  operationName: string
+): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout>;
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`${operationName} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+
+  try {
+    const result = await Promise.race([promise, timeoutPromise]);
+    clearTimeout(timeoutId!);
+    return result;
+  } catch (error) {
+    clearTimeout(timeoutId!);
+    throw error;
+  }
+}
+
+// ============================================================================
+// YIELD UTILITY
+// ============================================================================
+
+/**
+ * Yield to the event loop to prevent blocking on low-end devices.
+ * Uses scheduler.yield() if available, falls back to setTimeout(0).
+ */
+async function yieldToEventLoop(): Promise<void> {
+  if ('scheduler' in globalThis && 'yield' in (globalThis as unknown as { scheduler: { yield: () => Promise<void> } }).scheduler) {
+    await (globalThis as unknown as { scheduler: { yield: () => Promise<void> } }).scheduler.yield();
+  } else {
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+}
 
 // ============================================================================
 // STATE
@@ -193,14 +241,24 @@ async function generateSprites(
     }
 
     // Initialize decoder
+    logger.debug(`Initializing decoder for ${timestamps.length} timestamps`);
     await initDecoder();
     if (!state.decoder || state.decoder.state !== 'configured') {
-      postResponse({ type: 'ERROR', payload: { message: 'Failed to configure decoder' } });
+      logger.error('Failed to configure decoder', { decoderState: state.decoder?.state });
+      postResponse({
+        type: 'ERROR',
+        payload: { message: 'Failed to configure decoder', recoverable: true },
+      });
       return;
     }
 
-    // Get adaptive sprite config based on device capabilities
-    const spriteConfig = getSpriteConfig();
+    // Get aspect-aware sprite config based on video dimensions
+    const spriteConfig = getAspectAwareSpriteConfig(state.videoWidth, state.videoHeight);
+    logger.debug('Sprite config:', {
+      thumbnailWidth: spriteConfig.thumbnailWidth,
+      thumbnailHeight: spriteConfig.thumbnailHeight,
+      videoAspect: (state.videoWidth / state.videoHeight).toFixed(2),
+    });
 
     // Create sprite sheet canvas
     let sheetCanvas = new OffscreenCanvas(spriteConfig.sheetWidth, spriteConfig.sheetHeight);
@@ -216,23 +274,50 @@ async function generateSprites(
     let sheetIndex = 0;
 
     // Decode exact frames at each timestamp
+    logger.debug(`Starting decode loop: ${timestamps.length} timestamps to process`);
+    let failedFrames = 0;
+
+    // Determine yield interval based on device tier
+    // Low-end: yield every 5 frames, Medium: every 10, High: never
+    const tier = getDeviceTier();
+    const yieldInterval = tier === 'low' ? 5 : tier === 'medium' ? 10 : Infinity;
+    logger.debug(`Device tier: ${tier}, yield interval: ${yieldInterval}`);
+
     for (let i = 0; i < timestamps.length; i++) {
-      if (state.generationAborted) break;
+      if (state.generationAborted) {
+        logger.debug('Generation aborted, breaking loop');
+        break;
+      }
+
+      // Yield periodically to prevent blocking on low-end devices
+      if (i > 0 && i % yieldInterval === 0) {
+        await yieldToEventLoop();
+      }
 
       const targetTimeUs = timestamps[i];
       if (targetTimeUs === undefined) continue;
 
       // Decode the exact frame at target time (not just keyframe)
       const frame = await decodeFrameAtTime(targetTimeUs);
-      if (!frame) continue;
+      if (!frame) {
+        failedFrames++;
+        logger.warn(`Failed to decode frame at ${targetTimeUs}µs (${failedFrames} total failures)`);
+        continue;
+      }
 
       try {
         // Create thumbnail using createImageBitmap with hardware-accelerated resize
+        // Use 'low' quality on low-end devices for ~20-30% faster resize
+        const resizeQuality = tier === 'low' ? 'low' : 'medium';
         const thumbnail = await createImageBitmap(frame, {
           resizeWidth: spriteConfig.thumbnailWidth,
           resizeHeight: spriteConfig.thumbnailHeight,
-          resizeQuality: 'medium',
+          resizeQuality,
+          colorSpaceConversion: 'none', // Skip unnecessary color space conversion
         });
+
+        // Close frame immediately to release GPU memory ASAP
+        frame.close();
 
         // Calculate position in sprite sheet
         const col = spriteIndex % spriteConfig.columnsPerSheet;
@@ -268,6 +353,7 @@ async function generateSprites(
         // Check if sheet is full
         if (spriteIndex % spriteConfig.spritesPerSheet === 0) {
           // Send completed sheet
+          logger.debug(`Sheet ${sheetIndex} complete: ${currentSprites.length} sprites`);
           const bitmap = sheetCanvas.transferToImageBitmap();
           postResponse({
             type: 'SPRITE_SHEET_READY',
@@ -291,8 +377,10 @@ async function generateSprites(
           ctx.fillStyle = COLORS.SPRITE_BACKGROUND;
           ctx.fillRect(0, 0, sheetCanvas.width, sheetCanvas.height);
         }
-      } finally {
+      } catch (thumbnailError) {
+        // If createImageBitmap fails, ensure frame is still closed
         frame.close();
+        logger.warn('Failed to create thumbnail:', thumbnailError);
       }
     }
 
@@ -315,18 +403,29 @@ async function generateSprites(
     if (!state.generationAborted) {
       // Track this range as generated for progressive loading
       addGeneratedRange(startTimeUs, endTimeUs);
+      logger.debug(`Generation complete: ${timestamps.length - failedFrames}/${timestamps.length} sprites generated`);
       postResponse({ type: 'GENERATION_COMPLETE' });
     }
   } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    const isTimeout = errorMsg.includes('timed out');
+    logger.error('Sprite generation error:', { error: errorMsg, isTimeout });
     postResponse({
       type: 'ERROR',
-      payload: { message: error instanceof Error ? error.message : 'Unknown error' },
+      payload: { message: errorMsg, recoverable: isTimeout },
     });
   } finally {
     state.isGenerating = false;
-    // Clean up decoder
+    // Clean up decoder with timeout to prevent hanging
     if (state.decoder && state.decoder.state !== 'closed') {
-      await state.decoder.flush().catch(() => {});
+      logger.debug('Cleaning up decoder...');
+      await withTimeout(
+        state.decoder.flush(),
+        SPRITE_TIMEOUTS.FLUSH_TIMEOUT_MS,
+        'cleanup decoder.flush'
+      ).catch((e) => {
+        logger.warn('Cleanup flush failed/timed out:', e instanceof Error ? e.message : e);
+      });
     }
   }
 }
@@ -364,6 +463,15 @@ async function initDecoder(): Promise<void> {
       },
       error: (e) => {
         logger.error('Decoder error:', e);
+        state.decoderNeedsReset = true;
+        // Propagate error to main thread so UI can show feedback
+        postResponse({
+          type: 'ERROR',
+          payload: {
+            message: `Decoder error: ${e.message}`,
+            recoverable: true,
+          },
+        });
       },
     });
 
@@ -387,13 +495,50 @@ let pendingFrame: VideoFrame | null = null;
 let collectedFrames: VideoFrame[] = [];
 
 /**
- * Decode the exact frame at a target time.
+ * Decode the exact frame at a target time with retry logic.
  *
  * OPTIMIZATION: Reuses decoder without reset() when possible.
  * After flush(), decoder requires a keyframe, so we always start from keyframe,
  * but we avoid the expensive reset()+configure() cycle when the decoder is healthy.
+ *
+ * RELIABILITY: Includes retry logic (up to MAX_RETRIES) for failed decodes.
  */
 async function decodeFrameAtTime(targetTimeUs: number): Promise<VideoFrame | null> {
+  const maxRetries = SPRITE_TIMEOUTS.MAX_RETRIES;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    if (attempt > 0) {
+      logger.debug(`Retry attempt ${attempt}/${maxRetries} for frame at ${targetTimeUs}µs`);
+      // Force decoder reset before retry
+      state.decoderNeedsReset = true;
+    }
+
+    const frame = await attemptDecodeFrame(targetTimeUs);
+
+    if (frame !== null) {
+      return frame;
+    }
+
+    // If we got null but decoder doesn't need reset, don't retry
+    // (null without error means no frames collected, edge case)
+    if (!state.decoderNeedsReset) {
+      return null;
+    }
+
+    // Check abort state before retry
+    if (state.generationAborted) {
+      return null;
+    }
+  }
+
+  logger.warn(`Failed to decode frame at ${targetTimeUs}µs after ${maxRetries + 1} attempts`);
+  return null;
+}
+
+/**
+ * Internal: Single attempt to decode a frame at target time.
+ */
+async function attemptDecodeFrame(targetTimeUs: number): Promise<VideoFrame | null> {
   if (!state.decoder || state.decoder.state !== 'configured') {
     return null;
   }
@@ -422,6 +567,7 @@ async function decodeFrameAtTime(targetTimeUs: number): Promise<VideoFrame | nul
   // Only reset if decoder is in a bad state (error occurred previously)
   // After flush(), we must start from keyframe anyway, but don't need full reset
   if (state.decoderNeedsReset) {
+    logger.debug('Resetting decoder before decode attempt');
     state.decoder.reset();
     state.decoder.configure({
       codec: state.codec,
@@ -474,8 +620,14 @@ async function decodeFrameAtTime(targetTimeUs: number): Promise<VideoFrame | nul
       return null;
     }
 
-    // Flush to process all queued chunks
-    await state.decoder.flush();
+    // Flush to process all queued chunks (with timeout to prevent hanging)
+    logger.debug(`Flushing decoder at ${targetTimeUs}µs...`);
+    await withTimeout(
+      state.decoder.flush(),
+      SPRITE_TIMEOUTS.FLUSH_TIMEOUT_MS,
+      'decoder.flush'
+    );
+    logger.debug(`Flush complete, collected ${collectedFrames.length} frames`);
 
     // Return the last frame (closest to target time)
     if (collectedFrames.length > 0) {

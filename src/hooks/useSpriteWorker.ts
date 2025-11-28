@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import type { SpriteInitData } from '../types/editor';
 import type { SpriteWorkerCommand, SpriteWorkerResponse } from '../worker/spriteTypes';
+import { getDeviceTier } from '../worker/spriteTypes';
 import { SpriteCache, getOptimalBudget } from '../utils/spriteCache';
 import { TIME } from '../constants';
 import { logger } from '../utils/logger';
@@ -11,20 +12,27 @@ import SpriteWorkerModule from '../worker/SpriteWorker?worker';
 const { MICROSECONDS_PER_SECOND } = TIME;
 
 /**
- * Calculate adaptive sprite interval based on video duration.
- * Pure function - no need to be inside the hook.
+ * Calculate adaptive sprite interval based on video duration AND device tier.
+ * Low-end devices get 2x interval (fewer sprites) for better reliability.
  */
 function calculateInterval(durationSeconds: number): number {
-  // For short videos (<2 min): 1 sprite per second
-  // For medium videos (2-10 min): 1 sprite per 2 seconds
-  // For longer videos: 1 sprite per 5 seconds
+  // Base intervals
+  let baseInterval: number;
   if (durationSeconds < 120) {
-    return MICROSECONDS_PER_SECOND; // 1 second in microseconds
+    baseInterval = MICROSECONDS_PER_SECOND; // 1 second
+  } else if (durationSeconds < 600) {
+    baseInterval = 2 * MICROSECONDS_PER_SECOND; // 2 seconds
+  } else {
+    baseInterval = 5 * MICROSECONDS_PER_SECOND; // 5 seconds
   }
-  if (durationSeconds < 600) {
-    return 2 * MICROSECONDS_PER_SECOND; // 2 seconds
+
+  // Low-end devices get 2x interval (fewer sprites for reliability)
+  const tier = getDeviceTier();
+  if (tier === 'low') {
+    return baseInterval * 2;
   }
-  return 5 * MICROSECONDS_PER_SECOND; // 5 seconds
+
+  return baseInterval;
 }
 
 export interface SpriteData {
@@ -40,6 +48,10 @@ interface UseSpriteWorkerReturn {
   sprites: SpriteData[];
   isGenerating: boolean;
   progress: { generated: number; total: number } | null;
+  /** Last error message (null if no error) */
+  error: string | null;
+  /** True if generation appears stuck (no progress for 15s) */
+  isStuck: boolean;
   generateSprites: (intervalUs?: number) => void;
   clear: () => void;
   /** Notify worker of viewport change for progressive loading */
@@ -55,9 +67,12 @@ export function useSpriteWorker(
 ): UseSpriteWorkerReturn {
   const workerRef = useRef<Worker | null>(null);
   const cacheRef = useRef<SpriteCache | null>(null);
+  const lastProgressTimeRef = useRef<number>(Date.now());
   const [sprites, setSprites] = useState<SpriteData[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [progress, setProgress] = useState<{ generated: number; total: number } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [isStuck, setIsStuck] = useState(false);
 
   // Initialize cache on mount
   useEffect(() => {
@@ -67,6 +82,26 @@ export function useSpriteWorker(
       cacheRef.current = null;
     };
   }, []);
+
+  // Watchdog timer to detect stuck generation (no progress for 15 seconds)
+  useEffect(() => {
+    if (!isGenerating) {
+      setIsStuck(false);
+      return;
+    }
+
+    const watchdogInterval = setInterval(() => {
+      const now = Date.now();
+      const timeSinceProgress = now - lastProgressTimeRef.current;
+      // 15 seconds with no progress = stuck
+      if (timeSinceProgress > 15000) {
+        logger.warn('Sprite generation appears stuck (no progress for 15s)');
+        setIsStuck(true);
+      }
+    }, 5000); // Check every 5 seconds
+
+    return () => clearInterval(watchdogInterval);
+  }, [isGenerating]);
 
   // Initialize worker
   useEffect(() => {
@@ -94,19 +129,36 @@ export function useSpriteWorker(
         case 'PROGRESS': {
           const { generated, total } = e.data.payload;
           setProgress({ generated, total });
+          // Update watchdog timestamp on progress
+          lastProgressTimeRef.current = Date.now();
+          setIsStuck(false);
           break;
         }
 
         case 'GENERATION_COMPLETE': {
           setIsGenerating(false);
           setProgress(null);
+          setError(null);
+          setIsStuck(false);
           break;
         }
 
         case 'ERROR': {
-          logger.error('useSpriteWorker Error:', e.data.payload.message);
-          setIsGenerating(false);
-          setProgress(null);
+          const { message, recoverable } = e.data.payload;
+          logger.error('useSpriteWorker Error:', message, { recoverable });
+
+          if (recoverable) {
+            // For recoverable errors, show briefly but let generation continue
+            logger.warn('Recoverable sprite error, generation continuing:', message);
+            setError(message);
+            // Clear error message after 3 seconds
+            setTimeout(() => setError(null), 3000);
+          } else {
+            // Fatal error - stop generation
+            setIsGenerating(false);
+            setProgress(null);
+            setError(message);
+          }
           break;
         }
       }
@@ -134,9 +186,12 @@ export function useSpriteWorker(
     (intervalUs?: number) => {
       if (!workerRef.current || !sampleData) return;
 
-      // Clear existing sprites
+      // Clear existing sprites and reset state
       cacheRef.current?.clear();
       setSprites([]);
+      setError(null);
+      setIsStuck(false);
+      lastProgressTimeRef.current = Date.now();
 
       const interval = intervalUs ?? calculateInterval(duration);
 
@@ -187,6 +242,11 @@ export function useSpriteWorker(
         const durationUs = duration * MICROSECONDS_PER_SECOND;
         const totalSprites = Math.ceil(durationUs / interval);
 
+        // Reset watchdog state
+        lastProgressTimeRef.current = Date.now();
+        setError(null);
+        setIsStuck(false);
+
         setIsGenerating(true);
         setProgress({ generated: 0, total: totalSprites });
 
@@ -207,6 +267,8 @@ export function useSpriteWorker(
     sprites,
     isGenerating,
     progress,
+    error,
+    isStuck,
     generateSprites,
     clear,
     setVisibleRange,

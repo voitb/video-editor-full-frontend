@@ -1,50 +1,63 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { getOptimalBudget } from './spriteCache';
+import { resetDeviceCapabilitiesCache } from './deviceDetection';
 
 // Mock navigator.deviceMemory for testing
-const mockNavigator = (deviceMemory: number | undefined) => {
+const mockNavigator = (deviceMemory: number | undefined, hardwareConcurrency = 8) => {
   Object.defineProperty(global, 'navigator', {
-    value: { deviceMemory },
+    value: {
+      deviceMemory,
+      hardwareConcurrency,
+      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
+    },
     writable: true,
+    configurable: true,
   });
 };
 
 describe('spriteCache utilities', () => {
   describe('getOptimalBudget', () => {
     beforeEach(() => {
-      // Reset navigator mock before each test
+      // Reset cache AND navigator mock before each test
+      resetDeviceCapabilitiesCache();
       mockNavigator(undefined);
     });
 
     it('returns 10MB for low-end devices (<=2GB RAM)', () => {
+      resetDeviceCapabilitiesCache();
       mockNavigator(2);
       expect(getOptimalBudget()).toBe(10 * 1024 * 1024);
 
+      resetDeviceCapabilitiesCache();
       mockNavigator(1);
       expect(getOptimalBudget()).toBe(10 * 1024 * 1024);
     });
 
     it('returns 25MB for mid-range devices (<=4GB RAM)', () => {
+      resetDeviceCapabilitiesCache();
       mockNavigator(4);
       expect(getOptimalBudget()).toBe(25 * 1024 * 1024);
 
+      resetDeviceCapabilitiesCache();
       mockNavigator(3);
       expect(getOptimalBudget()).toBe(25 * 1024 * 1024);
     });
 
     it('returns 50MB for high-end devices (>4GB RAM)', () => {
+      resetDeviceCapabilitiesCache();
       mockNavigator(8);
       expect(getOptimalBudget()).toBe(50 * 1024 * 1024);
 
+      resetDeviceCapabilitiesCache();
       mockNavigator(16);
       expect(getOptimalBudget()).toBe(50 * 1024 * 1024);
     });
 
-    it('defaults to 50MB when deviceMemory is undefined', () => {
+    it('defaults to 25MB when deviceMemory is undefined', () => {
+      resetDeviceCapabilitiesCache();
       mockNavigator(undefined);
-      // When deviceMemory is undefined, defaults to 4GB which gives 25MB
-      // Actually looking at the code: memory = nav.deviceMemory ?? 4
-      // So undefined defaults to 4, which returns 25MB
+      // When deviceMemory is undefined, the estimateMemoryFromUA falls back
+      // which typically returns 4GB, resulting in 25MB budget
       expect(getOptimalBudget()).toBe(25 * 1024 * 1024);
     });
   });

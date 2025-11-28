@@ -16,7 +16,7 @@ interface NavigatorWithDeviceMemory extends Navigator {
 /**
  * Detect device tier (works in both main thread and workers).
  */
-function getDeviceTier(): DeviceTier {
+export function getDeviceTier(): DeviceTier {
   // Use try-catch for worker compatibility
   try {
     const nav = navigator as NavigatorWithDeviceMemory;
@@ -45,15 +45,29 @@ function getDeviceTier(): DeviceTier {
 // SPRITE CONFIGURATION
 // ============================================================================
 
-// Resolution config per device tier
+// Pixel budget per device tier (maintains same total pixels regardless of aspect ratio)
+const PIXEL_BUDGET_BY_TIER: Record<DeviceTier, number> = {
+  low: 96 * 54,      // ~5,184 pixels - reduced for low-end reliability
+  medium: 160 * 90,  // ~14,400 pixels
+  high: 160 * 90,    // ~14,400 pixels
+};
+
+// Resolution config per device tier (legacy - used when video dimensions unknown)
 const RESOLUTION_BY_TIER: Record<DeviceTier, { width: number; height: number }> = {
-  low: { width: 128, height: 72 },    // 2x smaller for low-end
+  low: { width: 96, height: 54 },     // Reduced for low-end reliability
   medium: { width: 160, height: 90 }, // Standard
   high: { width: 160, height: 90 },   // Standard (could go higher if needed)
 };
 
 // Cached config (computed once per session)
 let cachedSpriteConfig: ReturnType<typeof createSpriteConfig> | null = null;
+
+// Cached aspect-aware config (keyed by video dimensions)
+let cachedAspectConfig: {
+  videoWidth: number;
+  videoHeight: number;
+  config: ReturnType<typeof createSpriteConfig>;
+} | null = null;
 
 /**
  * Create sprite config with given dimensions.
@@ -79,6 +93,7 @@ function createSpriteConfig(thumbnailWidth: number, thumbnailHeight: number) {
 /**
  * Get adaptive sprite configuration based on device capabilities.
  * Results are cached for the session.
+ * @deprecated Use getAspectAwareSpriteConfig when video dimensions are available
  */
 export function getSpriteConfig() {
   if (cachedSpriteConfig) {
@@ -90,6 +105,79 @@ export function getSpriteConfig() {
   cachedSpriteConfig = createSpriteConfig(resolution.width, resolution.height);
   return cachedSpriteConfig;
 }
+
+/**
+ * Calculate thumbnail dimensions that preserve video aspect ratio.
+ * Uses a pixel budget approach to maintain consistent memory usage.
+ */
+export function getAspectAwareDimensions(
+  videoWidth: number,
+  videoHeight: number
+): { width: number; height: number } {
+  const tier = getDeviceTier();
+  const pixelBudget = PIXEL_BUDGET_BY_TIER[tier];
+  const aspectRatio = videoWidth / videoHeight;
+
+  // Calculate dimensions that fit within pixel budget while preserving aspect ratio
+  // height = sqrt(pixelBudget / aspectRatio)
+  // width = height * aspectRatio
+  const height = Math.round(Math.sqrt(pixelBudget / aspectRatio));
+  const width = Math.round(height * aspectRatio);
+
+  // Ensure minimum dimensions (at least 48px on smallest side)
+  const minDimension = 48;
+  if (width < minDimension || height < minDimension) {
+    if (aspectRatio >= 1) {
+      // Wider than tall
+      return { width: Math.round(minDimension * aspectRatio), height: minDimension };
+    } else {
+      // Taller than wide
+      return { width: minDimension, height: Math.round(minDimension / aspectRatio) };
+    }
+  }
+
+  return { width, height };
+}
+
+/**
+ * Get sprite configuration with aspect-ratio-aware dimensions.
+ * Caches result for same video dimensions.
+ */
+export function getAspectAwareSpriteConfig(videoWidth: number, videoHeight: number) {
+  // Return cached config if video dimensions match
+  if (
+    cachedAspectConfig &&
+    cachedAspectConfig.videoWidth === videoWidth &&
+    cachedAspectConfig.videoHeight === videoHeight
+  ) {
+    return cachedAspectConfig.config;
+  }
+
+  const dimensions = getAspectAwareDimensions(videoWidth, videoHeight);
+  const config = createSpriteConfig(dimensions.width, dimensions.height);
+
+  // Cache the result
+  cachedAspectConfig = {
+    videoWidth,
+    videoHeight,
+    config,
+  };
+
+  return config;
+}
+
+// ============================================================================
+// TIMEOUT CONFIGURATION
+// ============================================================================
+
+export const SPRITE_TIMEOUTS = {
+  /** Decoder flush timeout in milliseconds (10 seconds - moderate) */
+  FLUSH_TIMEOUT_MS: 10000,
+  /** Single frame decode timeout in milliseconds */
+  FRAME_DECODE_TIMEOUT_MS: 5000,
+  /** Maximum retries for decoder operations */
+  MAX_RETRIES: 2,
+} as const;
 
 // Static config for backward compatibility (uses standard resolution)
 export const SPRITE_CONFIG = {
@@ -209,6 +297,8 @@ export type SpriteWorkerResponse =
       type: 'ERROR';
       payload: {
         message: string;
+        /** If true, operation can be retried. If false, this is a fatal error. */
+        recoverable?: boolean;
       };
     };
 
