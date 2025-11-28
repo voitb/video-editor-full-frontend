@@ -1,4 +1,5 @@
 import type { SpriteMetadata } from '../worker/spriteTypes';
+import { getOptimalCacheBudget, getSpriteBlobFormat, isWebPSupported } from './deviceDetection';
 
 // ============================================================================
 // SPRITE CACHE
@@ -177,7 +178,8 @@ export class SpriteCache {
   }
 
   /**
-   * Convert ImageBitmap to blob URL for CSS usage
+   * Convert ImageBitmap to blob URL for CSS usage.
+   * Uses WebP on low/medium devices for 30-50% smaller file sizes.
    */
   private async bitmapToBlobUrl(bitmap: ImageBitmap): Promise<string> {
     // Create an OffscreenCanvas to draw the bitmap
@@ -190,9 +192,16 @@ export class SpriteCache {
 
     ctx.drawImage(bitmap, 0, 0);
 
+    // Use WebP on low/medium devices for smaller cache footprint
+    const preferredFormat = getSpriteBlobFormat();
+    const useWebP = preferredFormat === 'webp' && isWebPSupported();
+
     // Convert to blob with error handling
     try {
-      const blob = await canvas.convertToBlob({ type: 'image/png' });
+      const blob = await canvas.convertToBlob({
+        type: useWebP ? 'image/webp' : 'image/png',
+        quality: useWebP ? 0.85 : undefined, // 85% quality is visually lossless for thumbnails
+      });
       return URL.createObjectURL(blob);
     } catch (error) {
       throw new Error(`Failed to convert bitmap to blob: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -204,24 +213,10 @@ export class SpriteCache {
 // DEVICE-ADAPTIVE BUDGET
 // ============================================================================
 
-// Type extension for Navigator with deviceMemory (Device Memory API)
-interface NavigatorWithDeviceMemory extends Navigator {
-  deviceMemory?: number;
-}
-
 /**
- * Calculate optimal memory budget based on device capabilities
+ * Calculate optimal memory budget based on device capabilities.
+ * Delegates to deviceDetection for consistent device tier handling.
  */
 export function getOptimalBudget(): number {
-  // Use deviceMemory API if available (Chrome/Edge only)
-  const nav = navigator as NavigatorWithDeviceMemory;
-  const memory = nav.deviceMemory ?? 4; // Default to 4GB if not available
-
-  if (memory <= 2) {
-    return 10 * 1024 * 1024; // 10MB for low-end devices
-  }
-  if (memory <= 4) {
-    return 25 * 1024 * 1024; // 25MB for mid-range
-  }
-  return 50 * 1024 * 1024; // 50MB for high-end
+  return getOptimalCacheBudget();
 }

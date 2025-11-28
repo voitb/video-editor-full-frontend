@@ -1,7 +1,7 @@
-import { useMemo } from 'react';
+import { useMemo, useEffect, useRef } from 'react';
 import type { SpriteData } from '../hooks/useSpriteWorker';
 import type { TimelineViewport } from '../types/editor';
-import { SPRITE_CONFIG } from '../worker/spriteTypes';
+import { getSpriteConfig } from '../worker/spriteTypes';
 import { TIME } from '../constants';
 
 const { MICROSECONDS_PER_SECOND } = TIME;
@@ -12,6 +12,8 @@ interface TimelineSpritesProps {
   isGenerating: boolean;
   progress: { generated: number; total: number } | null;
   viewport: TimelineViewport;
+  /** Callback when visible range changes (for progressive loading) */
+  onVisibleRangeChange?: (startTimeUs: number, endTimeUs: number) => void;
 }
 
 export function TimelineSprites({
@@ -20,10 +22,33 @@ export function TimelineSprites({
   isGenerating,
   progress,
   viewport,
+  onVisibleRangeChange,
 }: TimelineSpritesProps) {
   // Calculate visible duration from viewport
   const visibleDurationUs = viewport.endTimeUs - viewport.startTimeUs;
   const durationUs = duration * MICROSECONDS_PER_SECOND;
+
+  // Track last notified range to avoid excessive callbacks
+  const lastNotifiedRangeRef = useRef<{ start: number; end: number } | null>(null);
+
+  // Notify parent when viewport changes (for progressive loading)
+  useEffect(() => {
+    if (!onVisibleRangeChange) return;
+
+    const lastRange = lastNotifiedRangeRef.current;
+    const significantChange =
+      !lastRange ||
+      Math.abs(lastRange.start - viewport.startTimeUs) > MICROSECONDS_PER_SECOND ||
+      Math.abs(lastRange.end - viewport.endTimeUs) > MICROSECONDS_PER_SECOND;
+
+    if (significantChange) {
+      lastNotifiedRangeRef.current = {
+        start: viewport.startTimeUs,
+        end: viewport.endTimeUs,
+      };
+      onVisibleRangeChange(viewport.startTimeUs, viewport.endTimeUs);
+    }
+  }, [viewport.startTimeUs, viewport.endTimeUs, onVisibleRangeChange]);
 
   // Calculate sprite positions relative to viewport with culling
   const spriteElements = useMemo(() => {
@@ -80,7 +105,7 @@ export function TimelineSprites({
             style={{
               backgroundImage: `url(${sprite.blobUrl})`,
               backgroundPosition: `-${sprite.x}px -${sprite.y}px`,
-              backgroundSize: `${SPRITE_CONFIG.sheetWidth}px ${SPRITE_CONFIG.sheetHeight}px`,
+              backgroundSize: `${getSpriteConfig().sheetWidth}px ${getSpriteConfig().sheetHeight}px`,
             }}
           />
         </div>

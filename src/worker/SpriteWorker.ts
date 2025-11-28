@@ -1,5 +1,5 @@
 import {
-  SPRITE_CONFIG,
+  getSpriteConfig,
   type SpriteWorkerCommand,
   type SpriteWorkerResponse,
   type TransferableSample,
@@ -16,6 +16,11 @@ const logger = createWorkerLogger('SpriteWorker');
 // STATE
 // ============================================================================
 
+interface GeneratedRange {
+  start: number;
+  end: number;
+}
+
 interface SpriteWorkerState {
   samples: TransferableSample[];
   keyframeIndices: number[];
@@ -27,6 +32,13 @@ interface SpriteWorkerState {
   isInitialized: boolean;
   isGenerating: boolean;
   generationAborted: boolean;
+  // Decoder needs reset after error
+  decoderNeedsReset: boolean;
+  // Progressive loading: track generated ranges and current interval
+  generatedRanges: GeneratedRange[];
+  currentIntervalUs: number;
+  visibleRangeStartUs: number;
+  visibleRangeEndUs: number;
 }
 
 const state: SpriteWorkerState = {
@@ -40,6 +52,11 @@ const state: SpriteWorkerState = {
   isInitialized: false,
   isGenerating: false,
   generationAborted: false,
+  decoderNeedsReset: false,
+  generatedRanges: [],
+  currentIntervalUs: MICROSECONDS_PER_SECOND, // Default 1 second
+  visibleRangeStartUs: 0,
+  visibleRangeEndUs: 0,
 };
 
 // ============================================================================
@@ -95,8 +112,19 @@ self.onmessage = async (e: MessageEvent<SpriteWorkerCommand>) => {
     }
 
     case 'SET_VISIBLE_RANGE': {
-      // Future: prioritize visible range for progressive loading
-      // For now, with eager loading and short videos, this is a no-op
+      const { startTimeUs, endTimeUs } = e.data.payload;
+      state.visibleRangeStartUs = startTimeUs;
+      state.visibleRangeEndUs = endTimeUs;
+
+      // Check if this range needs generation (with 2s buffer on each side)
+      const bufferUs = 2 * MICROSECONDS_PER_SECOND;
+      const bufferedStart = Math.max(0, startTimeUs - bufferUs);
+      const bufferedEnd = endTimeUs + bufferUs;
+
+      if (!isRangeFullyGenerated(bufferedStart, bufferedEnd) && !state.isGenerating) {
+        // Generate missing parts of the visible range with high priority
+        await generateSprites(bufferedStart, bufferedEnd, state.currentIntervalUs);
+      }
       break;
     }
 
@@ -109,6 +137,8 @@ self.onmessage = async (e: MessageEvent<SpriteWorkerCommand>) => {
       state.samples = [];
       state.keyframeIndices = [];
       state.isInitialized = false;
+      state.generatedRanges = [];
+      state.decoderNeedsReset = false;
       break;
     }
   }
@@ -128,6 +158,12 @@ async function generateSprites(
     return;
   }
 
+  // Check if this range is already fully generated
+  if (isRangeFullyGenerated(startTimeUs, endTimeUs)) {
+    postResponse({ type: 'GENERATION_COMPLETE' });
+    return;
+  }
+
   if (state.isGenerating) {
     // Abort current generation
     state.generationAborted = true;
@@ -137,15 +173,21 @@ async function generateSprites(
 
   state.isGenerating = true;
   state.generationAborted = false;
+  state.currentIntervalUs = intervalUs; // Store for SET_VISIBLE_RANGE
 
   try {
-    // Calculate timestamps for thumbnails
+    // Calculate timestamps for thumbnails, skipping already-generated ones
     const timestamps: number[] = [];
     for (let t = startTimeUs; t <= endTimeUs; t += intervalUs) {
-      timestamps.push(t);
+      // Skip timestamps that are already in a generated range
+      if (!isRangeFullyGenerated(t, t + 1)) {
+        timestamps.push(t);
+      }
     }
 
     if (timestamps.length === 0) {
+      // All timestamps already generated, just mark the range
+      addGeneratedRange(startTimeUs, endTimeUs);
       postResponse({ type: 'GENERATION_COMPLETE' });
       return;
     }
@@ -157,8 +199,11 @@ async function generateSprites(
       return;
     }
 
+    // Get adaptive sprite config based on device capabilities
+    const spriteConfig = getSpriteConfig();
+
     // Create sprite sheet canvas
-    let sheetCanvas = new OffscreenCanvas(SPRITE_CONFIG.sheetWidth, SPRITE_CONFIG.sheetHeight);
+    let sheetCanvas = new OffscreenCanvas(spriteConfig.sheetWidth, spriteConfig.sheetHeight);
     let ctx = sheetCanvas.getContext('2d')!;
 
     // Fill with dark background
@@ -184,17 +229,17 @@ async function generateSprites(
       try {
         // Create thumbnail using createImageBitmap with hardware-accelerated resize
         const thumbnail = await createImageBitmap(frame, {
-          resizeWidth: SPRITE_CONFIG.thumbnailWidth,
-          resizeHeight: SPRITE_CONFIG.thumbnailHeight,
+          resizeWidth: spriteConfig.thumbnailWidth,
+          resizeHeight: spriteConfig.thumbnailHeight,
           resizeQuality: 'medium',
         });
 
         // Calculate position in sprite sheet
-        const col = spriteIndex % SPRITE_CONFIG.columnsPerSheet;
-        const row = Math.floor(spriteIndex / SPRITE_CONFIG.columnsPerSheet) % SPRITE_CONFIG.rowsPerSheet;
+        const col = spriteIndex % spriteConfig.columnsPerSheet;
+        const row = Math.floor(spriteIndex / spriteConfig.columnsPerSheet) % spriteConfig.rowsPerSheet;
 
-        const x = col * SPRITE_CONFIG.thumbnailWidth;
-        const y = row * SPRITE_CONFIG.thumbnailHeight;
+        const x = col * spriteConfig.thumbnailWidth;
+        const y = row * spriteConfig.thumbnailHeight;
 
         // Draw thumbnail to sprite sheet
         ctx.drawImage(thumbnail, x, y);
@@ -205,8 +250,8 @@ async function generateSprites(
           timeUs: targetTimeUs,
           x,
           y,
-          width: SPRITE_CONFIG.thumbnailWidth,
-          height: SPRITE_CONFIG.thumbnailHeight,
+          width: spriteConfig.thumbnailWidth,
+          height: spriteConfig.thumbnailHeight,
         });
 
         spriteIndex++;
@@ -221,7 +266,7 @@ async function generateSprites(
         });
 
         // Check if sheet is full
-        if (spriteIndex % SPRITE_CONFIG.spritesPerSheet === 0) {
+        if (spriteIndex % spriteConfig.spritesPerSheet === 0) {
           // Send completed sheet
           const bitmap = sheetCanvas.transferToImageBitmap();
           postResponse({
@@ -241,7 +286,7 @@ async function generateSprites(
           currentSprites = [];
 
           // Create new canvas for next sheet
-          sheetCanvas = new OffscreenCanvas(SPRITE_CONFIG.sheetWidth, SPRITE_CONFIG.sheetHeight);
+          sheetCanvas = new OffscreenCanvas(spriteConfig.sheetWidth, spriteConfig.sheetHeight);
           ctx = sheetCanvas.getContext('2d')!;
           ctx.fillStyle = COLORS.SPRITE_BACKGROUND;
           ctx.fillRect(0, 0, sheetCanvas.width, sheetCanvas.height);
@@ -268,6 +313,8 @@ async function generateSprites(
     }
 
     if (!state.generationAborted) {
+      // Track this range as generated for progressive loading
+      addGeneratedRange(startTimeUs, endTimeUs);
       postResponse({ type: 'GENERATION_COMPLETE' });
     }
   } catch (error) {
@@ -306,6 +353,9 @@ async function initDecoder(): Promise<void> {
   }
   collectedFrames = [];
 
+  // Reset decoder state tracking
+  state.decoderNeedsReset = false;
+
   return new Promise((resolve) => {
     state.decoder = new VideoDecoder({
       output: (frame) => {
@@ -322,6 +372,8 @@ async function initDecoder(): Promise<void> {
       codedWidth: state.videoWidth,
       codedHeight: state.videoHeight,
       description: state.codecDescription ?? undefined,
+      // Optimize for latency: minimize decode queue depth for faster frame output
+      optimizeForLatency: true,
     });
 
     resolve();
@@ -335,8 +387,11 @@ let pendingFrame: VideoFrame | null = null;
 let collectedFrames: VideoFrame[] = [];
 
 /**
- * Decode the exact frame at a target time by decoding from the previous keyframe
- * through all delta frames up to the target.
+ * Decode the exact frame at a target time.
+ *
+ * OPTIMIZATION: Reuses decoder without reset() when possible.
+ * After flush(), decoder requires a keyframe, so we always start from keyframe,
+ * but we avoid the expensive reset()+configure() cycle when the decoder is healthy.
  */
 async function decodeFrameAtTime(targetTimeUs: number): Promise<VideoFrame | null> {
   if (!state.decoder || state.decoder.state !== 'configured') {
@@ -355,30 +410,52 @@ async function decodeFrameAtTime(targetTimeUs: number): Promise<VideoFrame | nul
     targetSampleIndex = state.samples.length - 1;
   }
 
-  // Find previous keyframe
+  // Find previous keyframe for this target
   const keyframeIndex = findPreviousKeyframe(targetSampleIndex);
 
-  // Clear any pending frames
+  // Clear any pending frames from previous decode
   for (const frame of collectedFrames) {
     frame.close();
   }
   collectedFrames = [];
 
-  // Reset decoder to clear any previous state, then reconfigure
-  // Note: At this point decoder.state is 'configured' (checked above)
-  state.decoder.reset();
-  state.decoder.configure({
-    codec: state.codec,
-    codedWidth: state.videoWidth,
-    codedHeight: state.videoHeight,
-    description: state.codecDescription ?? undefined,
-  });
+  // Only reset if decoder is in a bad state (error occurred previously)
+  // After flush(), we must start from keyframe anyway, but don't need full reset
+  if (state.decoderNeedsReset) {
+    state.decoder.reset();
+    state.decoder.configure({
+      codec: state.codec,
+      codedWidth: state.videoWidth,
+      codedHeight: state.videoHeight,
+      description: state.codecDescription ?? undefined,
+      optimizeForLatency: true,
+    });
+    state.decoderNeedsReset = false;
+  }
+
+  // Always start from keyframe (required after flush)
+  const startIndex = keyframeIndex;
 
   try {
-    // Queue all samples from keyframe to target (without flushing between)
-    for (let i = keyframeIndex; i <= targetSampleIndex; i++) {
+    // Check if generation was aborted before starting
+    if (state.generationAborted) {
+      return null;
+    }
+
+    // Queue samples from keyframe to target
+    for (let i = startIndex; i <= targetSampleIndex; i++) {
+      // Check abort state during long loops
+      if (state.generationAborted) {
+        return null;
+      }
+
       const sample = state.samples[i];
       if (!sample) continue;
+
+      // Check decoder is still valid before decode
+      if (!state.decoder || state.decoder.state !== 'configured') {
+        return null;
+      }
 
       const isKeyframe = state.keyframeIndices.includes(i);
 
@@ -392,7 +469,12 @@ async function decodeFrameAtTime(targetTimeUs: number): Promise<VideoFrame | nul
       state.decoder.decode(chunk);
     }
 
-    // Now flush to process all queued chunks
+    // Check decoder is still valid before flush
+    if (!state.decoder || state.decoder.state !== 'configured' || state.generationAborted) {
+      return null;
+    }
+
+    // Flush to process all queued chunks
     await state.decoder.flush();
 
     // Return the last frame (closest to target time)
@@ -412,7 +494,13 @@ async function decodeFrameAtTime(targetTimeUs: number): Promise<VideoFrame | nul
 
     return null;
   } catch (e) {
-    logger.error('Decode error:', e);
+    // AbortError is expected during reset/close - not a real error
+    const isAbortError = e instanceof Error && e.name === 'AbortError';
+    if (!isAbortError) {
+      logger.error('Decode error:', e);
+    }
+    // Mark decoder as needing reset on next call
+    state.decoderNeedsReset = true;
     // Clean up any collected frames on error
     for (const frame of collectedFrames) {
       frame.close();
@@ -420,6 +508,78 @@ async function decodeFrameAtTime(targetTimeUs: number): Promise<VideoFrame | nul
     collectedFrames = [];
     return null;
   }
+}
+
+// ============================================================================
+// RANGE TRACKING UTILITIES
+// ============================================================================
+
+/**
+ * Check if a range is fully covered by generated ranges.
+ */
+function isRangeFullyGenerated(startUs: number, endUs: number): boolean {
+  // Sort ranges by start time
+  const sortedRanges = [...state.generatedRanges].sort((a, b) => a.start - b.start);
+
+  let currentPos = startUs;
+
+  for (const range of sortedRanges) {
+    // If there's a gap before this range, the requested range is not fully covered
+    if (range.start > currentPos) {
+      return false;
+    }
+
+    // Extend current position if this range covers it
+    if (range.end > currentPos) {
+      currentPos = range.end;
+    }
+
+    // If we've covered the entire requested range, we're done
+    if (currentPos >= endUs) {
+      return true;
+    }
+  }
+
+  return currentPos >= endUs;
+}
+
+/**
+ * Add a generated range and merge overlapping ranges.
+ */
+function addGeneratedRange(startUs: number, endUs: number): void {
+  state.generatedRanges.push({ start: startUs, end: endUs });
+  mergeOverlappingRanges();
+}
+
+/**
+ * Merge overlapping ranges to keep the list efficient.
+ */
+function mergeOverlappingRanges(): void {
+  if (state.generatedRanges.length <= 1) return;
+
+  // Sort by start time
+  state.generatedRanges.sort((a, b) => a.start - b.start);
+
+  const merged: GeneratedRange[] = [];
+  let current = state.generatedRanges[0];
+
+  if (!current) return;
+
+  for (let i = 1; i < state.generatedRanges.length; i++) {
+    const next = state.generatedRanges[i];
+    if (!next) continue;
+
+    // If ranges overlap or are adjacent, merge them
+    if (current.end >= next.start) {
+      current.end = Math.max(current.end, next.end);
+    } else {
+      merged.push(current);
+      current = next;
+    }
+  }
+
+  merged.push(current);
+  state.generatedRanges = merged;
 }
 
 // ============================================================================

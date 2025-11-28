@@ -42,6 +42,8 @@ interface UseSpriteWorkerReturn {
   progress: { generated: number; total: number } | null;
   generateSprites: (intervalUs?: number) => void;
   clear: () => void;
+  /** Notify worker of viewport change for progressive loading */
+  setVisibleRange: (startTimeUs: number, endTimeUs: number) => void;
 }
 
 /**
@@ -160,17 +162,46 @@ export function useSpriteWorker(
     setProgress(null);
   }, []);
 
-  // Auto-generate sprites when sample data becomes available (eager loading)
+  // Notify worker of viewport change for progressive loading
+  const setVisibleRange = useCallback(
+    (startTimeUs: number, endTimeUs: number) => {
+      if (!workerRef.current) return;
+
+      workerRef.current.postMessage({
+        type: 'SET_VISIBLE_RANGE',
+        payload: { startTimeUs, endTimeUs },
+      } as SpriteWorkerCommand);
+    },
+    []
+  );
+
+  // Auto-generate sprites when sample data becomes available
+  // Uses GENERATE_ALL_SPRITES which streams results as sprite sheets complete
   useEffect(() => {
     if (sampleData && duration > 0 && sprites.length === 0 && !isGenerating) {
       // Small delay to ensure worker is initialized
       const timer = setTimeout(() => {
-        generateSprites();
+        if (!workerRef.current) return;
+
+        const interval = calculateInterval(duration);
+        const durationUs = duration * MICROSECONDS_PER_SECOND;
+        const totalSprites = Math.ceil(durationUs / interval);
+
+        setIsGenerating(true);
+        setProgress({ generated: 0, total: totalSprites });
+
+        // Generate all sprites - worker streams results as sheets complete
+        // This provides fast perceived load since first sheet (covering ~1.7s at 1fps)
+        // is sent as soon as it's ready
+        workerRef.current.postMessage({
+          type: 'GENERATE_ALL_SPRITES',
+          payload: { intervalUs: interval },
+        } as SpriteWorkerCommand);
       }, 100);
       return () => clearTimeout(timer);
     }
     return undefined;
-  }, [sampleData, duration, sprites.length, isGenerating, generateSprites]);
+  }, [sampleData, duration, sprites.length, isGenerating]);
 
   return {
     sprites,
@@ -178,5 +209,6 @@ export function useSpriteWorker(
     progress,
     generateSprites,
     clear,
+    setVisibleRange,
   };
 }
