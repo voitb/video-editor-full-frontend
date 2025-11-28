@@ -54,6 +54,11 @@ export function TimelineTrimHandles({
         style={{ left: `calc(${inPercent}% - 6px)` }}
         onMouseDown={onInMouseDown}
         onClick={(e) => e.stopPropagation()}
+        role="slider"
+        aria-label="Trim in-point"
+        aria-valuenow={Math.round(inPercent)}
+        aria-valuemin={0}
+        aria-valuemax={100}
       >
         <div className="absolute -top-5 left-1/2 -translate-x-1/2 text-xs text-green-400 whitespace-nowrap">
           IN
@@ -67,6 +72,11 @@ export function TimelineTrimHandles({
         style={{ left: `calc(${outPercent}% - 6px)` }}
         onMouseDown={onOutMouseDown}
         onClick={(e) => e.stopPropagation()}
+        role="slider"
+        aria-label="Trim out-point"
+        aria-valuenow={Math.round(outPercent)}
+        aria-valuemin={0}
+        aria-valuemax={100}
       >
         <div className="absolute -top-5 left-1/2 -translate-x-1/2 text-xs text-red-400 whitespace-nowrap">
           OUT

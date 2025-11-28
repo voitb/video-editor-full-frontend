@@ -11,6 +11,8 @@ interface State {
 }
 
 export class ErrorBoundary extends Component<Props, State> {
+  private _isMounted = false;
+
   constructor(props: Props) {
     super(props);
     this.state = { hasError: false, error: null };
@@ -21,6 +23,7 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidMount(): void {
+    this._isMounted = true;
     // Handle global errors (including worker errors)
     window.addEventListener('error', this.handleWindowError);
     // Handle unhandled promise rejections
@@ -28,6 +31,7 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   componentWillUnmount(): void {
+    this._isMounted = false;
     window.removeEventListener('error', this.handleWindowError);
     window.removeEventListener('unhandledrejection', this.handlePromiseRejection);
   }
@@ -37,19 +41,15 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   private handleWindowError = (event: ErrorEvent): void => {
-    // Only catch errors that aren't already handled
+    if (!this._isMounted) return;
     if (event.error) {
       logger.error('Window error:', event.error);
-      // Don't show error boundary for recoverable errors
-      // Uncomment the next line to catch all global errors
-      // this.setState({ hasError: true, error: event.error });
     }
   };
 
   private handlePromiseRejection = (event: PromiseRejectionEvent): void => {
+    if (!this._isMounted) return;
     logger.error('Unhandled promise rejection:', event.reason);
-    // Don't show error boundary for promise rejections by default
-    // These are usually recoverable (e.g., failed network requests)
   };
 
   handleReset = (): void => {

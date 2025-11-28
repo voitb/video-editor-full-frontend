@@ -4,6 +4,7 @@ import { WebGLRenderer } from './renderer';
 import type { WorkerCommand, WorkerResponse, TransferableSample } from '../types/editor';
 import { PLAYBACK, TIME } from '../constants';
 import { createWorkerLogger } from '../utils/logger';
+import { findPreviousKeyframe as findPreviousKeyframeUtil } from '../utils/keyframeSearch';
 
 const logger = createWorkerLogger('VideoWorker');
 
@@ -752,45 +753,21 @@ function decodeFrame(sampleIndex: number): void {
   }
 }
 
-// Binary search to find the keyframe at or before the target sample index
+// Wrapper for shared keyframe search utility
 // Returns the index in samples[] (not in keyframeIndices[])
 function findPreviousKeyframe(targetSampleIndex: number): number {
-  const firstKeyframe = state.keyframeIndices[0];
-  if (firstKeyframe === undefined) {
-    logger.warn('findPreviousKeyframe: No keyframes available, defaulting to index 0');
-    return 0;
-  }
-
   // Validate target is within bounds
   if (targetSampleIndex < 0 || targetSampleIndex >= state.samples.length) {
+    const firstKeyframe = state.keyframeIndices[0];
     logger.warn('findPreviousKeyframe: Invalid targetSampleIndex:', targetSampleIndex);
-    return firstKeyframe;
+    return firstKeyframe ?? 0;
   }
 
-  // Binary search for largest keyframe index <= targetSampleIndex
-  let left = 0;
-  let right = state.keyframeIndices.length - 1;
+  const result = findPreviousKeyframeUtil(state.keyframeIndices, targetSampleIndex, state.samples);
 
-  while (left < right) {
-    const mid = Math.ceil((left + right) / 2);
-    const midValue = state.keyframeIndices[mid];
-    if (midValue !== undefined && midValue <= targetSampleIndex) {
-      left = mid;
-    } else {
-      right = mid - 1;
-    }
-  }
-
-  const leftValue = state.keyframeIndices[left];
-  const result = leftValue !== undefined && leftValue <= targetSampleIndex ? leftValue : 0;
-
-  // Validate result is actually a keyframe
-  if (!state.samples[result]?.is_sync) {
-    logger.warn('findPreviousKeyframe: Result is not a sync frame, using first keyframe', {
-      result,
-      is_sync: state.samples[result]?.is_sync,
-    });
-    return firstKeyframe;
+  // Log warning if no keyframes available
+  if (state.keyframeIndices.length === 0) {
+    logger.warn('findPreviousKeyframe: No keyframes available, defaulting to index 0');
   }
 
   return result;

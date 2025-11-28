@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useVideoWorker } from './hooks/useVideoWorker';
 import { useSpriteWorker } from './hooks/useSpriteWorker';
 import { useTimelineViewport } from './hooks/useTimelineViewport';
@@ -11,6 +11,7 @@ import { VIDEO_PREVIEW, TIME, FILE_VALIDATION } from './constants';
 const { MICROSECONDS_PER_SECOND } = TIME;
 
 function App() {
+  const [fileError, setFileError] = useState<string | null>(null);
   const { state, sampleData, initCanvas, loadFile, seek, play, pause, setTrim, requestSampleData } =
     useVideoWorker();
 
@@ -50,16 +51,19 @@ function App() {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    // Clear previous error
+    setFileError(null);
+
     // Validate file size
     if (file.size > FILE_VALIDATION.MAX_FILE_SIZE) {
-      alert(`File is too large. Maximum size is ${FILE_VALIDATION.MAX_FILE_SIZE / 1024 / 1024}MB.`);
+      setFileError(`File is too large. Maximum size is ${FILE_VALIDATION.MAX_FILE_SIZE / 1024 / 1024}MB.`);
       e.target.value = ''; // Reset input
       return;
     }
 
     // Validate file type
     if (!file.type.startsWith('video/')) {
-      alert('Please select a valid video file.');
+      setFileError('Please select a valid video file.');
       e.target.value = ''; // Reset input
       return;
     }
@@ -97,6 +101,11 @@ function App() {
                 hover:file:bg-blue-700
                 file:cursor-pointer"
             />
+            {fileError && (
+              <div className="mt-2 text-sm text-red-400" role="alert">
+                {fileError}
+              </div>
+            )}
           </div>
 
           {/* Playback Controls */}

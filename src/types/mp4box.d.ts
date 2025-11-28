@@ -4,7 +4,8 @@ declare module 'mp4box' {
     track_id: number;
     timescale: number;
     description_index: number;
-    description: unknown;
+    /** Codec description (e.g., AVCC/HVCC data) */
+    description: Uint8Array | null;
     data: ArrayBuffer;
     size: number;
     alreadyRead?: number;
@@ -42,6 +43,29 @@ declare module 'mp4box' {
     };
   }
 
+  /** Base track info shared by all track types */
+  export interface MP4TrackBase {
+    id: number;
+    created: Date;
+    modified: Date;
+    movie_duration: number;
+    timescale: number;
+    duration: number;
+    bitrate: number;
+    codec: string;
+    language: string;
+    nb_samples: number;
+  }
+
+  /** Audio track specific info */
+  export interface MP4AudioTrack extends MP4TrackBase {
+    audio: {
+      sample_rate: number;
+      channel_count: number;
+      sample_size: number;
+    };
+  }
+
   export interface MP4Info {
     duration: number;
     timescale: number;
@@ -52,9 +76,10 @@ declare module 'mp4box' {
     brands: string[];
     created: Date;
     modified: Date;
-    tracks: unknown[];
+    /** All tracks (video + audio + other) */
+    tracks: (MP4VideoTrack | MP4AudioTrack | MP4TrackBase)[];
     videoTracks: MP4VideoTrack[];
-    audioTracks: unknown[];
+    audioTracks: MP4AudioTrack[];
   }
 
   export interface MP4BoxBuffer extends ArrayBuffer {

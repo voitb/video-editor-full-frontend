@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { logger } from '../utils/logger';
 
 interface VideoPreviewProps {
   onCanvasReady: (canvas: HTMLCanvasElement) => void;
@@ -12,8 +13,13 @@ export function VideoPreview({ onCanvasReady, width = 640, height = 360 }: Video
 
   useEffect(() => {
     if (canvasRef.current && !initializedRef.current) {
-      initializedRef.current = true;
-      onCanvasReady(canvasRef.current);
+      try {
+        initializedRef.current = true;
+        onCanvasReady(canvasRef.current);
+      } catch (error) {
+        logger.error('Failed to initialize canvas:', error);
+        initializedRef.current = false; // Allow retry on next render
+      }
     }
   }, [onCanvasReady]);
 

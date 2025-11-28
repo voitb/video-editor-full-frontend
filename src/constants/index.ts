@@ -59,6 +59,22 @@ export const FILE_VALIDATION = {
   ACCEPTED_TYPES: ['video/mp4', 'video/webm'] as const,
 } as const;
 
+/**
+ * Minimap UI constants
+ */
+export const MINIMAP = {
+  /** Minimum region width percentage for visibility */
+  MIN_REGION_WIDTH_PERCENT: 2,
+} as const;
+
+/**
+ * Color constants (matching Tailwind classes)
+ */
+export const COLORS = {
+  /** Sprite background color - matches Tailwind gray-800 */
+  SPRITE_BACKGROUND: '#1f2937',
+} as const;
+
 // Re-export SPRITE_CONFIG from spriteTypes for convenience
 // (keeping it in spriteTypes.ts since it has computed properties)
 export { SPRITE_CONFIG } from '../worker/spriteTypes';

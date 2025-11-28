@@ -1,5 +1,6 @@
 import { useRef, useCallback, useState, useEffect } from 'react';
 import type { TimelineViewport } from '../types/editor';
+import { MINIMAP } from '../constants';
 
 interface TimelineMinimapProps {
   totalDurationUs: number;
@@ -142,7 +143,7 @@ export function TimelineMinimap({
         }`}
         style={{
           left: `${regionLeftPercent}%`,
-          width: `${Math.max(regionWidthPercent, 2)}%`, // Minimum 2% width for visibility
+          width: `${Math.max(regionWidthPercent, MINIMAP.MIN_REGION_WIDTH_PERCENT)}%`,
         }}
         onMouseDown={handleRegionMouseDown}
         onClick={(e) => e.stopPropagation()}

@@ -16,16 +16,17 @@ export function TimelineZoomControls({
   onZoomToFit,
 }: TimelineZoomControlsProps) {
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex items-center gap-2" role="group" aria-label="Timeline zoom controls">
       <button
         onClick={onZoomOut}
         disabled={!canZoomOut}
         className="px-2 py-0.5 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed rounded text-sm"
         title="Zoom Out"
+        aria-label="Zoom out"
       >
         −
       </button>
-      <span className="min-w-[50px] text-center">
+      <span className="min-w-[50px] text-center" aria-live="polite">
         {Math.round(zoomLevel * 100)}%
       </span>
       <button
@@ -33,6 +34,7 @@ export function TimelineZoomControls({
         disabled={!canZoomIn}
         className="px-2 py-0.5 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed rounded text-sm"
         title="Zoom In"
+        aria-label="Zoom in"
       >
         +
       </button>
@@ -41,6 +43,7 @@ export function TimelineZoomControls({
         disabled={zoomLevel === 1}
         className="px-2 py-0.5 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed rounded text-sm"
         title="Zoom to Fit"
+        aria-label="Fit timeline to view"
       >
         Fit
       </button>

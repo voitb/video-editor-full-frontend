@@ -5,8 +5,9 @@ import {
   type TransferableSample,
   type SpriteMetadata,
 } from './spriteTypes';
-import { TIME } from '../constants';
+import { TIME, COLORS } from '../constants';
 import { createWorkerLogger } from '../utils/logger';
+import { findPreviousKeyframe as findPreviousKeyframeUtil } from '../utils/keyframeSearch';
 
 const { MICROSECONDS_PER_SECOND } = TIME;
 const logger = createWorkerLogger('SpriteWorker');
@@ -161,7 +162,7 @@ async function generateSprites(
     let ctx = sheetCanvas.getContext('2d')!;
 
     // Fill with dark background
-    ctx.fillStyle = '#1f2937';
+    ctx.fillStyle = COLORS.SPRITE_BACKGROUND;
     ctx.fillRect(0, 0, sheetCanvas.width, sheetCanvas.height);
 
     let currentSprites: SpriteMetadata[] = [];
@@ -242,7 +243,7 @@ async function generateSprites(
           // Create new canvas for next sheet
           sheetCanvas = new OffscreenCanvas(SPRITE_CONFIG.sheetWidth, SPRITE_CONFIG.sheetHeight);
           ctx = sheetCanvas.getContext('2d')!;
-          ctx.fillStyle = '#1f2937';
+          ctx.fillStyle = COLORS.SPRITE_BACKGROUND;
           ctx.fillRect(0, 0, sheetCanvas.width, sheetCanvas.height);
         }
       } finally {
@@ -425,23 +426,7 @@ async function decodeFrameAtTime(targetTimeUs: number): Promise<VideoFrame | nul
 // KEYFRAME UTILITIES
 // ============================================================================
 
+// Wrapper for shared keyframe search utility
 function findPreviousKeyframe(targetSampleIndex: number): number {
-  if (state.keyframeIndices.length === 0) return 0;
-
-  // Binary search for largest keyframe index <= targetSampleIndex
-  let left = 0;
-  let right = state.keyframeIndices.length - 1;
-
-  while (left < right) {
-    const mid = Math.ceil((left + right) / 2);
-    const midValue = state.keyframeIndices[mid];
-    if (midValue !== undefined && midValue <= targetSampleIndex) {
-      left = mid;
-    } else {
-      right = mid - 1;
-    }
-  }
-
-  const leftValue = state.keyframeIndices[left];
-  return leftValue !== undefined && leftValue <= targetSampleIndex ? leftValue : 0;
+  return findPreviousKeyframeUtil(state.keyframeIndices, targetSampleIndex);
 }
