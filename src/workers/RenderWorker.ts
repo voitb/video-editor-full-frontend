@@ -548,9 +548,9 @@ function renderFrame(timelineTimeUs: number): void {
     for (const { frame } of layers) {
       frame.close();
     }
-  } else {
-    compositor.clear();
   }
+  // When no frames available, retain the last rendered frame on screen
+  // (removing compositor.clear() fixes flickering during playback)
 }
 
 function getFrameAtTime(sourceState: SourceDecodeState, targetTimeUs: number): VideoFrame | null {
