@@ -197,6 +197,17 @@ export class Engine {
     const source = new HlsSource(url);
     this.composition.registerSource(source);
 
+    // CRITICAL: Register source with worker IMMEDIATELY before any chunks arrive
+    // This fixes the race condition where chunks were sent before source was registered
+    if (this.worker) {
+      const cmd: RenderWorkerCommand = {
+        type: 'START_SOURCE_STREAM',
+        sourceId: source.id,
+        durationHint: undefined, // Will be updated when playable
+      };
+      this.worker.postMessage(cmd);
+    }
+
     // Listen to source events
     source.on((event) => {
       switch (event.type) {
@@ -210,8 +221,9 @@ export class Engine {
 
         case 'stateChange':
           if (event.state === 'playable') {
-            // Start streaming to worker
-            this.startSourceStream(source);
+            // Source is already registered with worker (done upfront)
+            // Just emit the playable event
+            this.emit({ type: 'sourcePlayable', sourceId: source.id });
           } else if (event.state === 'ready') {
             this.emit({ type: 'sourceReady', sourceId: source.id });
           } else if (event.state === 'error') {
@@ -231,30 +243,6 @@ export class Engine {
     await source.load();
 
     return source;
-  }
-
-  /**
-   * Start streaming a source to the worker
-   */
-  private startSourceStream(source: HlsSource): void {
-    if (!this.worker) return;
-
-    const cmd: RenderWorkerCommand = {
-      type: 'START_SOURCE_STREAM',
-      sourceId: source.id,
-      durationHint: source.durationUs,
-    };
-    this.worker.postMessage(cmd);
-
-    // Send any already-loaded chunks
-    const chunks = source.getChunks();
-    for (let i = 0; i < chunks.length; i++) {
-      const chunk = chunks[i]!;
-      const isLast = i === chunks.length - 1 && source.state === 'ready';
-      this.appendSourceChunk(source.id, chunk, isLast);
-    }
-
-    this.emit({ type: 'sourcePlayable', sourceId: source.id });
   }
 
   /**

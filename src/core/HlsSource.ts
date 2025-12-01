@@ -44,6 +44,7 @@ export class HlsSource extends Source {
   // Progress tracking
   loadedSegments = 0;
   totalSegments = 0;
+  private receivedMediaSegments = 0;
 
   constructor(url: string, options: HlsSourceOptions = {}, id?: string) {
     super(id);
@@ -118,6 +119,7 @@ export class HlsSource extends Source {
       }
 
       this.totalSegments = segments.length;
+      this.receivedMediaSegments = 0;
       logger.info('Starting segment loading', { segments: this.totalSegments, durationUs: this._durationUs });
 
       // Initialize transmux worker
@@ -170,10 +172,16 @@ export class HlsSource extends Source {
           case 'INIT_SEGMENT':
             this.initSegment = event.data;
             this.chunks.push(event.data);
+            // Emit fMP4 init segment to streaming consumers
+            this.emitChunk(event.data, false);
             break;
 
           case 'MEDIA_SEGMENT':
             this.chunks.push(event.data);
+            // Track and emit fMP4 media segments
+            const isLastMedia = this.receivedMediaSegments >= this.totalSegments - 1;
+            this.receivedMediaSegments++;
+            this.emitChunk(event.data, isLastMedia);
             break;
 
           case 'TRANSMUX_PROGRESS':
@@ -233,11 +241,9 @@ export class HlsSource extends Source {
         signal,
       });
 
-      // Emit chunk for streaming consumers
       const isLast = i === segments.length - 1;
-      this.emitChunk(buffer, isLast);
 
-      // Push to transmuxer
+      // Push to transmuxer (transmuxed fMP4 chunks are emitted via worker message handler)
       const cmd: TransmuxWorkerCommand = {
         type: 'PUSH_SEGMENT',
         segment: buffer,
