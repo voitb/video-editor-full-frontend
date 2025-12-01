@@ -56,6 +56,9 @@ function App() {
     removeSource,
     setActiveClips,
     syncToTime,
+    // Streaming source API (progressive HLS)
+    startSourceStream,
+    appendSourceChunk,
   } = useVideoWorker();
 
   // Initialize audio manager for multi-clip audio
@@ -352,7 +355,7 @@ function App() {
     play();
   };
 
-  // HLS URL loading - uses multi-source API for proper compositing
+  // HLS URL loading - uses progressive streaming for fast preview
   const handleHlsLoad = async (url: string) => {
     try {
       setFileError(null);
@@ -377,19 +380,33 @@ function App() {
       });
       recordingAddedRef.current = null;
 
-      // Load HLS - wait for full buffer instead of streaming
+      // Collect chunks for audio/export (we still need the full buffer for those)
+      const collectedChunks: ArrayBuffer[] = [];
+
+      // Load HLS with progressive streaming
       const { buffer } = await loadHlsUrl(url, {
-        onStart: () => {
+        onStart: (manifestDuration) => {
           setSourceType('hls');
+          // Initialize streaming source with duration from manifest
+          startSourceStream(sourceId, manifestDuration);
+        },
+        onChunk: (chunk, isLast) => {
+          // Store chunk for later audio/export use
+          collectedChunks.push(chunk.slice(0));
+          // Stream chunk to video worker for progressive playback
+          appendSourceChunk(sourceId, chunk, isLast);
+        },
+        onPlayable: () => {
+          // Source has enough data to start playback
+          // The VIDEO_WORKER will emit SOURCE_PLAYABLE which triggers track creation
+          // and first frame rendering via the existing useEffect hooks
         },
       });
 
-      // Store buffer for audio/export
+      // Store full buffer for audio/export after streaming complete
       hlsBufferRef.current = buffer.slice(0);
       setPlayableHlsBuffer(hlsBufferRef.current);
 
-      // Load as multi-source - this will trigger SOURCE_READY when done
-      loadSource(sourceId, undefined, buffer.slice(0));
     } catch {
       // Error is handled by useHlsLoader
     }

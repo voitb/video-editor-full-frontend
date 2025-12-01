@@ -357,8 +357,35 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
 
     case 'SET_ACTIVE_CLIPS': {
       const { clips } = e.data.payload;
+      const wasEmpty = state.activeClips.length === 0;
       state.activeClips = clips;
       logger.log('Active clips updated:', clips.length);
+
+      // Render first frame when clips are first set
+      if (wasEmpty && clips.length > 0) {
+        void renderMultiSourceFirstFrame();
+      }
+
+      // Check for pending auto-play
+      if (state.pendingAutoPlay && !state.isPlaying && clips.length > 0) {
+        void startPlayback();
+      }
+      break;
+    }
+
+    // ========================================================================
+    // STREAMING SOURCE COMMANDS (Progressive HLS)
+    // ========================================================================
+
+    case 'START_SOURCE_STREAM': {
+      const { sourceId, durationHint } = e.data.payload;
+      startSourceStream(sourceId, durationHint);
+      break;
+    }
+
+    case 'APPEND_SOURCE_CHUNK': {
+      const { sourceId, chunk, isLast } = e.data.payload;
+      appendSourceChunk(sourceId, chunk, isLast);
       break;
     }
 
@@ -693,12 +720,9 @@ async function loadSource(sourceId: string, file?: File, buffer?: ArrayBuffer): 
         logger.log(`Source ${sourceId} has audio track:`, audioTrackInfo);
       }
 
-      // Extract codec description
-      const entry = source.mp4File?.getTrackById(videoTrack.id)?.mdia?.minf?.stbl?.stsd
-        ?.entries?.[0] as { avcC?: { data: Uint8Array }; hvcC?: { data: Uint8Array } } | undefined;
-      const codecBox = entry?.avcC ?? entry?.hvcC;
-      if (codecBox?.data) {
-        source.codecDescription = new Uint8Array(codecBox.data);
+      // Extract codec description using proper AVCC/HVCC serialization
+      if (source.mp4File) {
+        source.codecDescription = getCodecDescription(source.mp4File, videoTrack.id);
       }
 
       // Configure decoder for this source
@@ -767,6 +791,14 @@ async function loadSource(sourceId: string, file?: File, buffer?: ArrayBuffer): 
       },
     });
 
+    // Render first frame for immediate visual feedback
+    // Small delay to ensure samples are extracted
+    setTimeout(() => {
+      if (source.samples.length > 0) {
+        void renderSourceFirstFrame(source);
+      }
+    }, 100);
+
     // Send audio data if source has audio track
     // AudioContext can decode audio directly from MP4 containers
     if (audioTrackInfo && buffer) {
@@ -799,6 +831,193 @@ async function loadSource(sourceId: string, file?: File, buffer?: ArrayBuffer): 
   }
 }
 
+// ============================================================================
+// STREAMING SOURCE LOADING (Progressive HLS)
+// ============================================================================
+
+// Threshold for emitting SOURCE_PLAYABLE - after this many samples, playback can begin
+const PLAYABLE_SAMPLE_THRESHOLD = 45; // ~1.5 seconds at 30fps for faster preview start
+
+/**
+ * Initialize a source for streaming data.
+ * Called before chunks start arriving.
+ */
+function startSourceStream(sourceId: string, durationHint?: number): void {
+  // Remove existing source if present
+  if (state.sources.has(sourceId)) {
+    removeSource(sourceId);
+  }
+
+  const source = createPerSourceState(sourceId);
+  state.sources.set(sourceId, source);
+
+  // Store duration hint if provided
+  if (durationHint !== undefined && durationHint > 0) {
+    source.durationUs = durationHint * MICROSECONDS_PER_SECOND;
+  }
+
+  logger.log(`startSourceStream: Initialized source ${sourceId} for streaming`);
+
+  // Initialize MP4 demuxer
+  source.mp4File = createFile();
+
+  source.mp4File.onReady = (info: MP4Info) => {
+    const videoTrack = info.tracks.find(
+      (t): t is MP4VideoTrack => t.type === 'video'
+    );
+
+    if (!videoTrack) {
+      logger.error(`No video track found in streaming source: ${sourceId}`);
+      return;
+    }
+
+    source.videoTrackInfo = videoTrack;
+    source.width = videoTrack.video.width;
+    source.height = videoTrack.video.height;
+
+    // Use duration hint if available, otherwise calculate from track info
+    if (source.durationUs === 0 && info.duration > 0 && info.timescale > 0) {
+      source.durationUs = (info.duration / info.timescale) * MICROSECONDS_PER_SECOND;
+    }
+
+    // Extract codec description using proper AVCC/HVCC serialization
+    if (source.mp4File) {
+      source.codecDescription = getCodecDescription(source.mp4File, videoTrack.id);
+    }
+
+    // Configure decoder
+    initializeSourceDecoder(source);
+
+    // Extract samples
+    source.mp4File?.setExtractionOptions(videoTrack.id, null, {
+      nbSamples: Infinity,
+    });
+
+    source.mp4File?.start();
+
+    logger.log(`startSourceStream: Source ${sourceId} mp4 ready`, {
+      width: source.width,
+      height: source.height,
+      durationUs: source.durationUs,
+    });
+  };
+
+  source.mp4File.onSamples = (
+    _trackId: number,
+    _user: unknown,
+    samples: MP4Sample[]
+  ) => {
+    const wasUnderThreshold = source.samples.length < PLAYABLE_SAMPLE_THRESHOLD;
+
+    for (const sample of samples) {
+      source.samples.push(sample);
+      if (sample.is_sync) {
+        source.keyframeIndices.push(source.samples.length - 1);
+      }
+    }
+
+    // Check if we just crossed the playable threshold
+    const isNowPlayable = source.samples.length >= PLAYABLE_SAMPLE_THRESHOLD;
+    if (wasUnderThreshold && isNowPlayable && !source.isReady) {
+      logger.log(`startSourceStream: Source ${sourceId} now playable with ${source.samples.length} samples`);
+
+      // Post SOURCE_PLAYABLE - source can start playback but may still be loading
+      postResponse({
+        type: 'SOURCE_PLAYABLE',
+        payload: {
+          sourceId,
+          duration: source.durationUs / MICROSECONDS_PER_SECOND,
+          width: source.width,
+          height: source.height,
+          loadedSamples: source.samples.length,
+        },
+      });
+
+      // Render first frame
+      setTimeout(() => {
+        if (source.samples.length > 0 && source.decoder?.state === 'configured') {
+          void renderSourceFirstFrame(source);
+        }
+      }, 100);
+    }
+  };
+
+  source.mp4File.onError = (e: string) => {
+    logger.error(`MP4 streaming error for source ${sourceId}:`, e);
+  };
+}
+
+/**
+ * Append a chunk of streaming data to a source.
+ */
+function appendSourceChunk(sourceId: string, chunk: ArrayBuffer, isLast = false): void {
+  const source = state.sources.get(sourceId);
+  if (!source || !source.mp4File) {
+    logger.warn(`appendSourceChunk: Source ${sourceId} not found or not initialized`);
+    return;
+  }
+
+  // Append chunk to mp4box
+  const mp4Chunk = chunk as ArrayBuffer & { fileStart: number };
+  mp4Chunk.fileStart = source.streamOffset;
+  source.streamOffset += chunk.byteLength;
+
+  source.mp4File.appendBuffer(mp4Chunk);
+  source.mp4File.flush();
+
+  // Check if we should resume playback after buffering
+  if (state.pendingAutoPlay && !state.isPlaying && state.activeClips.length > 0) {
+    // Check if all sources now have enough data
+    let canResume = true;
+    const bufferThresholdUs = 1_000_000; // 1 second buffer needed to resume
+
+    for (const clip of state.activeClips) {
+      const clipSource = state.sources.get(clip.sourceId);
+      if (!clipSource) continue;
+
+      const sourceTimeUs = state.lastRenderedTime - clip.startTimeUs + clip.sourceStartUs;
+      const maxPlayableUs = getSourceMaxPlayableTimeUs(clipSource);
+
+      if (sourceTimeUs + bufferThresholdUs >= maxPlayableUs && !clipSource.isReady) {
+        canResume = false;
+        break;
+      }
+    }
+
+    if (canResume) {
+      logger.log('appendSourceChunk: Resuming playback after buffering');
+      void startPlayback();
+    }
+  }
+
+  if (isLast) {
+    source.isReady = true;
+    source.mp4File.flush();
+
+    logger.log(`appendSourceChunk: Source ${sourceId} streaming complete`, {
+      samples: source.samples.length,
+      keyframes: source.keyframeIndices.length,
+    });
+
+    // Post SOURCE_READY when fully loaded
+    postResponse({
+      type: 'SOURCE_READY',
+      payload: {
+        sourceId,
+        duration: source.durationUs / MICROSECONDS_PER_SECOND,
+        width: source.width,
+        height: source.height,
+      },
+    });
+
+    // Try to resume if we were waiting for data
+    if (state.pendingAutoPlay && !state.isPlaying) {
+      logger.log('appendSourceChunk: Source fully loaded, resuming playback');
+      void startPlayback();
+    }
+  }
+}
+
 /**
  * Initialize video decoder for a specific source
  */
@@ -806,6 +1025,13 @@ function initializeSourceDecoder(source: PerSourceState): void {
   if (!source.videoTrackInfo) return;
 
   const track = source.videoTrackInfo;
+
+  // Validate codec description for H.264/H.265 content
+  const isAvcOrHevc = track.codec.startsWith('avc') || track.codec.startsWith('hvc');
+  if (isAvcOrHevc && !source.codecDescription) {
+    logger.warn(`Missing codec description for ${track.codec} in source ${source.sourceId}`);
+  }
+
   const config: VideoDecoderConfig = {
     codec: track.codec,
     codedWidth: track.video.width,
@@ -1019,6 +1245,7 @@ function decodeSourceFrame(source: PerSourceState, sampleIndex: number): void {
 /**
  * Multi-source playback loop.
  * Composites frames from multiple sources based on activeClips.
+ * Handles streaming sources - pauses when approaching unloaded data.
  */
 function multiSourcePlaybackLoop(): void {
   if (!state.isPlaying) {
@@ -1042,6 +1269,34 @@ function multiSourcePlaybackLoop(): void {
     return;
   }
 
+  // Check if we're approaching unloaded data in any active clip
+  const bufferThresholdUs = 500_000; // 500ms buffer before end of loaded data
+  let needsBuffering = false;
+
+  for (const clip of state.activeClips) {
+    const source = state.sources.get(clip.sourceId);
+    if (!source || source.isReady) continue; // Skip fully loaded sources
+
+    // Convert timeline time to source time
+    const sourceTimeUs = targetUs - clip.startTimeUs + clip.sourceStartUs;
+    const maxPlayableUs = getSourceMaxPlayableTimeUs(source);
+
+    if (sourceTimeUs + bufferThresholdUs >= maxPlayableUs) {
+      needsBuffering = true;
+      logger.log(`multiSourcePlaybackLoop: Buffering needed for ${clip.sourceId}, sourceTime=${sourceTimeUs}, maxPlayable=${maxPlayableUs}`);
+      break;
+    }
+  }
+
+  if (needsBuffering) {
+    // Pause playback and wait for more data
+    state.isPlaying = false;
+    state.pendingAutoPlay = true; // Will resume when more data arrives
+    postResponse({ type: 'PLAYBACK_STATE', payload: { isPlaying: false } });
+    logger.log('multiSourcePlaybackLoop: Paused for buffering');
+    return;
+  }
+
   // Feed decoders for all active sources
   feedActiveSourceDecoders(targetUs);
 
@@ -1059,6 +1314,305 @@ function multiSourcePlaybackLoop(): void {
   // Continue playback loop
   if (state.isPlaying) {
     requestAnimationFrame(playbackLoop);
+  }
+}
+
+/**
+ * Start playback in multi-source mode.
+ * Primes all active source decoders and initiates the playback loop.
+ */
+async function startMultiSourcePlayback(): Promise<void> {
+  if (state.startPlaybackInProgress || state.isPlaying) return;
+
+  // Check if we have any ready sources
+  const readySources = state.activeClips.filter(clip => {
+    const source = state.sources.get(clip.sourceId);
+    return source?.isReady && source.decoder?.state === 'configured';
+  });
+
+  if (readySources.length === 0) {
+    logger.log('startMultiSourcePlayback: No ready sources, deferring');
+    state.pendingAutoPlay = true;
+    return;
+  }
+
+  state.startPlaybackInProgress = true;
+  state.pendingAutoPlay = false;
+
+  try {
+    // Determine start time - use last rendered time or beginning
+    let startTimeUs = state.lastRenderedTime;
+    const nearEnd = startTimeUs >= state.trimOutPoint - 100000; // 100ms tolerance
+    const beforeStart = startTimeUs < state.trimInPoint;
+
+    if (beforeStart || nearEnd) {
+      startTimeUs = state.trimInPoint;
+    }
+
+    logger.log('startMultiSourcePlayback: Starting from', startTimeUs);
+
+    // Prime each active source's decoder
+    for (const clip of state.activeClips) {
+      const source = state.sources.get(clip.sourceId);
+      if (!source?.isReady || !source.decoder) {
+        logger.log(`Skipping source ${clip.sourceId}: not ready`);
+        continue;
+      }
+
+      if (source.decoder.state !== 'configured') {
+        logger.log(`Skipping source ${clip.sourceId}: decoder not configured`);
+        continue;
+      }
+
+      // Calculate source time from timeline time
+      const sourceTimeUs = startTimeUs - clip.startTimeUs + clip.sourceStartUs;
+
+      // Seek source to its start position and pre-decode frames
+      await seekSourceTo(source, sourceTimeUs);
+      primeSourceDecoder(source, sourceTimeUs);
+    }
+
+    state.isPlaying = true;
+    state.needsWallClockSync = true;
+    state.playbackStartTime = startTimeUs;
+
+    postResponse({ type: 'PLAYBACK_STATE', payload: { isPlaying: true } });
+    requestAnimationFrame(playbackLoop);
+
+    logger.log('startMultiSourcePlayback: Playback started');
+  } catch (e) {
+    logger.error('startMultiSourcePlayback error:', e);
+    state.isPlaying = false;
+    postResponse({ type: 'PLAYBACK_STATE', payload: { isPlaying: false } });
+  } finally {
+    state.startPlaybackInProgress = false;
+  }
+}
+
+/**
+ * Seek a specific source to a target time.
+ * Similar to global seekTo but operates on PerSourceState.
+ * Supports seeking in partially loaded sources - will clamp to available data.
+ */
+async function seekSourceTo(source: PerSourceState, targetUs: number): Promise<void> {
+  if (!source.decoder || source.decoder.state !== 'configured') return;
+  if (source.samples.length === 0 || source.keyframeIndices.length === 0) return;
+
+  // Flush decoder to clear pending frames
+  await source.decoder.flush();
+
+  // Clear source frame queue
+  for (const { frame } of source.frameQueue) {
+    frame.close();
+  }
+  source.frameQueue.length = 0;
+
+  // Find sample index at target time
+  const targetSeconds = targetUs / MICROSECONDS_PER_SECOND;
+  let sampleIndex = source.samples.findIndex(sample => {
+    const sampleTime = sample.cts / sample.timescale;
+    return sampleTime >= targetSeconds;
+  });
+
+  // Handle seeking beyond loaded data
+  if (sampleIndex === -1) {
+    // Target is beyond loaded samples - clamp to last available
+    sampleIndex = source.samples.length - 1;
+    logger.log(`seekSourceTo: Target ${targetUs}us beyond loaded data, clamping to sample ${sampleIndex}`);
+  }
+
+  // Find previous keyframe using binary search
+  const keyframeIndex = findPreviousKeyframeForSource(source, sampleIndex);
+
+  if (!source.samples[keyframeIndex]?.is_sync) {
+    logger.warn(`seekSourceTo: No valid keyframe for source ${source.sourceId}`);
+    return;
+  }
+
+  // Decode frames from keyframe to target
+  for (let i = keyframeIndex; i <= sampleIndex; i++) {
+    const sample = source.samples[i];
+    if (!sample) continue;
+
+    const chunk = new EncodedVideoChunk({
+      type: sample.is_sync ? 'key' : 'delta',
+      timestamp: (sample.cts / sample.timescale) * MICROSECONDS_PER_SECOND,
+      duration: (sample.duration / sample.timescale) * MICROSECONDS_PER_SECOND,
+      data: sample.data,
+    });
+
+    source.decoder.decode(chunk);
+  }
+
+  // Update last queued sample index
+  source.lastQueuedSampleIndex = sampleIndex;
+
+  logger.log(`seekSourceTo: Source ${source.sourceId} seeked to ${targetUs}us (sample ${sampleIndex}/${source.samples.length})`);
+}
+
+/**
+ * Get the maximum time in microseconds that a source can currently play to.
+ * For streaming sources, this is based on loaded samples.
+ */
+function getSourceMaxPlayableTimeUs(source: PerSourceState): number {
+  if (source.samples.length === 0) return 0;
+
+  // If fully loaded, return duration
+  if (source.isReady) {
+    return source.durationUs;
+  }
+
+  // For streaming, use the timestamp of the last loaded sample
+  if (source.samples.length === 0) return 0;
+  const lastSample = source.samples[source.samples.length - 1];
+  if (!lastSample) return 0;
+
+  return (lastSample.cts / lastSample.timescale) * MICROSECONDS_PER_SECOND;
+}
+
+/**
+ * Pre-decode frames ahead of the current position for a source.
+ */
+function primeSourceDecoder(source: PerSourceState, _startTimeUs: number): void {
+  if (!source.decoder || source.decoder.state !== 'configured') return;
+
+  const startIndex = source.lastQueuedSampleIndex + 1;
+  const endIndex = Math.min(startIndex + MAX_QUEUE_SIZE - 1, source.samples.length - 1);
+
+  for (let i = startIndex; i <= endIndex; i++) {
+    decodeSourceFrame(source, i);
+  }
+
+  source.lastQueuedSampleIndex = endIndex;
+  logger.log(`primeSourceDecoder: Source ${source.sourceId} primed ${endIndex - startIndex + 1} frames`);
+}
+
+/**
+ * Find previous keyframe for a specific source using binary search.
+ */
+function findPreviousKeyframeForSource(source: PerSourceState, targetSampleIndex: number): number {
+  if (source.keyframeIndices.length === 0) {
+    return 0;
+  }
+
+  // Binary search for the largest keyframe index <= targetSampleIndex
+  let low = 0;
+  let high = source.keyframeIndices.length - 1;
+  let result = source.keyframeIndices[0] ?? 0;
+
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const keyframeIdx = source.keyframeIndices[mid];
+
+    if (keyframeIdx === undefined) break;
+
+    if (keyframeIdx <= targetSampleIndex) {
+      result = keyframeIdx;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Render the first frame of a source and capture it as thumbnail.
+ * Called when a source becomes ready to provide immediate visual feedback.
+ */
+async function renderSourceFirstFrame(source: PerSourceState): Promise<void> {
+  if (!source.decoder || source.decoder.state !== 'configured') return;
+  if (source.samples.length === 0 || source.keyframeIndices.length === 0) return;
+  if (!state.renderer) return;
+
+  logger.log(`renderSourceFirstFrame: Rendering first frame for ${source.sourceId}`);
+
+  try {
+    // Seek to frame 0 (first keyframe)
+    await seekSourceTo(source, 0);
+
+    // Wait a bit for the decoder to produce the frame
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    // Get the first available frame from the queue
+    if (source.frameQueue.length > 0) {
+      const firstFrame = source.frameQueue[0];
+      if (!firstFrame) return;
+      const { frame, timestamp } = firstFrame;
+
+      // Render the frame
+      state.renderer.draw(frame);
+      state.lastRenderedTime = timestamp;
+
+      // Capture as thumbnail (clone first since draw consumed the frame)
+      // Note: frame is already consumed by draw, so we skip thumbnail capture here
+      // The frame will be captured during playback via queueFirstFrameCapture
+
+      postResponse({
+        type: 'TIME_UPDATE',
+        payload: { currentTimeUs: timestamp },
+      });
+
+      logger.log(`renderSourceFirstFrame: First frame rendered for ${source.sourceId}`);
+    }
+  } catch (e) {
+    logger.warn(`renderSourceFirstFrame error for ${source.sourceId}:`, e);
+  }
+}
+
+/**
+ * Render first frame for multi-source with first frame capture.
+ * Uses the compositor if available, otherwise renders directly.
+ */
+async function renderMultiSourceFirstFrame(): Promise<void> {
+  if (state.activeClips.length === 0) return;
+  if (!state.renderer) return;
+
+  // Get the first clip's source
+  const firstClip = state.activeClips[0];
+  if (!firstClip) return;
+
+  const source = state.sources.get(firstClip.sourceId);
+  if (!source?.isReady || !source.decoder) return;
+
+  logger.log('renderMultiSourceFirstFrame: Rendering first frame');
+
+  try {
+    // Seek to start of first clip
+    const sourceTimeUs = firstClip.sourceStartUs;
+    await seekSourceTo(source, sourceTimeUs);
+
+    // Wait for decoder to produce frames
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    // Try to composite
+    const rendered = compositeActiveClips(firstClip.startTimeUs);
+
+    if (rendered) {
+      state.lastRenderedTime = firstClip.startTimeUs;
+
+      // Capture first frame for thumbnail
+      const firstQueuedFrame = source.frameQueue[0];
+      if (firstQueuedFrame && !state.hasCapturedFirstFrame) {
+        try {
+          const clone = firstQueuedFrame.frame.clone();
+          state.hasCapturedFirstFrame = true;
+          void captureFirstFrame(clone);
+        } catch (e) {
+          logger.warn('Failed to clone frame for thumbnail:', e);
+        }
+      }
+
+      postResponse({
+        type: 'TIME_UPDATE',
+        payload: { currentTimeUs: firstClip.startTimeUs },
+      });
+
+      logger.log('renderMultiSourceFirstFrame: First frame rendered successfully');
+    }
+  } catch (e) {
+    logger.warn('renderMultiSourceFirstFrame error:', e);
   }
 }
 
@@ -1210,6 +1764,15 @@ async function performSeek(timeUs: number): Promise<void> {
 async function startPlayback(): Promise<void> {
   // Guard against concurrent startPlayback calls (critical for async function)
   if (state.startPlaybackInProgress || state.isPlaying) return;
+
+  // MULTI-SOURCE MODE: Check if we have active clips configured
+  // Multi-source stores data in state.sources Map, not global state.samples
+  if (state.activeClips.length > 0) {
+    await startMultiSourcePlayback();
+    return;
+  }
+
+  // SINGLE-SOURCE MODE (legacy path)
   if (!state.decoder || state.samples.length === 0 || !hasPlayableKeyframe() || !ensureDecoderConfigured()) {
     state.pendingAutoPlay = true;
     return;

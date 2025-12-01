@@ -26,6 +26,9 @@ interface UseVideoWorkerReturn {
   removeSource: (sourceId: string) => void;
   setActiveClips: (clips: ActiveClip[]) => void;
   syncToTime: (timeUs: number) => void;
+  // Streaming source API (progressive HLS)
+  startSourceStream: (sourceId: string, durationHint?: number) => void;
+  appendSourceChunk: (sourceId: string, chunk: ArrayBuffer, isLast?: boolean) => void;
   // Audio data callback
   onAudioData?: (data: SourceAudioData) => void;
 }
@@ -147,6 +150,24 @@ export function useVideoWorker(): UseVideoWorkerReturn {
             return next;
           });
           logger.log(`Source ready: ${sourceId}`, { duration, width, height });
+          break;
+        }
+
+        case 'SOURCE_PLAYABLE': {
+          const { sourceId, duration, width, height, loadedSamples } = e.data.payload;
+          setSources((prev) => {
+            const next = new Map(prev);
+            // Mark as ready when playable (even though still loading)
+            next.set(sourceId, {
+              sourceId,
+              durationUs: duration * MICROSECONDS_PER_SECOND,
+              width,
+              height,
+              isReady: true,
+            });
+            return next;
+          });
+          logger.log(`Source playable: ${sourceId}`, { duration, width, height, loadedSamples });
           break;
         }
 
@@ -283,6 +304,22 @@ export function useVideoWorker(): UseVideoWorkerReturn {
     workerRef.current?.postMessage({ type: 'SYNC_TO_TIME', payload: { timeUs } });
   }, []);
 
+  // Streaming source API (progressive HLS)
+  const startSourceStream = useCallback((sourceId: string, durationHint?: number) => {
+    workerRef.current?.postMessage({
+      type: 'START_SOURCE_STREAM',
+      payload: { sourceId, durationHint },
+    });
+  }, []);
+
+  const appendSourceChunk = useCallback((sourceId: string, chunk: ArrayBuffer, isLast?: boolean) => {
+    // Transfer the chunk to avoid copying
+    workerRef.current?.postMessage(
+      { type: 'APPEND_SOURCE_CHUNK', payload: { sourceId, chunk, isLast } },
+      [chunk]
+    );
+  }, []);
+
   // Setter for audio data callback
   const setOnAudioData = useCallback((callback: ((data: SourceAudioData) => void) | undefined) => {
     audioDataCallbackRef.current = callback ?? null;
@@ -306,6 +343,9 @@ export function useVideoWorker(): UseVideoWorkerReturn {
     removeSource,
     setActiveClips,
     syncToTime,
+    // Streaming source API (progressive HLS)
+    startSourceStream,
+    appendSourceChunk,
     // Audio data callback setter
     set onAudioData(callback: ((data: SourceAudioData) => void) | undefined) {
       setOnAudioData(callback);

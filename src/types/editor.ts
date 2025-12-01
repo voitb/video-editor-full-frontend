@@ -151,6 +151,9 @@ export type WorkerCommand =
   | { type: 'LOAD_SOURCE'; payload: { sourceId: string; file?: File; buffer?: ArrayBuffer } }
   | { type: 'REMOVE_SOURCE'; payload: { sourceId: string } }
   | { type: 'SET_ACTIVE_CLIPS'; payload: { clips: ActiveClip[] } }
+  // Streaming source loading (progressive HLS)
+  | { type: 'START_SOURCE_STREAM'; payload: { sourceId: string; durationHint?: number } }
+  | { type: 'APPEND_SOURCE_CHUNK'; payload: { sourceId: string; chunk: ArrayBuffer; isLast?: boolean } }
   // Sync command for audio-video coordination
   | { type: 'SYNC_TO_TIME'; payload: { timeUs: number } };
 
@@ -163,6 +166,7 @@ export type WorkerResponse =
   // Ready states
   | { type: 'READY'; payload: { duration: number; width: number; height: number } }
   | { type: 'SOURCE_READY'; payload: { sourceId: string; duration: number; width: number; height: number } }
+  | { type: 'SOURCE_PLAYABLE'; payload: { sourceId: string; duration: number; width: number; height: number; loadedSamples: number } }
   | { type: 'SOURCE_REMOVED'; payload: { sourceId: string } }
   // Playback state
   | { type: 'TIME_UPDATE'; payload: { currentTimeUs: number } }

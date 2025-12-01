@@ -26,6 +26,7 @@ interface HlsLoadResult {
 interface HlsStreamCallbacks {
   onStart?: (duration: number) => void;
   onChunk?: (chunk: ArrayBuffer, isLast: boolean) => void;
+  onPlayable?: () => void;  // Called when enough data for playback (~5 segments)
 }
 
 interface UseHlsLoaderReturn {
@@ -147,11 +148,23 @@ export function useHlsLoader(): UseHlsLoaderReturn {
       transmuxWorkerRef.current = worker;
 
       const collectedChunks: Uint8Array[] = [];
+      let segmentsProcessed = 0;
+      let playableCallbackFired = false;
+      const PLAYABLE_THRESHOLD = 5; // Segments before calling onPlayable
+
       const handleChunk = (segment: ArrayBuffer, isLast: boolean) => {
         collectedChunks.push(new Uint8Array(segment));
+        segmentsProcessed++;
+
         if (callbacks?.onChunk) {
           const playbackBuffer = segment.slice(0);
           callbacks.onChunk(playbackBuffer, isLast);
+        }
+
+        // Fire onPlayable after threshold is reached
+        if (!playableCallbackFired && segmentsProcessed >= PLAYABLE_THRESHOLD && callbacks?.onPlayable) {
+          playableCallbackFired = true;
+          callbacks.onPlayable();
         }
       };
 
