@@ -7,7 +7,6 @@ import { TimelineTrimHandles } from './TimelineTrimHandles';
 import { TimelineZoomControls } from './TimelineZoomControls';
 import { useTimelineDrag } from '../hooks/useTimelineDrag';
 import { useTimelineTrim } from '../hooks/useTimelineTrim';
-import type { SpriteData } from '../hooks/useSpriteWorker';
 import type { TimelineViewport } from '../types/editor';
 
 interface TimelineProps {
@@ -17,10 +16,7 @@ interface TimelineProps {
   outPoint: number; // microseconds
   onSeek: (timeUs: number) => void;
   onTrimChange: (inPoint: number, outPoint: number) => void;
-  // Sprite props
-  sprites?: SpriteData[];
-  isGeneratingSprites?: boolean;
-  spriteProgress?: { generated: number; total: number } | null;
+  posterUrl?: string;
   // Viewport/zoom props
   viewport: TimelineViewport;
   onZoomIn: () => void;
@@ -38,9 +34,7 @@ export function Timeline({
   outPoint,
   onSeek,
   onTrimChange,
-  sprites = [],
-  isGeneratingSprites = false,
-  spriteProgress = null,
+  posterUrl,
   viewport,
   onZoomIn,
   onZoomOut,
@@ -147,10 +141,8 @@ export function Timeline({
       >
         {/* Sprite thumbnails (background layer) */}
         <TimelineSprites
-          sprites={sprites}
+          posterUrl={posterUrl}
           duration={duration}
-          isGenerating={isGeneratingSprites}
-          progress={spriteProgress}
           viewport={viewport}
         />
 

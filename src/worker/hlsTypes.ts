@@ -59,7 +59,8 @@ export interface HlsLoadingProgress {
  * Commands sent to HlsTransmuxWorker
  */
 export type HlsTransmuxCommand =
-  | { type: 'TRANSMUX'; payload: { segments: ArrayBuffer[] } }
+  | { type: 'START_STREAM' }
+  | { type: 'PUSH_SEGMENT'; payload: { segment: ArrayBuffer; index: number; total: number; isLast?: boolean } }
   | { type: 'ABORT' };
 
 /**
@@ -67,5 +68,7 @@ export type HlsTransmuxCommand =
  */
 export type HlsTransmuxResponse =
   | { type: 'PROGRESS'; payload: { processed: number; total: number } }
-  | { type: 'COMPLETE'; payload: { mp4Buffer: ArrayBuffer; duration: number } }
+  | { type: 'INIT_SEGMENT'; payload: { segment: ArrayBuffer } }
+  | { type: 'MEDIA_SEGMENT'; payload: { segment: ArrayBuffer; isLast?: boolean } }
+  | { type: 'COMPLETE' }
   | { type: 'ERROR'; payload: { message: string } };

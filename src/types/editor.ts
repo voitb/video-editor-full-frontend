@@ -44,16 +44,17 @@ export type WorkerCommand =
   | { type: 'INIT_CANVAS'; payload: { canvas: OffscreenCanvas } }
   | { type: 'LOAD_FILE'; payload: { file: File } }
   | { type: 'LOAD_BUFFER'; payload: { buffer: ArrayBuffer; durationHint?: number } }
+  | { type: 'START_STREAM'; payload: { durationHint?: number } }
+  | { type: 'APPEND_STREAM_CHUNK'; payload: { chunk: ArrayBuffer; isLast?: boolean } }
   | { type: 'SEEK'; payload: { timeUs: number } }
   | { type: 'PLAY' }
   | { type: 'PAUSE' }
-  | { type: 'SET_TRIM'; payload: { inPoint: number; outPoint: number } }
-  | { type: 'GET_SAMPLES_FOR_SPRITES' };
+  | { type: 'SET_TRIM'; payload: { inPoint: number; outPoint: number } };
 
 // Messages sent from worker to main thread
 export type WorkerResponse =
   | { type: 'READY'; payload: { duration: number; width: number; height: number } }
   | { type: 'TIME_UPDATE'; payload: { currentTimeUs: number } }
   | { type: 'PLAYBACK_STATE'; payload: { isPlaying: boolean } }
-  | { type: 'SAMPLES_FOR_SPRITES'; payload: SpriteInitData }
+  | { type: 'FIRST_FRAME'; payload: { blob: Blob; width: number; height: number } }
   | { type: 'ERROR'; payload: { message: string } };

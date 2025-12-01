@@ -1,6 +1,5 @@
 import { useEffect, useState, useRef } from 'react';
 import { useVideoWorker } from './hooks/useVideoWorker';
-import { useSpriteWorker } from './hooks/useSpriteWorker';
 import { useTimelineViewport } from './hooks/useTimelineViewport';
 import { useExportWorker } from './hooks/useExportWorker';
 import { useHlsLoader } from './hooks/useHlsLoader';
@@ -21,8 +20,18 @@ function App() {
   const [loadedFile, setLoadedFile] = useState<File | null>(null);
   const [sourceType, setSourceType] = useState<SourceType>('file');
   const hlsBufferRef = useRef<ArrayBuffer | null>(null);
-  const { state, sampleData, initCanvas, loadFile, loadBuffer, seek, play, pause, setTrim, requestSampleData } =
-    useVideoWorker();
+  const {
+    state,
+    firstFrameUrl,
+    initCanvas,
+    loadFile,
+    startStream,
+    appendStreamChunk,
+    seek,
+    play,
+    pause,
+    setTrim,
+  } = useVideoWorker();
 
   // Initialize HLS loader
   const {
@@ -43,9 +52,6 @@ function App() {
     clearError: clearExportError,
   } = useExportWorker();
 
-  // Initialize sprite worker with sample data
-  const { sprites, isGenerating, progress } = useSpriteWorker(sampleData, state.duration);
-
   // Initialize timeline viewport for zoom/pan
   const {
     viewport,
@@ -59,13 +65,6 @@ function App() {
     durationUs: secondsToUs(state.duration),
     currentTimeUs: secondsToUs(state.currentTime),
   });
-
-  // Request sample data when video is ready (for sprite generation)
-  useEffect(() => {
-    if (state.isReady && !sampleData) {
-      requestSampleData();
-    }
-  }, [state.isReady, sampleData, requestSampleData]);
 
   // Reset viewport when a new video is loaded (duration changes)
   useEffect(() => {
@@ -100,6 +99,7 @@ function App() {
     setLoadedFile(file);
     setSourceType('file');
     loadFile(file);
+    play();
   };
 
   // HLS URL loading
@@ -107,15 +107,21 @@ function App() {
     try {
       setFileError(null);
       setLoadedFile(null);
+      hlsBufferRef.current = null;
 
-      const { buffer, duration } = await loadHlsUrl(url);
+      const { buffer } = await loadHlsUrl(url, {
+        onStart: (duration) => {
+          setSourceType('hls');
+          startStream(duration);
+          play();
+        },
+        onChunk: (chunk, isLast) => {
+          appendStreamChunk(chunk, isLast);
+        },
+      });
 
-      // Store buffer for export (we need to clone it since loadBuffer transfers it)
+      // Store buffer for export (we need to clone it since the streaming API transfers chunks)
       hlsBufferRef.current = buffer.slice(0);
-
-      setSourceType('hls');
-      // Pass the HLS manifest duration to override incorrect mp4box duration
-      loadBuffer(buffer, duration);
     } catch {
       // Error is handled by useHlsLoader
     }
@@ -257,9 +263,7 @@ function App() {
                   outPoint={state.clip?.outPoint ?? secondsToUs(state.duration)}
                   onSeek={seek}
                   onTrimChange={setTrim}
-                  sprites={sprites}
-                  isGeneratingSprites={isGenerating}
-                  spriteProgress={progress}
+                  posterUrl={firstFrameUrl ?? undefined}
                   viewport={viewport}
                   onZoomIn={zoomIn}
                   onZoomOut={zoomOut}

@@ -136,7 +136,7 @@ export async function fetchSegmentsInBatches(
 /**
  * Fetch a URL with timeout, CORS support, and retry logic
  */
-async function fetchWithTimeout(
+export async function fetchWithTimeout(
   url: string,
   timeout: number,
   maxRetries = 3

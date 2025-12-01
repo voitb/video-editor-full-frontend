@@ -1,7 +1,7 @@
 import { createFile, DataStream } from 'mp4box';
 import type { MP4File, MP4Sample, MP4Info, MP4VideoTrack } from 'mp4box';
 import { WebGLRenderer } from './renderer';
-import type { WorkerCommand, WorkerResponse, TransferableSample } from '../types/editor';
+import type { WorkerCommand, WorkerResponse } from '../types/editor';
 import { PLAYBACK, TIME } from '../constants';
 import { createWorkerLogger } from '../utils/logger';
 import { findPreviousKeyframe as findPreviousKeyframeUtil } from '../utils/keyframeSearch';
@@ -62,6 +62,9 @@ interface VideoWorkerState {
   pauseRequested: boolean;
   startPlaybackInProgress: boolean;
   needsInitialSeek: boolean;
+  pendingAutoPlay: boolean;
+  hasCapturedFirstFrame: boolean;
+  streamOffset: number;
 }
 
 // Single source of truth for all worker state
@@ -94,6 +97,9 @@ const workerState: VideoWorkerState = {
   pauseRequested: false,
   startPlaybackInProgress: false,
   needsInitialSeek: false,
+  pendingAutoPlay: false,
+  hasCapturedFirstFrame: false,
+  streamOffset: 0,
 };
 
 // Convenience accessor for state
@@ -104,6 +110,83 @@ const { MICROSECONDS_PER_SECOND } = TIME;
 // Send message to main thread
 function postResponse(response: WorkerResponse): void {
   self.postMessage(response);
+}
+
+function ensureDecoderConfigured(): boolean {
+  if (!state.videoTrackInfo) return false;
+
+  if (!state.decoder || state.decoder.state === 'closed') {
+    state.decoder = new VideoDecoder({
+      output: handleDecodedFrame,
+      error: (e) => {
+        logger.warn('Decoder error (recoverable):', e);
+        state.pendingAutoPlay = true;
+        state.isPlaying = false;
+        postResponse({ type: 'PLAYBACK_STATE', payload: { isPlaying: false } });
+      },
+    });
+  }
+
+  if (state.decoder.state !== 'configured') {
+    const description = state.codecDescription ?? undefined;
+    try {
+      state.decoder.configure({
+        codec: state.videoTrackInfo.codec,
+        codedWidth: state.videoTrackInfo.video.width,
+        codedHeight: state.videoTrackInfo.video.height,
+        description,
+      });
+    } catch (e) {
+      logger.warn('Failed to configure decoder:', e);
+      return false;
+    }
+  }
+
+  return state.decoder.state === 'configured';
+}
+
+function resetWorkerState(): void {
+  // Close decoder before dropping reference
+  try {
+    state.decoder?.close();
+  } catch (e) {
+    logger.warn('Failed to close decoder cleanly:', e);
+  }
+
+  state.decoder = null;
+  state.mp4File = null;
+  state.videoTrackInfo = null;
+  state.codecDescription = null;
+
+  state.samples.length = 0;
+  state.keyframeIndices.length = 0;
+  state.frameQueue.forEach(({ frame }) => frame.close());
+  state.frameQueue.length = 0;
+
+  state.state = 'idle';
+  state.isPlaying = false;
+  state.isSeeking = false;
+  state.pauseRequested = false;
+  state.startPlaybackInProgress = false;
+  state.needsWallClockSync = false;
+  state.lastQueuedSampleIndex = -1;
+  state.seekVersion = 0;
+  state.currentSeekVersion = 0;
+  state.seekTargetFrameCount = 0;
+  state.seekCurrentFrameCount = 0;
+  state.seekInProgress = false;
+  state.pendingSeekTime = null;
+  state.pendingAutoPlay = false;
+  state.needsInitialSeek = false;
+  state.hasCapturedFirstFrame = false;
+  state.streamOffset = 0;
+
+  state.trimInPoint = 0;
+  state.trimOutPoint = Infinity;
+  state.lastRenderedTime = 0;
+  state.playbackStartTime = 0;
+  state.playbackStartWallTime = 0;
+  state.playbackMinTimestamp = 0;
 }
 
 // Handle incoming messages
@@ -129,6 +212,18 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
       break;
     }
 
+    case 'START_STREAM': {
+      const { durationHint } = e.data.payload;
+      startStream(durationHint);
+      break;
+    }
+
+    case 'APPEND_STREAM_CHUNK': {
+      const { chunk, isLast } = e.data.payload;
+      appendStreamChunk(chunk, isLast);
+      break;
+    }
+
     case 'SEEK': {
       const { timeUs } = e.data.payload;
       await seekTo(timeUs);
@@ -136,6 +231,9 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
     }
 
     case 'PLAY': {
+      if (state.samples.length === 0 || !state.decoder || state.decoder.state !== 'configured') {
+        state.pendingAutoPlay = true;
+      }
       void startPlayback();
       break;
     }
@@ -151,41 +249,6 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
       state.trimOutPoint = outPoint;
       // Don't auto-seek during trim drag - let user control playhead separately
       // Playback will start from in-point if current position is before it
-      break;
-    }
-
-    case 'GET_SAMPLES_FOR_SPRITES': {
-      // Expose sample data for sprite generation
-      if (state.samples.length === 0 || !state.videoTrackInfo) {
-        postResponse({ type: 'ERROR', payload: { message: 'No video loaded' } });
-        break;
-      }
-
-      // Convert samples to transferable format with ArrayBuffer data
-      const transferableSamples: TransferableSample[] = state.samples.map((sample, index) => {
-        // sample.data is ArrayBuffer - make a copy to transfer
-        const dataCopy = sample.data.slice(0);
-        return {
-          index,
-          cts: sample.cts,
-          timescale: sample.timescale,
-          is_sync: sample.is_sync,
-          duration: sample.duration,
-          data: dataCopy,
-        };
-      });
-
-      postResponse({
-        type: 'SAMPLES_FOR_SPRITES',
-        payload: {
-          samples: transferableSamples,
-          keyframeIndices: [...state.keyframeIndices],
-          videoWidth: state.videoTrackInfo.video.width,
-          videoHeight: state.videoTrackInfo.video.height,
-          codecDescription: state.codecDescription,
-          codec: state.videoTrackInfo.codec,
-        },
-      });
       break;
     }
   }
@@ -220,6 +283,7 @@ function handleDecodedFrame(frame: VideoFrame): void {
     state.isSeeking = false;
 
     if (state.renderer) {
+      queueFirstFrameCapture(frame);
       // state.renderer.draw() takes ownership of frame and will close it
       state.renderer.draw(frame);
       state.lastRenderedTime = timestamp;
@@ -248,6 +312,7 @@ function handleDecodedFrame(frame: VideoFrame): void {
 
   // Not playing and not seeking - render immediately (e.g., initial frame)
   if (state.renderer) {
+    queueFirstFrameCapture(frame);
     // state.renderer.draw() takes ownership of frame and will close it
     state.renderer.draw(frame);
     state.lastRenderedTime = timestamp;
@@ -261,151 +326,58 @@ function handleDecodedFrame(frame: VideoFrame): void {
   }
 }
 
-async function loadFile(file: File): Promise<void> {
-  // Reset state
-  state.samples.length = 0;
-  state.keyframeIndices.length = 0;
-  state.isPlaying = false;
-  state.isSeeking = false;
-  state.pauseRequested = false;
-  state.startPlaybackInProgress = false;
-  state.needsWallClockSync = false;
-  state.lastQueuedSampleIndex = -1;
-  state.seekVersion = 0;
-  state.currentSeekVersion = 0;
-  state.seekInProgress = false;
-  state.pendingSeekTime = null;
+function queueFirstFrameCapture(frame: VideoFrame): void {
+  if (state.hasCapturedFirstFrame) return;
 
-  // Clear frame queue
-  for (const { frame } of state.frameQueue) {
-    frame.close();
+  try {
+    const clone = frame.clone();
+    state.hasCapturedFirstFrame = true;
+    void captureFirstFrame(clone);
+  } catch (e) {
+    state.hasCapturedFirstFrame = true;
+    logger.warn('Failed to clone frame for thumbnail capture:', e);
   }
-  state.frameQueue.length = 0;
-
-  state.mp4File = createFile();
-
-  // Configure decoder
-  state.decoder = new VideoDecoder({
-    output: handleDecodedFrame,
-    error: (e) => {
-      logger.error('Decoder error:', e);
-      postResponse({ type: 'ERROR', payload: { message: e.message } });
-    },
-  });
-
-  state.mp4File.onReady = (info: MP4Info) => {
-    state.videoTrackInfo = info.videoTracks[0] ?? null;
-    if (!state.videoTrackInfo) {
-      postResponse({ type: 'ERROR', payload: { message: 'No video track found' } });
-      return;
-    }
-
-    const description = getCodecDescription(state.mp4File!, state.videoTrackInfo.id);
-    state.codecDescription = description; // Store for sprite worker
-
-    state.decoder?.configure({
-      codec: state.videoTrackInfo.codec,
-      codedWidth: state.videoTrackInfo.video.width,
-      codedHeight: state.videoTrackInfo.video.height,
-      description: description ?? undefined,
-    });
-
-    // Set extraction options to get all samples
-    state.mp4File?.setExtractionOptions(state.videoTrackInfo.id, null, { nbSamples: Infinity });
-    state.mp4File?.start();
-
-    // Calculate duration - use track duration if movie duration is 0
-    let durationSeconds: number;
-    if (info.duration > 0 && info.timescale > 0) {
-      durationSeconds = info.duration / info.timescale;
-    } else if (state.videoTrackInfo.duration > 0 && state.videoTrackInfo.timescale > 0) {
-      durationSeconds = state.videoTrackInfo.duration / state.videoTrackInfo.timescale;
-    } else {
-      // Fallback: estimate from nb_samples (assume 30fps)
-      durationSeconds = state.videoTrackInfo.nb_samples / 30;
-    }
-
-    state.trimOutPoint = durationSeconds * MICROSECONDS_PER_SECOND; // microseconds
-
-    postResponse({
-      type: 'READY',
-      payload: {
-        duration: durationSeconds,
-        width: state.videoTrackInfo.video.width,
-        height: state.videoTrackInfo.video.height,
-      },
-    });
-  };
-
-  state.mp4File.onSamples = (_id: number, _user: unknown, newSamples: MP4Sample[]) => {
-    const wasEmpty = state.samples.length === 0;
-    for (const sample of newSamples) {
-      const sampleIndex = state.samples.length;
-      state.samples.push(sample);
-      // Build keyframe index for O(log n) lookup during seeks
-      if (sample.is_sync) {
-        state.keyframeIndices.push(sampleIndex);
-      }
-    }
-    // Seek to first frame when samples first arrive
-    if (wasEmpty && state.samples.length > 0 && state.needsInitialSeek) {
-      state.needsInitialSeek = false;
-      void seekTo(0);
-    }
-  };
-
-  state.mp4File.onError = (e: Error) => {
-    postResponse({ type: 'ERROR', payload: { message: e.message } });
-  };
-
-  // Read file as ArrayBuffer
-  const buffer = await file.arrayBuffer();
-  // MP4Box requires fileStart property on buffer
-  const mp4Buffer = buffer as unknown as ArrayBuffer & { fileStart: number };
-  mp4Buffer.fileStart = 0;
-
-  // Set flag to seek to first frame once samples are loaded
-  state.needsInitialSeek = true;
-
-  state.mp4File.appendBuffer(mp4Buffer);
-  state.mp4File.flush();
 }
 
-/**
- * Load video from an ArrayBuffer (used for HLS transmuxed content)
- * This function mirrors loadFile but accepts a pre-loaded buffer instead of a File.
- * @param buffer The video data as ArrayBuffer
- * @param durationHint Optional duration override (used for HLS where mp4box duration may be incorrect)
- */
-async function loadBuffer(buffer: ArrayBuffer, durationHint?: number): Promise<void> {
-  // Reset state (same as loadFile)
-  state.samples.length = 0;
-  state.keyframeIndices.length = 0;
-  state.isPlaying = false;
-  state.isSeeking = false;
-  state.pauseRequested = false;
-  state.startPlaybackInProgress = false;
-  state.needsWallClockSync = false;
-  state.lastQueuedSampleIndex = -1;
-  state.seekVersion = 0;
-  state.currentSeekVersion = 0;
-  state.seekInProgress = false;
-  state.pendingSeekTime = null;
-
-  // Clear frame queue
-  for (const { frame } of state.frameQueue) {
+async function captureFirstFrame(frame: VideoFrame): Promise<void> {
+  try {
+    const canvas = new OffscreenCanvas(frame.displayWidth, frame.displayHeight);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      frame.close();
+      return;
+    }
+    ctx.drawImage(frame, 0, 0, frame.displayWidth, frame.displayHeight);
+    const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.92 });
+    frame.close();
+    if (blob) {
+      postResponse({ type: 'FIRST_FRAME', payload: { blob, width: canvas.width, height: canvas.height } });
+    }
+  } catch (e) {
+    logger.warn('Failed to capture first frame thumbnail:', e);
     frame.close();
   }
-  state.frameQueue.length = 0;
+}
+
+function hasPlayableKeyframe(): boolean {
+  const firstKeyIndex = state.keyframeIndices[0];
+  return typeof firstKeyIndex === 'number' && !!state.samples[firstKeyIndex]?.is_sync;
+}
+
+function initializeDemuxer(durationHint?: number): void {
+  resetWorkerState();
+  state.state = 'loading';
 
   state.mp4File = createFile();
-
-  // Configure decoder
   state.decoder = new VideoDecoder({
     output: handleDecodedFrame,
     error: (e) => {
-      logger.error('Decoder error:', e);
-      postResponse({ type: 'ERROR', payload: { message: e.message } });
+      logger.warn('Decoder error (recoverable):', e);
+      // Attempt to rebuild decoder when we have enough data
+      state.pendingAutoPlay = true;
+      state.isPlaying = false;
+      ensureDecoderConfigured();
+      postResponse({ type: 'PLAYBACK_STATE', payload: { isPlaying: false } });
     },
   });
 
@@ -426,16 +398,13 @@ async function loadBuffer(buffer: ArrayBuffer, durationHint?: number): Promise<v
       description: description ?? undefined,
     });
 
-    // Set extraction options to get all samples
     state.mp4File?.setExtractionOptions(state.videoTrackInfo.id, null, { nbSamples: Infinity });
     state.mp4File?.start();
 
-    // Calculate duration - use durationHint if provided (for HLS), otherwise fallback to mp4box
     let durationSeconds: number;
     if (durationHint !== undefined && durationHint > 0) {
-      // Use provided duration (from HLS manifest)
       durationSeconds = durationHint;
-      logger.log('Using HLS duration hint:', durationSeconds, 'seconds');
+      logger.log('Using duration hint:', durationSeconds, 'seconds');
     } else if (info.duration > 0 && info.timescale > 0) {
       durationSeconds = info.duration / info.timescale;
     } else if (state.videoTrackInfo.duration > 0 && state.videoTrackInfo.timescale > 0) {
@@ -445,6 +414,8 @@ async function loadBuffer(buffer: ArrayBuffer, durationHint?: number): Promise<v
     }
 
     state.trimOutPoint = durationSeconds * MICROSECONDS_PER_SECOND;
+    state.state = 'ready';
+    ensureDecoderConfigured();
 
     postResponse({
       type: 'READY',
@@ -469,20 +440,71 @@ async function loadBuffer(buffer: ArrayBuffer, durationHint?: number): Promise<v
       state.needsInitialSeek = false;
       void seekTo(0);
     }
+    if (state.pendingAutoPlay && !state.isPlaying && state.decoder?.state === 'configured' && hasPlayableKeyframe()) {
+      void startPlayback();
+    }
   };
 
   state.mp4File.onError = (e: Error) => {
     postResponse({ type: 'ERROR', payload: { message: e.message } });
   };
 
-  // Use buffer directly (no file.arrayBuffer() needed)
-  const mp4Buffer = buffer as ArrayBuffer & { fileStart: number };
-  mp4Buffer.fileStart = 0;
-
   state.needsInitialSeek = true;
+}
 
-  state.mp4File.appendBuffer(mp4Buffer);
+function appendStreamChunk(chunk: ArrayBuffer, isLast = false): void {
+  if (!state.mp4File) {
+    logger.warn('appendStreamChunk called before stream initialized');
+    return;
+  }
+  const mp4Chunk = chunk as ArrayBuffer & { fileStart: number };
+  mp4Chunk.fileStart = state.streamOffset;
+  state.streamOffset += mp4Chunk.byteLength;
+
+  state.mp4File.appendBuffer(mp4Chunk);
+  // Flush to make appended data immediately parsable for progressive playback
   state.mp4File.flush();
+
+  if (isLast) {
+    // Final flush is already covered above but keep explicit for clarity
+    state.mp4File.flush();
+  }
+}
+
+async function loadFile(file: File): Promise<void> {
+  initializeDemuxer();
+  try {
+    const reader = file.stream().getReader();
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+
+      const buffer = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+      appendStreamChunk(buffer, false);
+    }
+    if (state.mp4File) {
+      state.mp4File.flush();
+    }
+  } catch (e) {
+    const message = e instanceof Error ? e.message : 'Unknown file load error';
+    logger.error('File streaming error:', e);
+    postResponse({ type: 'ERROR', payload: { message } });
+  }
+}
+
+/**
+ * Load video from an ArrayBuffer (used for HLS transmuxed content)
+ * @param buffer The video data as ArrayBuffer
+ * @param durationHint Optional duration override (used for HLS where mp4box duration may be incorrect)
+ */
+async function loadBuffer(buffer: ArrayBuffer, durationHint?: number): Promise<void> {
+  initializeDemuxer(durationHint);
+  appendStreamChunk(buffer, true);
+}
+
+function startStream(durationHint?: number): void {
+  initializeDemuxer(durationHint);
 }
 
 async function seekTo(timeUs: number): Promise<void> {
@@ -511,6 +533,11 @@ async function seekTo(timeUs: number): Promise<void> {
 
 async function performSeek(timeUs: number): Promise<void> {
   if (!state.decoder || state.decoder.state !== 'configured') return;
+  if (!hasPlayableKeyframe()) {
+    // Wait for keyframes to arrive
+    state.pendingAutoPlay = true;
+    return;
+  }
 
   state.seekVersion++;
   const thisSeekVersion = state.seekVersion;
@@ -622,10 +649,14 @@ async function performSeek(timeUs: number): Promise<void> {
 
 async function startPlayback(): Promise<void> {
   // Guard against concurrent startPlayback calls (critical for async function)
-  if (state.startPlaybackInProgress || state.isPlaying || !state.decoder || state.samples.length === 0) return;
-  if (state.decoder.state !== 'configured') return;
+  if (state.startPlaybackInProgress || state.isPlaying) return;
+  if (!state.decoder || state.samples.length === 0 || !hasPlayableKeyframe() || !ensureDecoderConfigured()) {
+    state.pendingAutoPlay = true;
+    return;
+  }
 
   state.startPlaybackInProgress = true;
+  state.pendingAutoPlay = false;
 
   try {
     // If current position is outside trim range, seek to in-point first
@@ -816,6 +847,7 @@ function playbackLoop(): void {
       // Frame is too late - drop it to catch up
       frame.close();
     } else if (state.renderer) {
+      queueFirstFrameCapture(frame);
       // Render the frame - state.renderer.draw() takes ownership and will close it
       state.renderer.draw(frame);
       state.lastRenderedTime = timestamp;
@@ -862,14 +894,12 @@ function decodeFrame(sampleIndex: number): void {
   try {
     state.decoder.decode(chunk);
   } catch (e) {
-    // On any decode error, pause playback gracefully
-    // The seek state checks in playbackLoop should prevent most errors
-    logger.warn('decodeFrame: Decode error, pausing playback', {
+    // On decode error, skip the sample but keep playback running
+    logger.warn('decodeFrame: Decode error, skipping sample', {
       error: (e as Error).message,
       sampleIndex,
       is_sync: sample.is_sync,
     });
-    void pausePlayback();
   }
 }
 

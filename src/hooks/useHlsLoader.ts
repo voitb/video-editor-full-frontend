@@ -9,7 +9,7 @@ import { HLS } from '../constants';
 import {
   parseManifest,
   selectQuality,
-  fetchSegmentsInBatches,
+  fetchWithTimeout,
   hasEncryption,
 } from '../utils/hlsParser';
 import type { HlsLoadingProgress, HlsTransmuxResponse } from '../worker/hlsTypes';
@@ -23,8 +23,13 @@ interface HlsLoadResult {
   duration: number;
 }
 
+interface HlsStreamCallbacks {
+  onStart?: (duration: number) => void;
+  onChunk?: (chunk: ArrayBuffer, isLast: boolean) => void;
+}
+
 interface UseHlsLoaderReturn {
-  loadHlsUrl: (url: string) => Promise<HlsLoadResult>;
+  loadHlsUrl: (url: string, callbacks?: HlsStreamCallbacks) => Promise<HlsLoadResult>;
   isLoading: boolean;
   progress: HlsLoadingProgress;
   error: string | null;
@@ -46,9 +51,11 @@ export function useHlsLoader(): UseHlsLoaderReturn {
   const abort = useCallback(() => {
     abortControllerRef.current?.abort();
     transmuxWorkerRef.current?.postMessage({ type: 'ABORT' });
+    transmuxWorkerRef.current?.terminate();
+    transmuxWorkerRef.current = null;
   }, []);
 
-  const loadHlsUrl = useCallback(async (url: string): Promise<HlsLoadResult> => {
+  const loadHlsUrl = useCallback(async (url: string, callbacks?: HlsStreamCallbacks): Promise<HlsLoadResult> => {
     // Reset state
     setIsLoading(true);
     setError(null);
@@ -132,113 +139,127 @@ export function useHlsLoader(): UseHlsLoaderReturn {
         duration: mediaManifest.totalDuration,
       });
 
-      // Step 2: Fetch all segments
+      // Notify caller so the video worker can prepare for streaming playback
+      callbacks?.onStart?.(mediaManifest.totalDuration);
+
+      // Prepare transmux worker for streaming output
+      const worker = new HlsTransmuxWorker();
+      transmuxWorkerRef.current = worker;
+
+      const collectedChunks: Uint8Array[] = [];
+      const handleChunk = (segment: ArrayBuffer, isLast: boolean) => {
+        collectedChunks.push(new Uint8Array(segment));
+        if (callbacks?.onChunk) {
+          const playbackBuffer = segment.slice(0);
+          callbacks.onChunk(playbackBuffer, isLast);
+        }
+      };
+
+      const transmuxPromise = new Promise<void>((resolve, reject) => {
+        worker.onmessage = (e: MessageEvent<HlsTransmuxResponse>) => {
+          const { type } = e.data;
+
+          switch (type) {
+            case 'INIT_SEGMENT': {
+              handleChunk(e.data.payload.segment, false);
+              break;
+            }
+
+            case 'MEDIA_SEGMENT': {
+              const { segment, isLast } = e.data.payload;
+              handleChunk(segment, !!isLast);
+              break;
+            }
+
+            case 'PROGRESS': {
+              const { processed, total } = e.data.payload;
+              const percent = 15 + (processed / total) * 80;
+              setProgress({
+                stage: 'transmuxing',
+                percent,
+                message: `Streaming ${processed}/${total} segments (playback live)...`,
+              });
+              break;
+            }
+
+            case 'COMPLETE': {
+              resolve();
+              break;
+            }
+
+            case 'ERROR': {
+              reject(new Error(e.data.payload.message));
+              break;
+            }
+          }
+        };
+
+        worker.onerror = (event) => {
+          reject(new Error(`Worker error: ${event.message}`));
+        };
+      });
+
+      worker.postMessage({ type: 'START_STREAM' });
+
+      const totalSegments = mediaManifest.segments.length;
       setProgress({
         stage: 'fetching_segments',
         percent: 15,
-        message: `Downloading ${mediaManifest.segments.length} segments...`,
+        message: `Streaming ${totalSegments} segments...`,
       });
 
-      const segmentBuffers = await fetchSegmentsInBatches(
-        mediaManifest.segments,
-        HLS.SEGMENT_BATCH_SIZE,
-        HLS.FETCH_TIMEOUT_MS,
-        (fetched, total) => {
-          const percent = 15 + (fetched / total) * 55;
-          setProgress({
-            stage: 'fetching_segments',
-            percent,
-            message: `Downloaded ${fetched}/${total} segments`,
-          });
-        }
-      );
+      for (let i = 0; i < totalSegments; i++) {
+        const segment = mediaManifest.segments[i];
+        if (!segment) continue;
+        const buffer = await fetchWithTimeout(segment.uri, HLS.FETCH_TIMEOUT_MS);
 
-      // Check for abort
-      if (signal.aborted) {
-        throw new Error('Loading aborted');
+        if (signal.aborted) {
+          throw new Error('Loading aborted');
+        }
+
+        const isLast = i === totalSegments - 1;
+        worker.postMessage(
+          {
+            type: 'PUSH_SEGMENT',
+            payload: { segment: buffer, index: i + 1, total: totalSegments, isLast },
+          },
+          [buffer]
+        );
       }
 
-      // Step 3: Transmux to MP4
-      setProgress({
-        stage: 'transmuxing',
-        percent: 70,
-        message: 'Converting to MP4...',
-      });
+      await transmuxPromise;
 
-      const mp4Buffer = await transmuxToMp4(segmentBuffers);
+      const totalSize = collectedChunks.reduce((acc, chunk) => acc + chunk.byteLength, 0);
+      const merged = new Uint8Array(totalSize);
+      let offset = 0;
+      for (const chunk of collectedChunks) {
+        merged.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
 
       setProgress({ stage: 'complete', percent: 100, message: 'Complete' });
       setIsLoading(false);
+      transmuxWorkerRef.current?.terminate();
+      transmuxWorkerRef.current = null;
 
       // Return both buffer and the correct duration from HLS manifest
-      return { buffer: mp4Buffer, duration: mediaManifest.totalDuration };
+      return { buffer: merged.buffer, duration: mediaManifest.totalDuration };
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
 
       // Don't set error for aborted requests
-      if (message !== 'Loading aborted') {
+      if (!signal.aborted && message !== 'Loading aborted') {
         setError(message);
         logger.error('HLS loading error:', err);
       }
 
       setIsLoading(false);
+      transmuxWorkerRef.current?.postMessage({ type: 'ABORT' });
+      transmuxWorkerRef.current?.terminate();
+      transmuxWorkerRef.current = null;
       throw err;
     }
   }, []);
 
   return { loadHlsUrl, isLoading, progress, error, abort };
-}
-
-/**
- * Transmux TS segments to MP4 using the HlsTransmuxWorker
- */
-function transmuxToMp4(segments: ArrayBuffer[]): Promise<ArrayBuffer> {
-  return new Promise((resolve, reject) => {
-    const worker = new HlsTransmuxWorker();
-
-    const timeout = setTimeout(() => {
-      worker.terminate();
-      reject(new Error('Transmux timeout'));
-    }, HLS.TRANSMUX_TIMEOUT_MS);
-
-    worker.onmessage = (e: MessageEvent<HlsTransmuxResponse>) => {
-      const { type } = e.data;
-
-      switch (type) {
-        case 'PROGRESS': {
-          const { processed, total } = e.data.payload;
-          logger.log(`Transmux progress: ${processed}/${total}`);
-          break;
-        }
-
-        case 'COMPLETE': {
-          clearTimeout(timeout);
-          worker.terminate();
-          const { mp4Buffer } = e.data.payload;
-          logger.log('Transmux complete:', mp4Buffer.byteLength, 'bytes');
-          resolve(mp4Buffer);
-          break;
-        }
-
-        case 'ERROR': {
-          clearTimeout(timeout);
-          worker.terminate();
-          reject(new Error(e.data.payload.message));
-          break;
-        }
-      }
-    };
-
-    worker.onerror = (e) => {
-      clearTimeout(timeout);
-      worker.terminate();
-      reject(new Error(`Worker error: ${e.message}`));
-    };
-
-    // Transfer buffers to worker
-    worker.postMessage(
-      { type: 'TRANSMUX', payload: { segments } },
-      segments
-    );
-  });
 }

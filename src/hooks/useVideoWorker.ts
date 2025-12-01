@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import type { WorkerCommand, WorkerResponse, EditorState, SpriteInitData } from '../types/editor';
+import type { WorkerCommand, WorkerResponse, EditorState } from '../types/editor';
 import { TIME } from '../constants';
 import { logger } from '../utils/logger';
 
@@ -10,15 +10,16 @@ const { MICROSECONDS_PER_SECOND } = TIME;
 
 interface UseVideoWorkerReturn {
   state: EditorState;
-  sampleData: SpriteInitData | null;
+  firstFrameUrl: string | null;
   initCanvas: (canvas: HTMLCanvasElement) => void;
   loadFile: (file: File) => void;
   loadBuffer: (buffer: ArrayBuffer, durationHint?: number) => void;
+  startStream: (durationHint?: number) => void;
+  appendStreamChunk: (chunk: ArrayBuffer, isLast?: boolean) => void;
   seek: (timeUs: number) => void;
   play: () => void;
   pause: () => void;
   setTrim: (inPoint: number, outPoint: number) => void;
-  requestSampleData: () => void;
 }
 
 export function useVideoWorker(): UseVideoWorkerReturn {
@@ -39,7 +40,18 @@ export function useVideoWorker(): UseVideoWorkerReturn {
     clip: null,
   });
 
-  const [sampleData, setSampleData] = useState<SpriteInitData | null>(null);
+  const [firstFrameUrl, setFirstFrameUrl] = useState<string | null>(null);
+  const resetEditorState = useCallback(() => {
+    setState({
+      duration: 0,
+      currentTime: 0,
+      isPlaying: false,
+      isReady: false,
+      videoWidth: 0,
+      videoHeight: 0,
+      clip: null,
+    });
+  }, []);
 
   // Initialize worker
   useEffect(() => {
@@ -91,8 +103,12 @@ export function useVideoWorker(): UseVideoWorkerReturn {
           break;
         }
 
-        case 'SAMPLES_FOR_SPRITES': {
-          setSampleData(e.data.payload);
+        case 'FIRST_FRAME': {
+          const { blob } = e.data.payload;
+          setFirstFrameUrl((prev) => {
+            if (prev) URL.revokeObjectURL(prev);
+            return URL.createObjectURL(blob);
+          });
           break;
         }
 
@@ -106,6 +122,10 @@ export function useVideoWorker(): UseVideoWorkerReturn {
     return () => {
       worker.terminate();
       workerRef.current = null;
+      setFirstFrameUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return null;
+      });
     };
   }, []);
 
@@ -130,14 +150,40 @@ export function useVideoWorker(): UseVideoWorkerReturn {
   // Command functions - useCallback with empty deps
   // These only access workerRef which is stable, so empty deps is correct
   const loadFile = useCallback((file: File) => {
+    setFirstFrameUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+    resetEditorState();
     workerRef.current?.postMessage({ type: 'LOAD_FILE', payload: { file } });
-  }, []);
+  }, [resetEditorState]);
 
   const loadBuffer = useCallback((buffer: ArrayBuffer, durationHint?: number) => {
+    setFirstFrameUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+    resetEditorState();
     // Transfer the buffer to avoid copying
     workerRef.current?.postMessage(
       { type: 'LOAD_BUFFER', payload: { buffer, durationHint } },
       [buffer]
+    );
+  }, [resetEditorState]);
+
+  const startStream = useCallback((durationHint?: number) => {
+    setFirstFrameUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+    resetEditorState();
+    workerRef.current?.postMessage({ type: 'START_STREAM', payload: { durationHint } });
+  }, [resetEditorState]);
+
+  const appendStreamChunk = useCallback((chunk: ArrayBuffer, isLast?: boolean) => {
+    workerRef.current?.postMessage(
+      { type: 'APPEND_STREAM_CHUNK', payload: { chunk, isLast } },
+      [chunk]
     );
   }, []);
 
@@ -161,20 +207,17 @@ export function useVideoWorker(): UseVideoWorkerReturn {
     }));
   }, []);
 
-  const requestSampleData = useCallback(() => {
-    workerRef.current?.postMessage({ type: 'GET_SAMPLES_FOR_SPRITES' });
-  }, []);
-
   return {
     state,
-    sampleData,
+    firstFrameUrl,
     initCanvas,
     loadFile,
     loadBuffer,
+    startStream,
+    appendStreamChunk,
     seek,
     play,
     pause,
     setTrim,
-    requestSampleData,
   };
 }
