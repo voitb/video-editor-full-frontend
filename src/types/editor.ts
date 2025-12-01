@@ -12,6 +12,28 @@ export interface EditorState {
   } | null;
 }
 
+// Multi-track timeline types
+export type TrackType = 'video' | 'audio';
+export type TrackOrigin = 'recording' | 'overlay';
+
+export interface TrackClip {
+  id: string;
+  label: string;
+  startUs: number;
+  durationUs: number;
+  sourceId: string;
+  origin: TrackOrigin;
+  sourceType?: 'file' | 'hls';
+  isMuted?: boolean;
+}
+
+export interface MediaTrack {
+  id: string;
+  label: string;
+  type: TrackType;
+  clips: TrackClip[];
+}
+
 // Timeline viewport state for zoom/pan
 export interface TimelineViewport {
   startTimeUs: number;   // Visible start time (microseconds)

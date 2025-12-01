@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import { useVideoWorker } from './hooks/useVideoWorker';
 import { useTimelineViewport } from './hooks/useTimelineViewport';
 import { useExportWorker } from './hooks/useExportWorker';
@@ -9,7 +9,10 @@ import { Controls } from './components/Controls';
 import { ExportButton } from './components/ExportButton';
 import { HlsUrlInput } from './components/HlsUrlInput';
 import { secondsToUs } from './utils/time';
+import { createId } from './utils/id';
+import { getMediaDurationSeconds } from './utils/media';
 import { VIDEO_PREVIEW, TIME, FILE_VALIDATION } from './constants';
+import type { MediaTrack } from './types/editor';
 
 type SourceType = 'file' | 'hls';
 
@@ -19,6 +22,16 @@ function App() {
   const [fileError, setFileError] = useState<string | null>(null);
   const [loadedFile, setLoadedFile] = useState<File | null>(null);
   const [sourceType, setSourceType] = useState<SourceType>('file');
+  const [tracks, setTracks] = useState<MediaTrack[]>([]);
+  const [trackError, setTrackError] = useState<string | null>(null);
+  const [isAddingOverlay, setIsAddingOverlay] = useState(false);
+  const [currentRecording, setCurrentRecording] = useState<{
+    id: string;
+    label: string;
+    sourceType: SourceType;
+    hasAudio: boolean;
+  } | null>(null);
+  const recordingAddedRef = useRef<string | null>(null);
   const hlsBufferRef = useRef<ArrayBuffer | null>(null);
   const {
     state,
@@ -52,6 +65,91 @@ function App() {
     clearError: clearExportError,
   } = useExportWorker();
 
+  const addTracksForSource = useCallback((options: {
+    label: string;
+    durationUs: number;
+    origin: 'recording' | 'overlay';
+    sourceType: SourceType;
+    startUs?: number;
+    hasAudio?: boolean;
+  }) => {
+    const {
+      label,
+      durationUs,
+      origin,
+      sourceType,
+      startUs = 0,
+      hasAudio = true,
+    } = options;
+
+    if (!durationUs || durationUs <= 0) {
+      return;
+    }
+
+    const sourceId = createId('src');
+    const safeStartUs = Math.max(0, startUs);
+
+    const videoTrack: MediaTrack = {
+      id: createId('track-v'),
+      label: `${label} · Video`,
+      type: 'video',
+      clips: [
+        {
+          id: createId('clip'),
+          label,
+          startUs: safeStartUs,
+          durationUs,
+          sourceId,
+          origin,
+          sourceType,
+        },
+      ],
+    };
+
+    const audioTrack: MediaTrack | null = hasAudio
+      ? {
+          id: createId('track-a'),
+          label: `${label} · Audio`,
+          type: 'audio',
+          clips: [
+            {
+              id: createId('clip'),
+              label,
+              startUs: safeStartUs,
+              durationUs,
+              sourceId,
+              origin,
+              sourceType,
+            },
+          ],
+        }
+      : null;
+
+    setTracks((prev) => {
+      const videoTracks = prev.filter((track) => track.type === 'video');
+      const audioTracks = prev.filter((track) => track.type === 'audio');
+
+      const nextVideoTracks = [...videoTracks, videoTrack];
+      const nextAudioTracks = audioTrack ? [...audioTracks, audioTrack] : audioTracks;
+
+      return [...nextVideoTracks, ...nextAudioTracks];
+    });
+  }, []);
+
+  const timelineDurationUs = useMemo(() => {
+    const baseDurationUs = secondsToUs(state.duration);
+    const tracksDurationUs = tracks.reduce((max, track) => {
+      const trackMax = track.clips.reduce(
+        (clipMax, clip) => Math.max(clipMax, clip.startUs + clip.durationUs),
+        0
+      );
+      return Math.max(max, trackMax);
+    }, 0);
+
+    return Math.max(baseDurationUs, tracksDurationUs);
+  }, [state.duration, tracks]);
+  const timelineDurationSeconds = timelineDurationUs / MICROSECONDS_PER_SECOND;
+
   // Initialize timeline viewport for zoom/pan
   const {
     viewport,
@@ -62,16 +160,16 @@ function App() {
     canZoomIn,
     canZoomOut,
   } = useTimelineViewport({
-    durationUs: secondsToUs(state.duration),
+    durationUs: timelineDurationUs,
     currentTimeUs: secondsToUs(state.currentTime),
   });
 
   // Reset viewport when a new video is loaded (duration changes)
   useEffect(() => {
-    if (state.duration > 0) {
+    if (timelineDurationUs > 0) {
       zoomToFit();
     }
-  }, [state.duration, zoomToFit]);
+  }, [timelineDurationUs, zoomToFit]);
 
   // File validation and loading
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -98,6 +196,14 @@ function App() {
 
     setLoadedFile(file);
     setSourceType('file');
+    setCurrentRecording({
+      id: createId('recording'),
+      label: file.name,
+      sourceType: 'file',
+      hasAudio: true,
+    });
+    recordingAddedRef.current = null;
+    setTrackError(null);
     loadFile(file);
     play();
   };
@@ -107,7 +213,17 @@ function App() {
     try {
       setFileError(null);
       setLoadedFile(null);
+      setTrackError(null);
       hlsBufferRef.current = null;
+      const urlLabel = url.replace(/^https?:\/\//, '').slice(0, 80);
+
+      setCurrentRecording({
+        id: createId('hls'),
+        label: urlLabel || 'HLS Stream',
+        sourceType: 'hls',
+        hasAudio: true,
+      });
+      recordingAddedRef.current = null;
 
       const { buffer } = await loadHlsUrl(url, {
         onStart: (duration) => {
@@ -126,6 +242,32 @@ function App() {
       // Error is handled by useHlsLoader
     }
   };
+
+  // Add a paired video/audio track whenever a new recording source becomes ready
+  useEffect(() => {
+    if (!state.isReady || !currentRecording) {
+      return;
+    }
+
+    if (recordingAddedRef.current === currentRecording.id) {
+      return;
+    }
+
+    const durationUs = secondsToUs(state.duration);
+    if (durationUs <= 0) {
+      return;
+    }
+
+    addTracksForSource({
+      label: currentRecording.label,
+      durationUs,
+      origin: 'recording',
+      sourceType: currentRecording.sourceType,
+      startUs: 0,
+      hasAudio: currentRecording.hasAudio,
+    });
+    recordingAddedRef.current = currentRecording.id;
+  }, [state.isReady, state.duration, currentRecording, addTracksForSource]);
 
   // Handle export request
   const handleExport = () => {
@@ -148,6 +290,76 @@ function App() {
       });
     }
   };
+
+  const handleOverlayFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files?.length) return;
+
+    setTrackError(null);
+    setIsAddingOverlay(true);
+
+    try {
+      const overlayStartUs = secondsToUs(state.isReady ? state.currentTime : 0);
+      const results = await Promise.allSettled(
+        Array.from(files).map(async (file) => {
+          if (file.size > FILE_VALIDATION.MAX_FILE_SIZE) {
+            throw new Error(`${file.name} exceeds the ${FILE_VALIDATION.MAX_FILE_SIZE / 1024 / 1024}MB limit.`);
+          }
+          const isAcceptedType = FILE_VALIDATION.ACCEPTED_TYPES.some((type) => file.type === type);
+          if (!isAcceptedType) {
+            throw new Error(`${file.name} is not a supported format.`);
+          }
+
+          const durationSeconds = await getMediaDurationSeconds(file);
+          return { file, durationUs: secondsToUs(durationSeconds) };
+        })
+      );
+
+      let added = 0;
+      let hadFailure = false;
+
+      results.forEach((result) => {
+        if (result.status === 'fulfilled') {
+          addTracksForSource({
+            label: result.value.file.name,
+            durationUs: result.value.durationUs,
+            origin: 'overlay',
+            sourceType: 'file',
+            startUs: overlayStartUs,
+            hasAudio: true,
+          });
+          added += 1;
+        } else {
+          hadFailure = true;
+        }
+      });
+
+      if (hadFailure) {
+        setTrackError('Some overlay clips could not be added. Check the file type and size.');
+      } else if (added === 0) {
+        setTrackError('No overlay clips were added.');
+      }
+    } catch (error) {
+      // Logging helps diagnose issues while we surface a friendly message to the user
+      console.error('Failed to add overlay clips:', error);
+      setTrackError('Unable to add overlay clips. Please try again.');
+    } finally {
+      setIsAddingOverlay(false);
+      e.target.value = '';
+    }
+  };
+
+  const trackCounts = useMemo(
+    () => tracks.reduce(
+      (acc, track) => {
+        if (track.type === 'video') acc.video += 1;
+        if (track.type === 'audio') acc.audio += 1;
+        return acc;
+      },
+      { video: 0, audio: 0 }
+    ),
+    [tracks]
+  );
 
   // Check if we have a valid source for export
   const hasValidSource = (sourceType === 'file' && loadedFile) || (sourceType === 'hls' && hlsBufferRef.current);
@@ -254,13 +466,58 @@ function App() {
                 />
               </div>
 
+              {/* Track management */}
+              <div className="mt-4 bg-gray-900/60 border border-gray-800 rounded-lg px-4 py-3 space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold">Tracks & Layers</p>
+                    <p className="text-xs text-gray-400">
+                      Each recording creates separate video and audio lanes. Add overlays to stack more footage.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2 text-[11px]">
+                      <span className="px-2 py-1 rounded-full bg-blue-500/10 border border-blue-500/30 text-blue-100">
+                        Video: {trackCounts.video}
+                      </span>
+                      <span className="px-2 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-100">
+                        Audio: {trackCounts.audio}
+                      </span>
+                    </div>
+                    <label
+                      className={`px-3 py-2 rounded-md bg-blue-600 hover:bg-blue-500 text-xs font-semibold cursor-pointer transition ${
+                        isAddingOverlay ? 'opacity-70 cursor-wait' : ''
+                      }`}
+                    >
+                      <input
+                        type="file"
+                        className="sr-only"
+                        multiple
+                        accept={FILE_VALIDATION.ACCEPTED_TYPES.join(',')}
+                        onChange={handleOverlayFiles}
+                        disabled={isAddingOverlay}
+                      />
+                      {isAddingOverlay ? 'Adding overlays...' : 'Add overlay video'}
+                    </label>
+                  </div>
+                </div>
+                {trackError && (
+                  <div className="text-xs text-red-400" role="alert">
+                    {trackError}
+                  </div>
+                )}
+              </div>
+
               {/* Timeline */}
               <div className="pt-6">
                 <Timeline
-                  duration={state.duration}
+                  duration={timelineDurationSeconds}
                   currentTime={state.currentTime}
                   inPoint={state.clip?.inPoint ?? 0}
                   outPoint={state.clip?.outPoint ?? secondsToUs(state.duration)}
+                  timelineDurationUs={timelineDurationUs}
+                  trimMaxUs={secondsToUs(state.duration)}
+                  tracks={tracks}
                   onSeek={seek}
                   onTrimChange={setTrim}
                   posterUrl={firstFrameUrl ?? undefined}

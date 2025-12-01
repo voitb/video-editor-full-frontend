@@ -67,7 +67,7 @@ export function useSpriteWorker(
 ): UseSpriteWorkerReturn {
   const workerRef = useRef<Worker | null>(null);
   const cacheRef = useRef<SpriteCache | null>(null);
-  const lastProgressTimeRef = useRef<number>(Date.now());
+  const lastProgressTimeRef = useRef<number>(0);
   const [sprites, setSprites] = useState<SpriteData[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [progress, setProgress] = useState<{ generated: number; total: number } | null>(null);
@@ -86,7 +86,6 @@ export function useSpriteWorker(
   // Watchdog timer to detect stuck generation (no progress for 15 seconds)
   useEffect(() => {
     if (!isGenerating) {
-      setIsStuck(false);
       return;
     }
 
@@ -147,17 +146,18 @@ export function useSpriteWorker(
           const { message, recoverable } = e.data.payload;
           logger.error('useSpriteWorker Error:', message, { recoverable });
 
-          if (recoverable) {
-            // For recoverable errors, show briefly but let generation continue
-            logger.warn('Recoverable sprite error, generation continuing:', message);
-            setError(message);
-            // Clear error message after 3 seconds
+        if (recoverable) {
+          // For recoverable errors, show briefly but let generation continue
+          logger.warn('Recoverable sprite error, generation continuing:', message);
+          setError(message);
+          // Clear error message after 3 seconds
             setTimeout(() => setError(null), 3000);
           } else {
             // Fatal error - stop generation
             setIsGenerating(false);
             setProgress(null);
             setError(message);
+            setIsStuck(false);
           }
           break;
         }
@@ -215,6 +215,7 @@ export function useSpriteWorker(
     setSprites([]);
     setIsGenerating(false);
     setProgress(null);
+    setIsStuck(false);
   }, []);
 
   // Notify worker of viewport change for progressive loading

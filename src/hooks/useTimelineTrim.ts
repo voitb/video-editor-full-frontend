@@ -22,8 +22,8 @@ interface UseTimelineTrimOptions {
   viewportStartUs: number;
   /** Visible duration in microseconds */
   visibleDurationUs: number;
-  /** Total video duration in seconds */
-  duration: number;
+  /** Maximum trim boundary in microseconds */
+  maxTrimUs: number;
   /** Current in point in microseconds */
   inPoint: number;
   /** Current out point in microseconds */
@@ -58,7 +58,7 @@ export function useTimelineTrim({
   inactiveRightRef,
   viewportStartUs,
   visibleDurationUs,
-  duration,
+  maxTrimUs,
   inPoint,
   outPoint,
   currentTime,
@@ -157,7 +157,7 @@ export function useTimelineTrim({
           }
         }
       } else if (isDraggingTrim === 'out') {
-        const maxUs = secondsToUs(duration);
+        const maxUs = maxTrimUs;
         const newOutPoint = Math.max(inPoint + MIN_TRIM_DURATION_US, Math.min(timeUs, maxUs));
         const currentInPercent = ((inPoint - viewportStartUs) / visibleDurationUs) * 100;
         const newOutPercent = ((newOutPoint - viewportStartUs) / visibleDurationUs) * 100;
@@ -204,10 +204,10 @@ export function useTimelineTrim({
     getTimeFromMouseX,
     inPoint,
     outPoint,
-    duration,
     currentTime,
     viewportStartUs,
     visibleDurationUs,
+    maxTrimUs,
     updateTrimHandlesDOM,
     onTrimChange,
     onSeek,

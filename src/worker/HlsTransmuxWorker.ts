@@ -12,7 +12,8 @@ const logger = createWorkerLogger('HlsTransmuxWorker');
 
 // Send response to main thread
 function postResponse(response: HlsTransmuxResponse, transfer?: Transferable[]): void {
-  (self as any).postMessage(response, transfer ?? []);
+  const workerScope = self as unknown as DedicatedWorkerGlobalScope;
+  workerScope.postMessage(response, transfer ?? []);
 }
 
 let transmuxer: muxjs.mp4.Transmuxer | null = null;
