@@ -1,7 +1,9 @@
+/// <reference lib="webworker" />
 import { createFile, DataStream } from 'mp4box';
 import type { MP4File, MP4Sample, MP4Info, MP4VideoTrack } from 'mp4box';
 import { WebGLRenderer } from './renderer';
-import type { WorkerCommand, WorkerResponse } from '../types/editor';
+import { Compositor } from './compositor';
+import type { WorkerCommand, WorkerResponse, ActiveClip } from '../types/editor';
 import { PLAYBACK, TIME } from '../constants';
 import { createWorkerLogger } from '../utils/logger';
 import { findPreviousKeyframe as findPreviousKeyframeUtil } from '../utils/keyframeSearch';
@@ -16,6 +18,79 @@ const logger = createWorkerLogger('VideoWorker');
 
 type WorkerState = 'idle' | 'loading' | 'ready' | 'seeking' | 'playing';
 
+// ============================================================================
+// MULTI-SOURCE STATE
+// ============================================================================
+// Per-source state for multi-source video compositing.
+// Each loaded source maintains its own demuxer, decoder, and frame queue.
+
+interface PerSourceState {
+  sourceId: string;
+  mp4File: MP4File | null;
+  decoder: VideoDecoder | null;
+  videoTrackInfo: MP4VideoTrack | null;
+  codecDescription: Uint8Array | null;
+  samples: MP4Sample[];
+  keyframeIndices: number[];
+  frameQueue: { frame: VideoFrame; timestamp: number }[];
+  durationUs: number;
+  width: number;
+  height: number;
+  isReady: boolean;
+  lastQueuedSampleIndex: number;
+  currentSampleIndex: number;
+  // Streaming state per source
+  streamOffset: number;
+}
+
+function createPerSourceState(sourceId: string): PerSourceState {
+  return {
+    sourceId,
+    mp4File: null,
+    decoder: null,
+    videoTrackInfo: null,
+    codecDescription: null,
+    samples: [],
+    keyframeIndices: [],
+    frameQueue: [],
+    durationUs: 0,
+    width: 0,
+    height: 0,
+    isReady: false,
+    lastQueuedSampleIndex: -1,
+    currentSampleIndex: 0,
+    streamOffset: 0,
+  };
+}
+
+function disposePerSourceState(source: PerSourceState): void {
+  // Close decoder
+  if (source.decoder && source.decoder.state !== 'closed') {
+    source.decoder.close();
+  }
+  source.decoder = null;
+
+  // Close all frames in queue
+  for (const { frame } of source.frameQueue) {
+    frame.close();
+  }
+  source.frameQueue.length = 0;
+
+  // Flush mp4File
+  if (source.mp4File) {
+    source.mp4File.flush();
+  }
+  source.mp4File = null;
+
+  // Clear samples
+  source.samples.length = 0;
+  source.keyframeIndices.length = 0;
+}
+
+// ============================================================================
+// GLOBAL WORKER STATE
+// ============================================================================
+
 interface VideoWorkerState {
   // Current state machine state
   state: WorkerState;
@@ -26,6 +101,7 @@ interface VideoWorkerState {
 
   // Core resources (null when idle)
   renderer: WebGLRenderer | null;
+  compositor: Compositor | null;
   mp4File: MP4File | null;
   decoder: VideoDecoder | null;
   videoTrackInfo: MP4VideoTrack | null;
@@ -65,6 +141,11 @@ interface VideoWorkerState {
   pendingAutoPlay: boolean;
   hasCapturedFirstFrame: boolean;
   streamOffset: number;
+
+  // Multi-source state
+  sources: Map<string, PerSourceState>;
+  activeClips: ActiveClip[];
+  primarySourceId: string | null;
 }
 
 // Single source of truth for all worker state
@@ -73,6 +154,7 @@ const workerState: VideoWorkerState = {
   isPlaying: false,
   isSeeking: false,
   renderer: null,
+  compositor: null,
   mp4File: null,
   decoder: null,
   videoTrackInfo: null,
@@ -100,6 +182,11 @@ const workerState: VideoWorkerState = {
   pendingAutoPlay: false,
   hasCapturedFirstFrame: false,
   streamOffset: 0,
+
+  // Multi-source state
+  sources: new Map(),
+  activeClips: [],
+  primarySourceId: null,
 };
 
 // Convenience accessor for state
@@ -251,6 +338,39 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
       // Playback will start from in-point if current position is before it
       break;
     }
+
+    // ========================================================================
+    // MULTI-SOURCE COMMANDS
+    // ========================================================================
+
+    case 'LOAD_SOURCE': {
+      const { sourceId, file, buffer } = e.data.payload;
+      await loadSource(sourceId, file, buffer);
+      break;
+    }
+
+    case 'REMOVE_SOURCE': {
+      const { sourceId } = e.data.payload;
+      removeSource(sourceId);
+      break;
+    }
+
+    case 'SET_ACTIVE_CLIPS': {
+      const { clips } = e.data.payload;
+      state.activeClips = clips;
+      logger.log('Active clips updated:', clips.length);
+      break;
+    }
+
+    case 'SYNC_TO_TIME': {
+      const { timeUs } = e.data.payload;
+      // Sync video to audio clock - adjust playback position without full seek
+      if (state.isPlaying) {
+        state.playbackStartTime = timeUs;
+        state.playbackStartWallTime = performance.now();
+      }
+      break;
+    }
   }
 };
 
@@ -373,11 +493,24 @@ function initializeDemuxer(durationHint?: number): void {
     output: handleDecodedFrame,
     error: (e) => {
       logger.warn('Decoder error (recoverable):', e);
-      // Attempt to rebuild decoder when we have enough data
-      state.pendingAutoPlay = true;
-      state.isPlaying = false;
-      ensureDecoderConfigured();
-      postResponse({ type: 'PLAYBACK_STATE', payload: { isPlaying: false } });
+
+      // CRITICAL: Clear broken decoder reference - don't try to reset a closed codec
+      // Calling reset() on a closed decoder throws "Cannot call 'reset' on a closed codec"
+      state.decoder = null;
+
+      // Recreate fresh decoder via ensureDecoderConfigured
+      if (!ensureDecoderConfigured()) {
+        logger.error('Failed to recreate decoder after error');
+        state.isPlaying = false;
+        state.pendingAutoPlay = false;
+        postResponse({ type: 'PLAYBACK_STATE', payload: { isPlaying: false } });
+        return;
+      }
+
+      // Only restart playback if we have valid keyframes to decode from
+      if ((state.isPlaying || state.pendingAutoPlay) && hasPlayableKeyframe()) {
+        void startPlayback();
+      }
     },
   });
 
@@ -507,6 +640,428 @@ function startStream(durationHint?: number): void {
   initializeDemuxer(durationHint);
 }
 
+// ============================================================================
+// MULTI-SOURCE LOADING
+// ============================================================================
+
+/**
+ * Load a new video source into the multi-source Map.
+ * Each source maintains independent demuxer, decoder, and frame queue.
+ */
+async function loadSource(sourceId: string, file?: File, buffer?: ArrayBuffer): Promise<void> {
+  // Remove existing source if present
+  if (state.sources.has(sourceId)) {
+    removeSource(sourceId);
+  }
+
+  const source = createPerSourceState(sourceId);
+  state.sources.set(sourceId, source);
+
+  logger.log(`Loading source: ${sourceId}`);
+
+  try {
+    // Initialize MP4 demuxer for this source
+    source.mp4File = createFile();
+
+    // Track audio info for later extraction
+    let audioTrackInfo: { sampleRate: number; channels: number } | null = null;
+
+    source.mp4File.onReady = (info: MP4Info) => {
+      const videoTrack = info.tracks.find(
+        (t): t is MP4VideoTrack => t.type === 'video'
+      );
+
+      if (!videoTrack) {
+        logger.error(`No video track found in source: ${sourceId}`);
+        postResponse({ type: 'ERROR', payload: { message: `No video track in source: ${sourceId}` } });
+        return;
+      }
+
+      source.videoTrackInfo = videoTrack;
+      source.durationUs = (info.duration / info.timescale) * MICROSECONDS_PER_SECOND;
+      source.width = videoTrack.video.width;
+      source.height = videoTrack.video.height;
+
+      // Check for audio track
+      const audioTrack = info.tracks.find(t => t.type === 'audio');
+      if (audioTrack && 'audio' in audioTrack) {
+        const audio = audioTrack.audio as { sample_rate: number; channel_count: number };
+        audioTrackInfo = {
+          sampleRate: audio.sample_rate,
+          channels: audio.channel_count,
+        };
+        logger.log(`Source ${sourceId} has audio track:`, audioTrackInfo);
+      }
+
+      // Extract codec description
+      const entry = source.mp4File?.getTrackById(videoTrack.id)?.mdia?.minf?.stbl?.stsd
+        ?.entries?.[0] as { avcC?: { data: Uint8Array }; hvcC?: { data: Uint8Array } } | undefined;
+      const codecBox = entry?.avcC ?? entry?.hvcC;
+      if (codecBox?.data) {
+        source.codecDescription = new Uint8Array(codecBox.data);
+      }
+
+      // Configure decoder for this source
+      initializeSourceDecoder(source);
+
+      // Extract samples
+      source.mp4File?.setExtractionOptions(videoTrack.id, null, {
+        nbSamples: Infinity,
+      });
+
+      source.mp4File?.start();
+    };
+
+    source.mp4File.onSamples = (
+      _trackId: number,
+      _user: unknown,
+      samples: MP4Sample[]
+    ) => {
+      for (const sample of samples) {
+        source.samples.push(sample);
+        if (sample.is_sync) {
+          source.keyframeIndices.push(source.samples.length - 1);
+        }
+      }
+    };
+
+    source.mp4File.onError = (e: string) => {
+      logger.error(`MP4 error for source ${sourceId}:`, e);
+      postResponse({ type: 'ERROR', payload: { message: `Source ${sourceId}: ${e}` } });
+    };
+
+    // Load from file or buffer
+    if (file) {
+      const reader = file.stream().getReader();
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+
+        const chunkBuffer = value.buffer.slice(
+          value.byteOffset,
+          value.byteOffset + value.byteLength
+        ) as ArrayBuffer & { fileStart?: number };
+        chunkBuffer.fileStart = source.streamOffset;
+        source.streamOffset += chunkBuffer.byteLength;
+        source.mp4File?.appendBuffer(chunkBuffer);
+      }
+      source.mp4File?.flush();
+    } else if (buffer) {
+      const bufferWithStart = buffer as ArrayBuffer & { fileStart?: number };
+      bufferWithStart.fileStart = 0;
+      source.mp4File?.appendBuffer(bufferWithStart);
+      source.mp4File?.flush();
+    }
+
+    source.isReady = true;
+
+    // Post SOURCE_READY response
+    postResponse({
+      type: 'SOURCE_READY',
+      payload: {
+        sourceId,
+        duration: source.durationUs / MICROSECONDS_PER_SECOND,
+        width: source.width,
+        height: source.height,
+      },
+    });
+
+    // Send audio data if source has audio track
+    // AudioContext can decode audio directly from MP4 containers
+    if (audioTrackInfo && buffer) {
+      // Send a copy of the buffer for audio decoding
+      const audioBuffer = buffer.slice(0);
+      postResponse({
+        type: 'AUDIO_DATA',
+        payload: {
+          sourceId,
+          audioData: audioBuffer,
+          sampleRate: audioTrackInfo.sampleRate,
+          channels: audioTrackInfo.channels,
+          durationUs: source.durationUs,
+        },
+      });
+      logger.log(`Audio data sent for source: ${sourceId}`);
+    }
+
+    logger.log(`Source loaded: ${sourceId}`, {
+      duration: source.durationUs,
+      samples: source.samples.length,
+      keyframes: source.keyframeIndices.length,
+      hasAudio: !!audioTrackInfo,
+    });
+
+  } catch (e) {
+    const message = e instanceof Error ? e.message : 'Unknown source load error';
+    logger.error(`Failed to load source ${sourceId}:`, e);
+    postResponse({ type: 'ERROR', payload: { message: `Source ${sourceId}: ${message}` } });
+  }
+}
+
+/**
+ * Initialize video decoder for a specific source
+ */
+function initializeSourceDecoder(source: PerSourceState): void {
+  if (!source.videoTrackInfo) return;
+
+  const track = source.videoTrackInfo;
+  const config: VideoDecoderConfig = {
+    codec: track.codec,
+    codedWidth: track.video.width,
+    codedHeight: track.video.height,
+    ...(source.codecDescription && { description: source.codecDescription }),
+  };
+
+  source.decoder = new VideoDecoder({
+    output: (frame: VideoFrame) => {
+      handleSourceFrame(source, frame);
+    },
+    error: (e) => {
+      logger.warn(`Decoder error for source ${source.sourceId}:`, e);
+      source.decoder = null;
+      // Attempt to recreate decoder
+      initializeSourceDecoder(source);
+    },
+  });
+
+  source.decoder.configure(config);
+  logger.log(`Decoder configured for source: ${source.sourceId}`);
+}
+
+/**
+ * Handle decoded frame from a specific source
+ */
+function handleSourceFrame(source: PerSourceState, frame: VideoFrame): void {
+  const timestamp = frame.timestamp ?? 0;
+
+  // Add to source's frame queue for compositing
+  source.frameQueue.push({ frame, timestamp });
+
+  // Limit queue size to prevent memory issues
+  while (source.frameQueue.length > MAX_QUEUE_SIZE * 2) {
+    const oldest = source.frameQueue.shift();
+    oldest?.frame.close();
+  }
+}
+
+/**
+ * Remove a source from the multi-source Map
+ */
+function removeSource(sourceId: string): void {
+  const source = state.sources.get(sourceId);
+  if (!source) return;
+
+  logger.log(`Removing source: ${sourceId}`);
+  disposePerSourceState(source);
+  state.sources.delete(sourceId);
+
+  // Clear from active clips
+  state.activeClips = state.activeClips.filter(c => c.sourceId !== sourceId);
+
+  // Clear primary if it was this source
+  if (state.primarySourceId === sourceId) {
+    state.primarySourceId = null;
+  }
+
+  postResponse({ type: 'SOURCE_REMOVED', payload: { sourceId } });
+}
+
+/**
+ * Get frame from a specific source at a given timestamp
+ */
+function getSourceFrameAtTime(source: PerSourceState, timeUs: number): VideoFrame | null {
+  if (source.frameQueue.length === 0) return null;
+
+  // Find best frame at or before the requested time
+  let bestIndex = -1;
+  for (let i = 0; i < source.frameQueue.length; i++) {
+    const frame = source.frameQueue[i];
+    if (frame.timestamp <= timeUs) {
+      bestIndex = i;
+    } else {
+      break;
+    }
+  }
+
+  if (bestIndex === -1) return null;
+
+  // Don't remove from queue - compositor may need it multiple times
+  return source.frameQueue[bestIndex].frame;
+}
+
+// ============================================================================
+// MULTI-SOURCE COMPOSITING
+// ============================================================================
+
+/**
+ * Get all clips that are active at the given timeline time
+ */
+function getActiveClipsAtTime(timelineTimeUs: number): ActiveClip[] {
+  return state.activeClips.filter(clip => {
+    const clipEnd = clip.startTimeUs + (clip.sourceEndUs - clip.sourceStartUs);
+    return timelineTimeUs >= clip.startTimeUs && timelineTimeUs < clipEnd;
+  });
+}
+
+/**
+ * Get frame from a source for a given clip at timeline time
+ */
+function getClipFrameAtTime(clip: ActiveClip, timelineTimeUs: number): VideoFrame | null {
+  const source = state.sources.get(clip.sourceId);
+  if (!source || !source.isReady) return null;
+
+  // Convert timeline time to source time
+  const sourceTimeUs = timelineTimeUs - clip.startTimeUs + clip.sourceStartUs;
+  return getSourceFrameAtTime(source, sourceTimeUs);
+}
+
+/**
+ * Composite all active clips at the given timeline time.
+ * Returns true if a frame was rendered, false otherwise.
+ */
+function compositeActiveClips(timelineTimeUs: number): boolean {
+  const activeClips = getActiveClipsAtTime(timelineTimeUs);
+
+  if (activeClips.length === 0) {
+    return false;
+  }
+
+  // Sort by trackIndex (lowest = bottom layer)
+  activeClips.sort((a, b) => a.trackIndex - b.trackIndex);
+
+  // Collect frames from all active clips
+  const layers: { frame: VideoFrame; clip: ActiveClip }[] = [];
+
+  for (const clip of activeClips) {
+    const frame = getClipFrameAtTime(clip, timelineTimeUs);
+    if (frame) {
+      layers.push({ frame, clip });
+    }
+  }
+
+  if (layers.length === 0) {
+    return false;
+  }
+
+  // Use compositor if available and we have multiple layers
+  if (state.compositor && layers.length > 1) {
+    state.compositor.composite(layers);
+    return true;
+  }
+
+  // Single layer or no compositor - use renderer directly
+  if (state.renderer && layers.length > 0) {
+    // For single layer, just draw the first frame
+    // Note: We don't close the frame here as it's still in the source's queue
+    state.renderer.draw(layers[0].frame);
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Feed decoders for all active sources to ensure frames are available
+ */
+function feedActiveSourceDecoders(timelineTimeUs: number): void {
+  const activeClips = getActiveClipsAtTime(timelineTimeUs);
+
+  for (const clip of activeClips) {
+    const source = state.sources.get(clip.sourceId);
+    if (!source || !source.isReady || !source.decoder) continue;
+    if (source.decoder.state !== 'configured') continue;
+
+    // Calculate source time
+    const sourceTimeUs = timelineTimeUs - clip.startTimeUs + clip.sourceStartUs;
+
+    // Check if we need to decode more frames for this source
+    const inFlightCount = source.decoder.decodeQueueSize + source.frameQueue.length;
+    if (inFlightCount < MAX_QUEUE_SIZE && source.lastQueuedSampleIndex + 1 < source.samples.length) {
+      // Find the sample index for the current time
+      const sourceTimeSec = sourceTimeUs / MICROSECONDS_PER_SECOND;
+      let targetSampleIndex = source.samples.findIndex(sample => {
+        const sampleTime = sample.cts / sample.timescale;
+        return sampleTime >= sourceTimeSec;
+      });
+
+      if (targetSampleIndex === -1) {
+        targetSampleIndex = source.samples.length - 1;
+      }
+
+      // Decode frames ahead of the current position
+      if (source.lastQueuedSampleIndex < targetSampleIndex + MAX_QUEUE_SIZE) {
+        source.lastQueuedSampleIndex++;
+        decodeSourceFrame(source, source.lastQueuedSampleIndex);
+      }
+    }
+  }
+}
+
+/**
+ * Decode a specific frame from a source
+ */
+function decodeSourceFrame(source: PerSourceState, sampleIndex: number): void {
+  if (!source.decoder || source.decoder.state !== 'configured') return;
+  if (sampleIndex < 0 || sampleIndex >= source.samples.length) return;
+
+  const sample = source.samples[sampleIndex];
+  const chunk = new EncodedVideoChunk({
+    type: sample.is_sync ? 'key' : 'delta',
+    timestamp: (sample.cts / sample.timescale) * MICROSECONDS_PER_SECOND,
+    duration: (sample.duration / sample.timescale) * MICROSECONDS_PER_SECOND,
+    data: sample.data,
+  });
+
+  source.decoder.decode(chunk);
+}
+
+/**
+ * Multi-source playback loop.
+ * Composites frames from multiple sources based on activeClips.
+ */
+function multiSourcePlaybackLoop(): void {
+  if (!state.isPlaying) {
+    return;
+  }
+
+  // Initialize wall clock sync if needed
+  if (state.needsWallClockSync) {
+    state.playbackStartWallTime = performance.now();
+    state.playbackStartTime = state.trimInPoint;
+    state.needsWallClockSync = false;
+  }
+
+  // Calculate target timeline time based on wall clock
+  const elapsed = performance.now() - state.playbackStartWallTime;
+  const targetUs = state.playbackStartTime + elapsed * 1000; // elapsed is ms, convert to us
+
+  // Check if we've reached the trim out point
+  if (targetUs >= state.trimOutPoint) {
+    void pausePlayback();
+    return;
+  }
+
+  // Feed decoders for all active sources
+  feedActiveSourceDecoders(targetUs);
+
+  // Composite and render active clips at current time
+  const rendered = compositeActiveClips(targetUs);
+
+  if (rendered) {
+    state.lastRenderedTime = targetUs;
+    postResponse({
+      type: 'TIME_UPDATE',
+      payload: { currentTimeUs: targetUs },
+    });
+  }
+
+  // Continue playback loop
+  if (state.isPlaying) {
+    requestAnimationFrame(playbackLoop);
+  }
+}
+
 async function seekTo(timeUs: number): Promise<void> {
   if (!state.decoder || state.samples.length === 0) return;
   if (state.decoder.state !== 'configured') return;
@@ -572,6 +1127,11 @@ async function performSeek(timeUs: number): Promise<void> {
   }
 
   // Flush decoder to clear any pending frames
+  // Guard against decoder becoming invalid during async operations
+  if (!state.decoder || state.decoder.state !== 'configured') {
+    state.isSeeking = false;
+    return;
+  }
   await state.decoder.flush();
 
   // Clear frame queue
@@ -671,9 +1231,13 @@ async function startPlayback(): Promise<void> {
 
     // CRITICAL: Flush decoder to ensure clean state before playback
     // This guarantees the decoder is ready for a key frame
-    if (state.decoder.state === 'configured') {
-      await state.decoder.flush();
+    // Guard against decoder becoming invalid during seekTo() above
+    if (!state.decoder || state.decoder.state !== 'configured') {
+      state.isPlaying = false;
+      postResponse({ type: 'PLAYBACK_STATE', payload: { isPlaying: false } });
+      return;
     }
+    await state.decoder.flush();
 
     // Clear any existing queued frames AFTER flush
     for (const { frame } of state.frameQueue) {
@@ -755,10 +1319,25 @@ async function pausePlayback(): Promise<void> {
 }
 
 function playbackLoop(): void {
-  if (!state.isPlaying || !state.decoder || state.decoder.state !== 'configured') {
-    if (state.isPlaying) {
-      void pausePlayback();  // Now async
-    }
+  if (!state.isPlaying) {
+    return;
+  }
+
+  // ========================================================================
+  // MULTI-SOURCE MODE
+  // ========================================================================
+  // When activeClips are set, use multi-source compositing instead of
+  // single-source playback.
+  if (state.activeClips.length > 0) {
+    multiSourcePlaybackLoop();
+    return;
+  }
+
+  // ========================================================================
+  // SINGLE-SOURCE MODE (backward compatible)
+  // ========================================================================
+  if (!state.decoder || state.decoder.state !== 'configured') {
+    void pausePlayback();
     return;
   }
 

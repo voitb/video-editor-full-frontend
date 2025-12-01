@@ -3,11 +3,9 @@ import { secondsToUs, formatTimeCompact } from '../utils/time';
 import { TimelineSprites } from './TimelineSprites';
 import { TimelineMinimap } from './TimelineMinimap';
 import { TimelinePlayhead } from './TimelinePlayhead';
-import { TimelineTrimHandles } from './TimelineTrimHandles';
 import { TimelineZoomControls } from './TimelineZoomControls';
 import { useTimelineDrag } from '../hooks/useTimelineDrag';
-import { useTimelineTrim } from '../hooks/useTimelineTrim';
-import type { MediaTrack, TimelineViewport } from '../types/editor';
+import type { ClipChange, MediaTrack, TimelineViewport } from '../types/editor';
 import { TrackLabelColumn, TrackLanes } from './multitrack/TimelineTracks';
 import { TIME } from '../constants';
 
@@ -18,14 +16,10 @@ const DEFAULT_LANE_HEIGHT = 48;
 interface TimelineProps {
   duration: number; // seconds
   currentTime: number; // seconds
-  inPoint: number; // microseconds
-  outPoint: number; // microseconds
   timelineDurationUs?: number; // optional override for multi-track compositions
-  trimMaxUs?: number; // maximum allowed trim boundary
   tracks?: MediaTrack[];
   laneHeight?: number;
   onSeek: (timeUs: number) => void;
-  onTrimChange: (inPoint: number, outPoint: number) => void;
   posterUrl?: string;
   // Viewport/zoom props
   viewport: TimelineViewport;
@@ -35,19 +29,16 @@ interface TimelineProps {
   canZoomIn: boolean;
   canZoomOut: boolean;
   onViewportChange: (viewport: TimelineViewport) => void;
+  onClipChange?: (change: ClipChange) => void;
 }
 
 export function Timeline({
   duration,
   currentTime,
-  inPoint,
-  outPoint,
   timelineDurationUs,
-  trimMaxUs,
   tracks,
   laneHeight = DEFAULT_LANE_HEIGHT,
   onSeek,
-  onTrimChange,
   posterUrl,
   viewport,
   onZoomIn,
@@ -56,6 +47,7 @@ export function Timeline({
   canZoomIn,
   canZoomOut,
   onViewportChange,
+  onClipChange,
 }: TimelineProps) {
   const trackList = tracks ?? [];
   const hasTracks = trackList.length > 0;
@@ -64,7 +56,6 @@ export function Timeline({
     ? Math.max(trackList.length * laneHeight, laneHeight)
     : 48;
   const totalDurationUs = timelineDurationUs ?? secondsToUs(duration);
-  const trimBoundaryUs = trimMaxUs ?? totalDurationUs;
   const durationSecondsForSprites = totalDurationUs / MICROSECONDS_PER_SECOND;
 
   // Derived values
@@ -73,38 +64,15 @@ export function Timeline({
   // DOM refs
   const trackRef = useRef<HTMLDivElement>(null);
   const playheadRef = useRef<HTMLDivElement>(null);
-  const inHandleRef = useRef<HTMLDivElement>(null);
-  const outHandleRef = useRef<HTMLDivElement>(null);
-  const activeRegionRef = useRef<HTMLDivElement>(null);
-  const inactiveLeftRef = useRef<HTMLDivElement>(null);
-  const inactiveRightRef = useRef<HTMLDivElement>(null);
 
-  // Playhead dragging hook
+  // Playhead dragging hook (no longer constrained by global trim)
   const { isDragging, handlePlayheadMouseDown, handleTrackClick } = useTimelineDrag({
     trackRef,
     playheadRef,
     viewportStartUs: viewport.startTimeUs,
     visibleDurationUs,
-    inPoint,
-    outPoint,
-    onSeek,
-  });
-
-  // Trim handle dragging hook
-  const { isDraggingTrim, handleInMouseDown, handleOutMouseDown } = useTimelineTrim({
-    trackRef,
-    inHandleRef,
-    outHandleRef,
-    activeRegionRef,
-    inactiveLeftRef,
-    inactiveRightRef,
-    viewportStartUs: viewport.startTimeUs,
-    visibleDurationUs,
-    maxTrimUs: trimBoundaryUs,
-    inPoint,
-    outPoint,
-    currentTime,
-    onTrimChange,
+    inPoint: 0,
+    outPoint: totalDurationUs,
     onSeek,
   });
 
@@ -114,8 +82,6 @@ export function Timeline({
     return ((timeUs - viewport.startTimeUs) / visibleDurationUs) * 100;
   };
 
-  const inPercent = timeToViewportPercent(inPoint);
-  const outPercent = timeToViewportPercent(outPoint);
   const playheadPercent = timeToViewportPercent(secondsToUs(currentTime));
 
   // Mouse wheel zoom handler (Ctrl/Cmd + scroll)
@@ -145,8 +111,8 @@ export function Timeline({
     );
   }
 
-  // Combine drag states for track click handling
-  const isAnyDragging = isDragging || isDraggingTrim !== null;
+  // Check if dragging for track click handling
+  const isAnyDragging = isDragging;
 
   return (
     <div className="w-full">
@@ -185,21 +151,15 @@ export function Timeline({
 
           {/* Multitrack lanes (video + audio) */}
           {hasTracks && (
-            <TrackLanes tracks={trackList} viewport={viewport} laneHeight={laneHeight} />
+            <TrackLanes
+              tracks={trackList}
+              viewport={viewport}
+              laneHeight={laneHeight}
+              trackRef={trackRef}
+              visibleDurationUs={visibleDurationUs}
+              onClipChange={onClipChange}
+            />
           )}
-
-          {/* Trim handles and regions */}
-          <TimelineTrimHandles
-            inHandleRef={inHandleRef}
-            outHandleRef={outHandleRef}
-            activeRegionRef={activeRegionRef}
-            inactiveLeftRef={inactiveLeftRef}
-            inactiveRightRef={inactiveRightRef}
-            inPercent={inPercent}
-            outPercent={outPercent}
-            onInMouseDown={handleInMouseDown}
-            onOutMouseDown={handleOutMouseDown}
-          />
 
           {/* Playhead */}
           <TimelinePlayhead

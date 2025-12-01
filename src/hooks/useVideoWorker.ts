@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import type { WorkerCommand, WorkerResponse, EditorState } from '../types/editor';
+import type { WorkerCommand, WorkerResponse, EditorState, ActiveClip, SourceAudioData, SourceState } from '../types/editor';
 import { TIME } from '../constants';
 import { logger } from '../utils/logger';
 
@@ -11,6 +11,7 @@ const { MICROSECONDS_PER_SECOND } = TIME;
 interface UseVideoWorkerReturn {
   state: EditorState;
   firstFrameUrl: string | null;
+  sources: Map<string, SourceState>;
   initCanvas: (canvas: HTMLCanvasElement) => void;
   loadFile: (file: File) => void;
   loadBuffer: (buffer: ArrayBuffer, durationHint?: number) => void;
@@ -20,6 +21,13 @@ interface UseVideoWorkerReturn {
   play: () => void;
   pause: () => void;
   setTrim: (inPoint: number, outPoint: number) => void;
+  // Multi-source API
+  loadSource: (sourceId: string, file?: File, buffer?: ArrayBuffer) => void;
+  removeSource: (sourceId: string) => void;
+  setActiveClips: (clips: ActiveClip[]) => void;
+  syncToTime: (timeUs: number) => void;
+  // Audio data callback
+  onAudioData?: (data: SourceAudioData) => void;
 }
 
 export function useVideoWorker(): UseVideoWorkerReturn {
@@ -29,6 +37,9 @@ export function useVideoWorker(): UseVideoWorkerReturn {
     message: WorkerCommand;
     transfer: OffscreenCanvas;
   } | null>(null);
+
+  // Audio data callback ref (allows updating without recreating worker listener)
+  const audioDataCallbackRef = useRef<((data: SourceAudioData) => void) | null>(null);
 
   const [state, setState] = useState<EditorState>({
     duration: 0,
@@ -41,6 +52,10 @@ export function useVideoWorker(): UseVideoWorkerReturn {
   });
 
   const [firstFrameUrl, setFirstFrameUrl] = useState<string | null>(null);
+
+  // Multi-source state
+  const [sources, setSources] = useState<Map<string, SourceState>>(new Map());
+
   const resetEditorState = useCallback(() => {
     setState({
       duration: 0,
@@ -114,6 +129,42 @@ export function useVideoWorker(): UseVideoWorkerReturn {
 
         case 'ERROR': {
           logger.error('Worker error:', e.data.payload.message);
+          break;
+        }
+
+        // Multi-source responses
+        case 'SOURCE_READY': {
+          const { sourceId, duration, width, height } = e.data.payload;
+          setSources((prev) => {
+            const next = new Map(prev);
+            next.set(sourceId, {
+              sourceId,
+              durationUs: duration * MICROSECONDS_PER_SECOND,
+              width,
+              height,
+              isReady: true,
+            });
+            return next;
+          });
+          logger.log(`Source ready: ${sourceId}`, { duration, width, height });
+          break;
+        }
+
+        case 'SOURCE_REMOVED': {
+          const { sourceId } = e.data.payload;
+          setSources((prev) => {
+            const next = new Map(prev);
+            next.delete(sourceId);
+            return next;
+          });
+          logger.log(`Source removed: ${sourceId}`);
+          break;
+        }
+
+        case 'AUDIO_DATA': {
+          const audioData = e.data.payload;
+          logger.log(`Audio data received for source: ${audioData.sourceId}`);
+          audioDataCallbackRef.current?.(audioData);
           break;
         }
       }
@@ -207,9 +258,40 @@ export function useVideoWorker(): UseVideoWorkerReturn {
     }));
   }, []);
 
+  // Multi-source commands
+  const loadSource = useCallback((sourceId: string, file?: File, buffer?: ArrayBuffer) => {
+    if (buffer) {
+      // Transfer the buffer to avoid copying
+      workerRef.current?.postMessage(
+        { type: 'LOAD_SOURCE', payload: { sourceId, buffer } },
+        [buffer]
+      );
+    } else if (file) {
+      workerRef.current?.postMessage({ type: 'LOAD_SOURCE', payload: { sourceId, file } });
+    }
+  }, []);
+
+  const removeSource = useCallback((sourceId: string) => {
+    workerRef.current?.postMessage({ type: 'REMOVE_SOURCE', payload: { sourceId } });
+  }, []);
+
+  const setActiveClips = useCallback((clips: ActiveClip[]) => {
+    workerRef.current?.postMessage({ type: 'SET_ACTIVE_CLIPS', payload: { clips } });
+  }, []);
+
+  const syncToTime = useCallback((timeUs: number) => {
+    workerRef.current?.postMessage({ type: 'SYNC_TO_TIME', payload: { timeUs } });
+  }, []);
+
+  // Setter for audio data callback
+  const setOnAudioData = useCallback((callback: ((data: SourceAudioData) => void) | undefined) => {
+    audioDataCallbackRef.current = callback ?? null;
+  }, []);
+
   return {
     state,
     firstFrameUrl,
+    sources,
     initCanvas,
     loadFile,
     loadBuffer,
@@ -219,5 +301,14 @@ export function useVideoWorker(): UseVideoWorkerReturn {
     play,
     pause,
     setTrim,
+    // Multi-source API
+    loadSource,
+    removeSource,
+    setActiveClips,
+    syncToTime,
+    // Audio data callback setter
+    set onAudioData(callback: ((data: SourceAudioData) => void) | undefined) {
+      setOnAudioData(callback);
+    },
   };
 }

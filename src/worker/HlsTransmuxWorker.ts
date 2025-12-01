@@ -1,3 +1,4 @@
+/// <reference lib="webworker" />
 // ============================================================================
 // HLS TRANSMUX WORKER
 // ============================================================================
@@ -12,8 +13,7 @@ const logger = createWorkerLogger('HlsTransmuxWorker');
 
 // Send response to main thread
 function postResponse(response: HlsTransmuxResponse, transfer?: Transferable[]): void {
-  const workerScope = self as unknown as DedicatedWorkerGlobalScope;
-  workerScope.postMessage(response, transfer ?? []);
+  self.postMessage(response, transfer ?? []);
 }
 
 let transmuxer: muxjs.mp4.Transmuxer | null = null;
