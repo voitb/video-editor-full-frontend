@@ -124,7 +124,7 @@ async function startExport(config: ExportConfig): Promise<void> {
 
     // Phase 1: Demux source file
     reportProgress('demuxing', 0, 0);
-    await loadSourceFile(config.file);
+    await loadSourceFile(config);
 
     if (state.exportAborted) {
       handleAbort();
@@ -153,11 +153,12 @@ async function startExport(config: ExportConfig): Promise<void> {
     // Phase 2: Setup muxer and encode
     reportProgress('encoding', 0, 0);
 
+    const sourceName = config.sourceName ?? config.file?.name ?? 'hls_video';
     const { blob, filename } = await encodeAndMux(
       trimmedVideoSamples,
       trimmedAudioSamples,
       config.inPointUs,
-      config.file.name
+      sourceName
     );
 
     if (state.exportAborted) {
@@ -185,7 +186,7 @@ async function startExport(config: ExportConfig): Promise<void> {
 // FILE LOADING & DEMUXING
 // ============================================================================
 
-async function loadSourceFile(file: File): Promise<void> {
+async function loadSourceFile(config: ExportConfig): Promise<void> {
   return new Promise((resolve, reject) => {
     state.mp4File = createFile();
 
@@ -232,8 +233,14 @@ async function loadSourceFile(file: File): Promise<void> {
       reject(e);
     };
 
-    // Read file and process
-    file.arrayBuffer().then((buffer) => {
+    // Get buffer from file or use pre-loaded buffer
+    const bufferPromise: Promise<ArrayBuffer> = config.sourceBuffer
+      ? Promise.resolve(config.sourceBuffer)
+      : config.file
+        ? config.file.arrayBuffer()
+        : Promise.reject(new Error('No source provided'));
+
+    bufferPromise.then((buffer) => {
       const mp4Buffer = buffer as ArrayBuffer & { fileStart: number };
       mp4Buffer.fileStart = 0;
 

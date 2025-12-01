@@ -1,22 +1,36 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useVideoWorker } from './hooks/useVideoWorker';
 import { useSpriteWorker } from './hooks/useSpriteWorker';
 import { useTimelineViewport } from './hooks/useTimelineViewport';
 import { useExportWorker } from './hooks/useExportWorker';
+import { useHlsLoader } from './hooks/useHlsLoader';
 import { VideoPreview } from './components/VideoPreview';
 import { Timeline } from './components/Timeline';
 import { Controls } from './components/Controls';
 import { ExportButton } from './components/ExportButton';
+import { HlsUrlInput } from './components/HlsUrlInput';
 import { secondsToUs } from './utils/time';
 import { VIDEO_PREVIEW, TIME, FILE_VALIDATION } from './constants';
+
+type SourceType = 'file' | 'hls';
 
 const { MICROSECONDS_PER_SECOND } = TIME;
 
 function App() {
   const [fileError, setFileError] = useState<string | null>(null);
   const [loadedFile, setLoadedFile] = useState<File | null>(null);
-  const { state, sampleData, initCanvas, loadFile, seek, play, pause, setTrim, requestSampleData } =
+  const [sourceType, setSourceType] = useState<SourceType>('file');
+  const hlsBufferRef = useRef<ArrayBuffer | null>(null);
+  const { state, sampleData, initCanvas, loadFile, loadBuffer, seek, play, pause, setTrim, requestSampleData } =
     useVideoWorker();
+
+  // Initialize HLS loader
+  const {
+    loadHlsUrl,
+    isLoading: isLoadingHls,
+    progress: hlsProgress,
+    error: hlsError,
+  } = useHlsLoader();
 
   // Initialize export worker
   const {
@@ -67,6 +81,7 @@ function App() {
 
     // Clear previous error
     setFileError(null);
+    hlsBufferRef.current = null;
 
     // Validate file size
     if (file.size > FILE_VALIDATION.MAX_FILE_SIZE) {
@@ -83,14 +98,53 @@ function App() {
     }
 
     setLoadedFile(file);
+    setSourceType('file');
     loadFile(file);
+  };
+
+  // HLS URL loading
+  const handleHlsLoad = async (url: string) => {
+    try {
+      setFileError(null);
+      setLoadedFile(null);
+
+      const { buffer, duration } = await loadHlsUrl(url);
+
+      // Store buffer for export (we need to clone it since loadBuffer transfers it)
+      hlsBufferRef.current = buffer.slice(0);
+
+      setSourceType('hls');
+      // Pass the HLS manifest duration to override incorrect mp4box duration
+      loadBuffer(buffer, duration);
+    } catch {
+      // Error is handled by useHlsLoader
+    }
   };
 
   // Handle export request
   const handleExport = () => {
-    if (!loadedFile || !state.clip) return;
-    startExport(loadedFile, state.clip.inPoint, state.clip.outPoint);
+    if (!state.clip) return;
+
+    if (sourceType === 'hls' && hlsBufferRef.current) {
+      // Clone buffer for export since it will be transferred
+      const exportBuffer = hlsBufferRef.current.slice(0);
+      startExport({
+        sourceBuffer: exportBuffer,
+        sourceName: 'hls_video',
+        inPointUs: state.clip.inPoint,
+        outPointUs: state.clip.outPoint,
+      });
+    } else if (loadedFile) {
+      startExport({
+        file: loadedFile,
+        inPointUs: state.clip.inPoint,
+        outPointUs: state.clip.outPoint,
+      });
+    }
   };
+
+  // Check if we have a valid source for export
+  const hasValidSource = (sourceType === 'file' && loadedFile) || (sourceType === 'hls' && hlsBufferRef.current);
 
   return (
     <div className="min-h-screen bg-gray-900 text-white p-4">
@@ -108,24 +162,66 @@ function App() {
 
         {/* Controls Panel */}
         <div className="bg-gray-800 rounded-lg p-4 space-y-4">
-          {/* File Input */}
-          <div>
-            <input
-              type="file"
-              accept="video/mp4,video/webm"
-              onChange={handleFileChange}
-              className="block w-full text-sm text-gray-400
-                file:mr-4 file:py-2 file:px-4
-                file:rounded file:border-0
-                file:text-sm file:font-medium
-                file:bg-blue-600 file:text-white
-                hover:file:bg-blue-700
-                file:cursor-pointer"
-            />
-            {fileError && (
-              <div className="mt-2 text-sm text-red-400" role="alert">
-                {fileError}
+          {/* Source Input Tabs */}
+          <div className="space-y-3">
+            {/* Tab Buttons */}
+            <div className="flex gap-2">
+              <button
+                onClick={() => setSourceType('file')}
+                className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                  sourceType === 'file'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                }`}
+                disabled={isLoadingHls}
+              >
+                File Upload
+              </button>
+              <button
+                onClick={() => setSourceType('hls')}
+                className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                  sourceType === 'hls'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                }`}
+                disabled={isLoadingHls}
+              >
+                HLS URL
+              </button>
+            </div>
+
+            {/* File Input */}
+            {sourceType === 'file' && (
+              <div>
+                <input
+                  type="file"
+                  accept="video/mp4,video/webm"
+                  onChange={handleFileChange}
+                  className="block w-full text-sm text-gray-400
+                    file:mr-4 file:py-2 file:px-4
+                    file:rounded file:border-0
+                    file:text-sm file:font-medium
+                    file:bg-blue-600 file:text-white
+                    hover:file:bg-blue-700
+                    file:cursor-pointer"
+                />
+                {fileError && (
+                  <div className="mt-2 text-sm text-red-400" role="alert">
+                    {fileError}
+                  </div>
+                )}
               </div>
+            )}
+
+            {/* HLS URL Input */}
+            {sourceType === 'hls' && (
+              <HlsUrlInput
+                onLoad={handleHlsLoad}
+                isLoading={isLoadingHls}
+                progress={hlsProgress}
+                error={hlsError}
+                disabled={state.isReady && isLoadingHls}
+              />
             )}
           </div>
 
@@ -141,7 +237,7 @@ function App() {
                   onPause={pause}
                 />
                 <ExportButton
-                  disabled={!state.isReady || isExporting || !loadedFile}
+                  disabled={!state.isReady || isExporting || !hasValidSource}
                   isExporting={isExporting}
                   progress={exportProgress}
                   error={exportError}
@@ -192,9 +288,9 @@ function App() {
           )}
 
           {/* Loading State */}
-          {!state.isReady && (
+          {!state.isReady && !isLoadingHls && (
             <div className="text-center text-gray-500 py-4">
-              Load an MP4 video to get started
+              Load an MP4 video or HLS stream to get started
             </div>
           )}
         </div>

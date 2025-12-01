@@ -13,6 +13,7 @@ interface UseVideoWorkerReturn {
   sampleData: SpriteInitData | null;
   initCanvas: (canvas: HTMLCanvasElement) => void;
   loadFile: (file: File) => void;
+  loadBuffer: (buffer: ArrayBuffer, durationHint?: number) => void;
   seek: (timeUs: number) => void;
   play: () => void;
   pause: () => void;
@@ -132,6 +133,14 @@ export function useVideoWorker(): UseVideoWorkerReturn {
     workerRef.current?.postMessage({ type: 'LOAD_FILE', payload: { file } });
   }, []);
 
+  const loadBuffer = useCallback((buffer: ArrayBuffer, durationHint?: number) => {
+    // Transfer the buffer to avoid copying
+    workerRef.current?.postMessage(
+      { type: 'LOAD_BUFFER', payload: { buffer, durationHint } },
+      [buffer]
+    );
+  }, []);
+
   const seek = useCallback((timeUs: number) => {
     workerRef.current?.postMessage({ type: 'SEEK', payload: { timeUs } });
   }, []);
@@ -161,6 +170,7 @@ export function useVideoWorker(): UseVideoWorkerReturn {
     sampleData,
     initCanvas,
     loadFile,
+    loadBuffer,
     seek,
     play,
     pause,

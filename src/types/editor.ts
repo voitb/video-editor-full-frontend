@@ -43,6 +43,7 @@ export interface SpriteInitData {
 export type WorkerCommand =
   | { type: 'INIT_CANVAS'; payload: { canvas: OffscreenCanvas } }
   | { type: 'LOAD_FILE'; payload: { file: File } }
+  | { type: 'LOAD_BUFFER'; payload: { buffer: ArrayBuffer; durationHint?: number } }
   | { type: 'SEEK'; payload: { timeUs: number } }
   | { type: 'PLAY' }
   | { type: 'PAUSE' }

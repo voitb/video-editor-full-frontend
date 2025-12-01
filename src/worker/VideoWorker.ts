@@ -123,6 +123,12 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
       break;
     }
 
+    case 'LOAD_BUFFER': {
+      const { buffer, durationHint } = e.data.payload;
+      await loadBuffer(buffer, durationHint);
+      break;
+    }
+
     case 'SEEK': {
       const { timeUs } = e.data.payload;
       await seekTo(timeUs);
@@ -359,6 +365,120 @@ async function loadFile(file: File): Promise<void> {
   mp4Buffer.fileStart = 0;
 
   // Set flag to seek to first frame once samples are loaded
+  state.needsInitialSeek = true;
+
+  state.mp4File.appendBuffer(mp4Buffer);
+  state.mp4File.flush();
+}
+
+/**
+ * Load video from an ArrayBuffer (used for HLS transmuxed content)
+ * This function mirrors loadFile but accepts a pre-loaded buffer instead of a File.
+ * @param buffer The video data as ArrayBuffer
+ * @param durationHint Optional duration override (used for HLS where mp4box duration may be incorrect)
+ */
+async function loadBuffer(buffer: ArrayBuffer, durationHint?: number): Promise<void> {
+  // Reset state (same as loadFile)
+  state.samples.length = 0;
+  state.keyframeIndices.length = 0;
+  state.isPlaying = false;
+  state.isSeeking = false;
+  state.pauseRequested = false;
+  state.startPlaybackInProgress = false;
+  state.needsWallClockSync = false;
+  state.lastQueuedSampleIndex = -1;
+  state.seekVersion = 0;
+  state.currentSeekVersion = 0;
+  state.seekInProgress = false;
+  state.pendingSeekTime = null;
+
+  // Clear frame queue
+  for (const { frame } of state.frameQueue) {
+    frame.close();
+  }
+  state.frameQueue.length = 0;
+
+  state.mp4File = createFile();
+
+  // Configure decoder
+  state.decoder = new VideoDecoder({
+    output: handleDecodedFrame,
+    error: (e) => {
+      logger.error('Decoder error:', e);
+      postResponse({ type: 'ERROR', payload: { message: e.message } });
+    },
+  });
+
+  state.mp4File.onReady = (info: MP4Info) => {
+    state.videoTrackInfo = info.videoTracks[0] ?? null;
+    if (!state.videoTrackInfo) {
+      postResponse({ type: 'ERROR', payload: { message: 'No video track found' } });
+      return;
+    }
+
+    const description = getCodecDescription(state.mp4File!, state.videoTrackInfo.id);
+    state.codecDescription = description;
+
+    state.decoder?.configure({
+      codec: state.videoTrackInfo.codec,
+      codedWidth: state.videoTrackInfo.video.width,
+      codedHeight: state.videoTrackInfo.video.height,
+      description: description ?? undefined,
+    });
+
+    // Set extraction options to get all samples
+    state.mp4File?.setExtractionOptions(state.videoTrackInfo.id, null, { nbSamples: Infinity });
+    state.mp4File?.start();
+
+    // Calculate duration - use durationHint if provided (for HLS), otherwise fallback to mp4box
+    let durationSeconds: number;
+    if (durationHint !== undefined && durationHint > 0) {
+      // Use provided duration (from HLS manifest)
+      durationSeconds = durationHint;
+      logger.log('Using HLS duration hint:', durationSeconds, 'seconds');
+    } else if (info.duration > 0 && info.timescale > 0) {
+      durationSeconds = info.duration / info.timescale;
+    } else if (state.videoTrackInfo.duration > 0 && state.videoTrackInfo.timescale > 0) {
+      durationSeconds = state.videoTrackInfo.duration / state.videoTrackInfo.timescale;
+    } else {
+      durationSeconds = state.videoTrackInfo.nb_samples / 30;
+    }
+
+    state.trimOutPoint = durationSeconds * MICROSECONDS_PER_SECOND;
+
+    postResponse({
+      type: 'READY',
+      payload: {
+        duration: durationSeconds,
+        width: state.videoTrackInfo.video.width,
+        height: state.videoTrackInfo.video.height,
+      },
+    });
+  };
+
+  state.mp4File.onSamples = (_id: number, _user: unknown, newSamples: MP4Sample[]) => {
+    const wasEmpty = state.samples.length === 0;
+    for (const sample of newSamples) {
+      const sampleIndex = state.samples.length;
+      state.samples.push(sample);
+      if (sample.is_sync) {
+        state.keyframeIndices.push(sampleIndex);
+      }
+    }
+    if (wasEmpty && state.samples.length > 0 && state.needsInitialSeek) {
+      state.needsInitialSeek = false;
+      void seekTo(0);
+    }
+  };
+
+  state.mp4File.onError = (e: Error) => {
+    postResponse({ type: 'ERROR', payload: { message: e.message } });
+  };
+
+  // Use buffer directly (no file.arrayBuffer() needed)
+  const mp4Buffer = buffer as ArrayBuffer & { fileStart: number };
+  mp4Buffer.fileStart = 0;
+
   state.needsInitialSeek = true;
 
   state.mp4File.appendBuffer(mp4Buffer);

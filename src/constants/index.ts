@@ -71,8 +71,6 @@ export const EXPORT = {
   DEFAULT_VIDEO_BITRATE: 8_000_000,
   /** Default audio bitrate (128 kbps) */
   DEFAULT_AUDIO_BITRATE: 128_000,
-  /** Maximum export duration in seconds (5 minutes) */
-  MAX_EXPORT_DURATION_SECONDS: 300,
 } as const;
 
 /**
@@ -89,6 +87,22 @@ export const MINIMAP = {
 export const COLORS = {
   /** Sprite background color - matches Tailwind gray-800 */
   SPRITE_BACKGROUND: '#1f2937',
+} as const;
+
+/**
+ * HLS loading constants
+ */
+export const HLS = {
+  /** Maximum resolution for auto-quality selection */
+  MAX_RESOLUTION: 1080,
+  /** Parallel segment fetch batch size */
+  SEGMENT_BATCH_SIZE: 10,
+  /** Segment fetch timeout in milliseconds */
+  FETCH_TIMEOUT_MS: 60_000,
+  /** Transmux worker timeout in milliseconds (10 minutes) */
+  TRANSMUX_TIMEOUT_MS: 600_000,
+  /** Maximum retry attempts for failed fetches */
+  MAX_RETRIES: 3,
 } as const;
 
 // Re-export SPRITE_CONFIG from spriteTypes for convenience

@@ -7,8 +7,12 @@
  * Configuration for export operation
  */
 export interface ExportConfig {
-  /** Source video file */
-  file: File;
+  /** Source video file (optional if sourceBuffer provided) */
+  file?: File;
+  /** Pre-loaded source buffer (used for HLS content) */
+  sourceBuffer?: ArrayBuffer;
+  /** Source name for filename generation */
+  sourceName?: string;
   /** Trim start point in microseconds */
   inPointUs: number;
   /** Trim end point in microseconds */

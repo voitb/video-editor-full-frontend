@@ -5,6 +5,20 @@ import { logger } from '../utils/logger';
 // Import worker using Vite's worker syntax
 import ExportWorkerModule from '../worker/ExportWorker?worker';
 
+/** Options for starting an export */
+interface StartExportOptions {
+  /** Source file (optional if sourceBuffer provided) */
+  file?: File;
+  /** Pre-loaded buffer (used for HLS content) */
+  sourceBuffer?: ArrayBuffer;
+  /** Source name for filename generation */
+  sourceName?: string;
+  /** Trim in point in microseconds */
+  inPointUs: number;
+  /** Trim out point in microseconds */
+  outPointUs: number;
+}
+
 interface UseExportWorkerReturn {
   /** Whether an export is currently in progress */
   isExporting: boolean;
@@ -14,8 +28,8 @@ interface UseExportWorkerReturn {
   error: string | null;
   /** Whether the source file has audio */
   hasAudio: boolean;
-  /** Start exporting the video with the given trim points */
-  startExport: (file: File, inPointUs: number, outPointUs: number) => void;
+  /** Start exporting the video with the given options */
+  startExport: (options: StartExportOptions) => void;
   /** Abort the current export */
   abortExport: () => void;
   /** Clear any error state */
@@ -92,9 +106,14 @@ export function useExportWorker(): UseExportWorkerReturn {
     };
   }, []);
 
-  const startExport = useCallback((file: File, inPointUs: number, outPointUs: number) => {
+  const startExport = useCallback((options: StartExportOptions) => {
     if (!workerRef.current) {
       setError('Export worker not initialized');
+      return;
+    }
+
+    if (!options.file && !options.sourceBuffer) {
+      setError('No source provided for export');
       return;
     }
 
@@ -104,10 +123,18 @@ export function useExportWorker(): UseExportWorkerReturn {
 
     const command: ExportWorkerCommand = {
       type: 'START_EXPORT',
-      payload: { file, inPointUs, outPointUs },
+      payload: {
+        file: options.file,
+        sourceBuffer: options.sourceBuffer,
+        sourceName: options.sourceName,
+        inPointUs: options.inPointUs,
+        outPointUs: options.outPointUs,
+      },
     };
 
-    workerRef.current.postMessage(command);
+    // Transfer buffer if provided
+    const transferList: Transferable[] = options.sourceBuffer ? [options.sourceBuffer] : [];
+    workerRef.current.postMessage(command, transferList);
   }, []);
 
   const abortExport = useCallback(() => {
