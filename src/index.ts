@@ -7,6 +7,11 @@ export { Composition } from './core/Composition';
 export { Track } from './core/Track';
 export { Clip } from './core/Clip';
 export { Source } from './core/Source';
+export { HlsSource } from './core/HlsSource';
+
+// Engine
+export { Engine } from './engine/Engine';
+export type { EngineState, EngineOptions, EngineEvent, EngineEventCallback } from './engine/Engine';
 
 // Types
 export type {
@@ -89,3 +94,27 @@ export {
   EXPORT,
   RENDERER,
 } from './constants';
+
+// React hooks
+export {
+  useComposition,
+  useEngine,
+  useTimeline,
+  type UseCompositionReturn,
+  type UseCompositionOptions,
+  type UseEngineReturn,
+  type UseEngineOptions,
+  type UseTimelineReturn,
+  type UseTimelineOptions,
+} from './hooks';
+
+// React components
+export {
+  VideoPreview,
+  type VideoPreviewProps,
+  type VideoPreviewHandle,
+  Timeline,
+  type TimelineProps,
+  EditorApp,
+  type EditorAppProps,
+} from './components';

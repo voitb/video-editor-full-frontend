@@ -117,7 +117,7 @@ export class Clip {
    * Trim from the start (left edge drag)
    * Adjusts both timeline position and source trim
    */
-  trimStart(newStartUs: number, sourceDurationUs: number): void {
+  trimStart(newStartUs: number, _sourceDurationUs: number): void {
     const delta = newStartUs - this.startUs;
     const newTrimIn = this.trimIn + delta;
 

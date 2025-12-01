@@ -6,7 +6,6 @@
 import type {
   CompositionConfig,
   CompositionJSON,
-  TrackType,
   TrackConfig,
   ClipConfig,
   ActiveClip,
@@ -229,7 +228,7 @@ export class Composition {
     const result: ActiveClip[] = [];
 
     for (let trackIndex = 0; trackIndex < this._tracks.length; trackIndex++) {
-      const track = this._tracks[trackIndex];
+      const track = this._tracks[trackIndex]!;
 
       for (const clip of track.getActiveClipsAt(timelineTimeUs)) {
         result.push({

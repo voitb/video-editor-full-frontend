@@ -56,6 +56,11 @@ export abstract class Source {
     return this._error;
   }
 
+  /** Alias for error (for compatibility) */
+  get errorMessage(): string | null {
+    return this._error;
+  }
+
   get isReady(): boolean {
     return this._state === 'ready';
   }
