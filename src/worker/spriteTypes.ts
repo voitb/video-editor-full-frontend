@@ -66,6 +66,7 @@ let cachedSpriteConfig: ReturnType<typeof createSpriteConfig> | null = null;
 let cachedAspectConfig: {
   videoWidth: number;
   videoHeight: number;
+  tier: DeviceTier;
   config: ReturnType<typeof createSpriteConfig>;
 } | null = null;
 
@@ -73,11 +74,20 @@ let cachedAspectConfig: {
  * Create sprite config with given dimensions.
  */
 function createSpriteConfig(thumbnailWidth: number, thumbnailHeight: number) {
+  const tier = getDeviceTier();
+  // Smaller sheets on low-end devices to reduce memory and transfer overhead
+  const gridByTier: Record<DeviceTier, { columns: number; rows: number }> = {
+    low: { columns: 8, rows: 8 },
+    medium: { columns: 10, rows: 10 },
+    high: { columns: 10, rows: 10 },
+  };
+  const { columns, rows } = gridByTier[tier];
+
   return {
     thumbnailWidth,
     thumbnailHeight,
-    columnsPerSheet: 10,
-    rowsPerSheet: 10,
+    columnsPerSheet: columns,
+    rowsPerSheet: rows,
     get spritesPerSheet() {
       return this.columnsPerSheet * this.rowsPerSheet;
     },
@@ -148,7 +158,8 @@ export function getAspectAwareSpriteConfig(videoWidth: number, videoHeight: numb
   if (
     cachedAspectConfig &&
     cachedAspectConfig.videoWidth === videoWidth &&
-    cachedAspectConfig.videoHeight === videoHeight
+    cachedAspectConfig.videoHeight === videoHeight &&
+    cachedAspectConfig.tier === getDeviceTier()
   ) {
     return cachedAspectConfig.config;
   }
@@ -160,6 +171,7 @@ export function getAspectAwareSpriteConfig(videoWidth: number, videoHeight: numb
   cachedAspectConfig = {
     videoWidth,
     videoHeight,
+    tier: getDeviceTier(),
     config,
   };
 

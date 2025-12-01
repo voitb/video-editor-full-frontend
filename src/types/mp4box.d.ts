@@ -111,6 +111,8 @@ declare module 'mp4box' {
                 avcC?: DataBox;
                 hvcC?: DataBox;
                 vpcC?: DataBox;
+                esds?: DataBox;  // AAC codec description (MPEG-4 Elementary Stream Descriptor)
+                mp4a?: DataBox;  // Alternative AAC box
               }>;
             };
           };

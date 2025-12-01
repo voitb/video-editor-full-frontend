@@ -2,9 +2,11 @@ import { useEffect, useState } from 'react';
 import { useVideoWorker } from './hooks/useVideoWorker';
 import { useSpriteWorker } from './hooks/useSpriteWorker';
 import { useTimelineViewport } from './hooks/useTimelineViewport';
+import { useExportWorker } from './hooks/useExportWorker';
 import { VideoPreview } from './components/VideoPreview';
 import { Timeline } from './components/Timeline';
 import { Controls } from './components/Controls';
+import { ExportButton } from './components/ExportButton';
 import { secondsToUs } from './utils/time';
 import { VIDEO_PREVIEW, TIME, FILE_VALIDATION } from './constants';
 
@@ -12,8 +14,20 @@ const { MICROSECONDS_PER_SECOND } = TIME;
 
 function App() {
   const [fileError, setFileError] = useState<string | null>(null);
+  const [loadedFile, setLoadedFile] = useState<File | null>(null);
   const { state, sampleData, initCanvas, loadFile, seek, play, pause, setTrim, requestSampleData } =
     useVideoWorker();
+
+  // Initialize export worker
+  const {
+    isExporting,
+    progress: exportProgress,
+    error: exportError,
+    hasAudio,
+    startExport,
+    abortExport,
+    clearError: clearExportError,
+  } = useExportWorker();
 
   // Initialize sprite worker with sample data
   const { sprites, isGenerating, progress } = useSpriteWorker(sampleData, state.duration);
@@ -68,7 +82,14 @@ function App() {
       return;
     }
 
+    setLoadedFile(file);
     loadFile(file);
+  };
+
+  // Handle export request
+  const handleExport = () => {
+    if (!loadedFile || !state.clip) return;
+    startExport(loadedFile, state.clip.inPoint, state.clip.outPoint);
   };
 
   return (
@@ -111,13 +132,25 @@ function App() {
           {/* Playback Controls */}
           {state.isReady && (
             <>
-              <Controls
-                isPlaying={state.isPlaying}
-                currentTime={state.currentTime}
-                duration={state.duration}
-                onPlay={play}
-                onPause={pause}
-              />
+              <div className="flex items-center justify-between gap-4">
+                <Controls
+                  isPlaying={state.isPlaying}
+                  currentTime={state.currentTime}
+                  duration={state.duration}
+                  onPlay={play}
+                  onPause={pause}
+                />
+                <ExportButton
+                  disabled={!state.isReady || isExporting || !loadedFile}
+                  isExporting={isExporting}
+                  progress={exportProgress}
+                  error={exportError}
+                  hasAudio={hasAudio}
+                  onExport={handleExport}
+                  onAbort={abortExport}
+                  onClearError={clearExportError}
+                />
+              </div>
 
               {/* Timeline */}
               <div className="pt-6">

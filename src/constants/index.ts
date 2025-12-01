@@ -60,6 +60,22 @@ export const FILE_VALIDATION = {
 } as const;
 
 /**
+ * Export constants
+ */
+export const EXPORT = {
+  /** Maximum concurrent decode operations */
+  MAX_DECODE_QUEUE: 4,
+  /** Progress update interval (frames) */
+  PROGRESS_UPDATE_FRAMES: 10,
+  /** Default video bitrate for encoding (8 Mbps) */
+  DEFAULT_VIDEO_BITRATE: 8_000_000,
+  /** Default audio bitrate (128 kbps) */
+  DEFAULT_AUDIO_BITRATE: 128_000,
+  /** Maximum export duration in seconds (5 minutes) */
+  MAX_EXPORT_DURATION_SECONDS: 300,
+} as const;
+
+/**
  * Minimap UI constants
  */
 export const MINIMAP = {
