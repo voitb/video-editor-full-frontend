@@ -555,7 +555,7 @@ function pause(): void {
   postResponse({ type: 'PLAYBACK_STATE', isPlaying: false } as PlaybackStateEvent);
 }
 
-function seek(timeUs: number): void {
+async function seek(timeUs: number): Promise<void> {
   currentTimeUs = timeUs;
 
   // If playing, reset playback timing to prevent loop from reverting position
@@ -582,8 +582,17 @@ function seek(timeUs: number): void {
   // Pre-decode frames for current time
   feedDecoders(timeUs);
 
-  // Render
+  // Wait for decoders to finish processing, then render
   if (state !== 'playing') {
+    await flushAllDecoders();
+
+    // CRITICAL: Reset lastQueuedSample after flush!
+    // After flush(), decoder requires a keyframe as next input.
+    // Reset lastQueuedSample so next feedDecoders() starts from keyframe.
+    for (const sourceState of sources.values()) {
+      sourceState.lastQueuedSample = -1;
+    }
+
     renderFrame(timeUs);
   }
 
@@ -639,6 +648,18 @@ function getMaxDuration(): number {
     max = Math.max(max, clipEnd);
   }
   return max;
+}
+
+async function flushAllDecoders(): Promise<void> {
+  const flushPromises: Promise<void>[] = [];
+
+  for (const sourceState of sources.values()) {
+    if (sourceState.decoder?.state === 'configured') {
+      flushPromises.push(sourceState.decoder.flush());
+    }
+  }
+
+  await Promise.all(flushPromises);
 }
 
 // ============================================================================
