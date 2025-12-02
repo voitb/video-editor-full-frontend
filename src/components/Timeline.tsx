@@ -66,6 +66,10 @@ export interface TimelineProps {
   onTrackResize?: (trackId: string, height: number) => void;
   /** Callback when a clip is unlinked */
   onClipUnlink?: (clipId: string) => void;
+  /** Callback when fit to view is requested */
+  onFitToView?: () => void;
+  /** Callback when an external source is dropped onto a track */
+  onExternalDropToTrack?: (sourceId: string, trackId: string, startTimeUs: number) => void;
 }
 
 interface SnapTarget {
@@ -110,6 +114,8 @@ export function Timeline(props: TimelineProps) {
     onTrackLock,
     onTrackResize,
     onClipUnlink,
+    onFitToView,
+    onExternalDropToTrack,
   } = props;
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -422,7 +428,7 @@ export function Timeline(props: TimelineProps) {
           zIndex: 20, // Above everything in right panel
         }}
       >
-        {/* Header corner with zoom slider */}
+        {/* Header corner with zoom slider and fit button */}
         <div
           style={{
             height: TIMELINE.TIME_RULER_HEIGHT,
@@ -432,6 +438,7 @@ export function Timeline(props: TimelineProps) {
             alignItems: 'center',
             justifyContent: 'center',
             padding: '0 4px',
+            gap: 4,
             boxSizing: 'border-box',
             overflow: 'hidden',
           }}
@@ -443,6 +450,24 @@ export function Timeline(props: TimelineProps) {
               maxZoom={TIMELINE.MAX_ZOOM_LEVEL}
               onChange={onZoomChange}
             />
+          )}
+          {onFitToView && (
+            <button
+              onClick={onFitToView}
+              style={{
+                padding: '2px 6px',
+                fontSize: 10,
+                backgroundColor: '#333',
+                color: '#fff',
+                border: 'none',
+                borderRadius: 3,
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+              }}
+              title="Fit timeline to view"
+            >
+              Fit
+            </button>
           )}
         </div>
 
@@ -693,10 +718,13 @@ export function Timeline(props: TimelineProps) {
                 onClipTrimEnd={onClipTrimEnd}
                 onSeek={onSeek}
                 onClipUnlink={onClipUnlink}
+                onExternalDropToTrack={onExternalDropToTrack}
                 applySnap={applySnap}
                 setActiveSnapLine={setActiveSnapLine}
                 setDropTargetTrackId={setDropTargetTrackId}
                 allTracks={tracks}
+                pixelsPerSecond={pixelsPerSecond}
+                scrollLeft={scrollLeft}
               />
             ))}
 
@@ -1061,11 +1089,17 @@ interface TrackLaneProps {
   onClipTrimEnd?: (clipId: string, newEndUs: number) => void;
   onSeek?: (timeUs: number) => void;
   onClipUnlink?: (clipId: string) => void;
+  onExternalDropToTrack?: (sourceId: string, trackId: string, startTimeUs: number) => void;
   applySnap: (proposedStartUs: number, clipDurationUs: number, excludeClipId?: string) => SnapResult;
   setActiveSnapLine: (timeUs: number | null) => void;
   setDropTargetTrackId: (trackId: string | null) => void;
   allTracks: readonly Track[];
+  pixelsPerSecond: number;
+  scrollLeft: number;
 }
+
+/** Data type for external drag-and-drop from media library */
+const EXTERNAL_DRAG_DATA_TYPE = 'application/x-video-editor-source';
 
 function TrackLane(props: TrackLaneProps) {
   const {
@@ -1083,16 +1117,58 @@ function TrackLane(props: TrackLaneProps) {
     onClipTrimEnd,
     onSeek,
     onClipUnlink,
+    onExternalDropToTrack,
     applySnap,
     setActiveSnapLine,
     setDropTargetTrackId,
     allTracks,
+    pixelsPerSecond,
+    scrollLeft,
   } = props;
+
+  // Handle external drag over (from media library)
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    // Check if this is an external source drag
+    if (!e.dataTransfer.types.includes(EXTERNAL_DRAG_DATA_TYPE)) return;
+
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    setDropTargetTrackId(track.id);
+  }, [track.id, setDropTargetTrackId]);
+
+  // Handle external drag leave
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    // Only clear if we're actually leaving this element (not entering a child)
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+    setDropTargetTrackId(null);
+  }, [setDropTargetTrackId]);
+
+  // Handle external drop (from media library)
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setDropTargetTrackId(null);
+
+    const sourceId = e.dataTransfer.getData(EXTERNAL_DRAG_DATA_TYPE);
+    if (!sourceId || !onExternalDropToTrack) return;
+
+    // Calculate drop position in time
+    const rect = e.currentTarget.getBoundingClientRect();
+    const dropX = e.clientX - rect.left + scrollLeft;
+    const dropTimeUs = (dropX / pixelsPerSecond) * 1_000_000;
+
+    // Clamp to 0
+    const clampedTimeUs = Math.max(0, dropTimeUs);
+
+    onExternalDropToTrack(sourceId, track.id, clampedTimeUs);
+  }, [track.id, onExternalDropToTrack, pixelsPerSecond, scrollLeft, setDropTargetTrackId]);
 
   return (
     <div
       data-track-id={track.id}
       data-track-type={track.type}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
       style={{
         height,
         backgroundColor: isDropTarget

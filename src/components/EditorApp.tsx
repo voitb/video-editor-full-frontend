@@ -9,7 +9,9 @@ import { useEngine } from '../hooks/useEngine';
 import { useTimeline } from '../hooks/useTimeline';
 import { VideoPreview, type VideoPreviewHandle } from './VideoPreview';
 import { Timeline } from './Timeline';
-import { formatTimecode } from '../utils/time';
+import { PlaybackControls } from './PlaybackControls';
+import { MediaLibrary } from './MediaLibrary';
+import { MEDIA_LIBRARY } from '../constants';
 
 export interface EditorAppProps {
   /** Width of the preview canvas */
@@ -38,8 +40,8 @@ export function EditorApp(props: EditorAppProps) {
 
   // State
   const [selectedClipId, setSelectedClipId] = useState<string>();
-  const [hlsUrl, setHlsUrl] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [volume, setVolume] = useState(1);
 
   // Refs
   const previewRef = useRef<VideoPreviewHandle>(null);
@@ -76,8 +78,6 @@ export function EditorApp(props: EditorAppProps) {
 
   const {
     viewport,
-    zoomIn,
-    zoomOut,
     resetViewport,
     zoomAtPosition,
     setZoom,
@@ -116,35 +116,46 @@ export function EditorApp(props: EditorAppProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Load HLS source
-  const handleLoadHls = useCallback(async () => {
-    if (!hlsUrl) return;
+  // Load HLS source (does NOT auto-add to timeline - user drags from library)
+  const handleLoadHls = useCallback(async (url: string) => {
+    if (!url) return;
 
     setIsLoading(true);
     try {
-      const source = await loadHlsSource(hlsUrl);
-
-      // Use composition.tracks directly to avoid stale closure
-      const videoTrack = composition.tracks.find(t => t.type === 'video');
-      if (videoTrack) {
-        // Use addVideoClipWithAudio to auto-create linked audio clip
-        addVideoClipWithAudio(videoTrack.id, {
-          sourceId: source.id,
-          startUs: 0,
-          trimIn: 0,
-          trimOut: source.durationUs,
-          label: 'HLS Video',
-        });
-      }
-
-      // Pass source duration to avoid stale closure issue
+      const source = await loadHlsSource(url);
+      // Reset viewport to fit the new source duration
       resetViewport(source.durationUs);
     } catch (err) {
       console.error('Failed to load HLS source:', err);
     } finally {
       setIsLoading(false);
     }
-  }, [hlsUrl, loadHlsSource, composition, addVideoClipWithAudio, resetViewport]);
+  }, [loadHlsSource, resetViewport]);
+
+  // Handle external drop from media library to timeline
+  const handleExternalDropToTrack = useCallback((
+    sourceId: string,
+    targetTrackId: string,
+    startTimeUs: number
+  ) => {
+    const source = composition.getSource(sourceId);
+    const track = tracks.find(t => t.id === targetTrackId);
+    if (!source || !track) return;
+
+    if (track.type === 'video') {
+      // Video track: create linked video + audio clips
+      addVideoClipWithAudio(targetTrackId, {
+        sourceId,
+        startUs: startTimeUs,
+        trimIn: 0,
+        trimOut: source.durationUs,
+        label: 'HLS Video',
+      });
+    }
+    // Note: For audio-only drops, you could add audio clip creation here
+
+    notifyCompositionChanged();
+  }, [composition, tracks, addVideoClipWithAudio, notifyCompositionChanged]);
 
   // Handle clip selection
   const handleClipSelect = useCallback((clipId: string) => {
@@ -261,150 +272,86 @@ export function EditorApp(props: EditorAppProps) {
 
       {/* Main content */}
       <main style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-        {/* Preview panel */}
+        {/* Preview panel - fixed layout to prevent shifting */}
         <div
           style={{
             flex: 1,
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'center',
-            justifyContent: 'center',
             padding: 16,
+            minWidth: 0,
+            overflow: 'hidden',
           }}
         >
-          <VideoPreview
-            ref={previewRef}
-            width={previewWidth}
-            height={previewHeight}
-            style={{
-              maxWidth: '100%',
-              maxHeight: '100%',
-              objectFit: 'contain',
-            }}
-          />
-
-          {/* Playback controls */}
+          {/* Preview wrapper - fills available space with max constraints */}
           <div
             style={{
-              marginTop: 16,
+              flex: 1,
+              width: '100%',
+              maxWidth: previewWidth,
               display: 'flex',
-              alignItems: 'center',
-              gap: 16,
+              flexDirection: 'column',
+              justifyContent: 'center',
+              minHeight: 0,
             }}
           >
-            <button
-              onClick={togglePlayPause}
+            {/* Canvas container - maintains aspect ratio */}
+            <div
               style={{
-                padding: '8px 24px',
-                fontSize: 14,
-                backgroundColor: '#3b82f6',
-                color: '#fff',
-                border: 'none',
-                borderRadius: 6,
-                cursor: 'pointer',
+                position: 'relative',
+                width: '100%',
+                maxHeight: `calc(100% - 60px)`,
+                aspectRatio: `${previewWidth} / ${previewHeight}`,
+                backgroundColor: '#000',
+                borderRadius: 4,
+                overflow: 'hidden',
+                flexShrink: 1,
               }}
             >
-              {isPlaying ? 'Pause' : 'Play'}
-            </button>
+              <VideoPreview
+                ref={previewRef}
+                width={previewWidth}
+                height={previewHeight}
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'contain',
+                }}
+              />
+            </div>
+          </div>
 
-            <span style={{ fontFamily: 'monospace', fontSize: 14 }}>
-              {formatTimecode(currentTimeUs)} / {formatTimecode(durationUs)}
-            </span>
+          {/* Playback controls - fixed at bottom */}
+          <div style={{ flexShrink: 0, width: '100%', maxWidth: previewWidth }}>
+            <PlaybackControls
+              isPlaying={isPlaying}
+              currentTimeUs={currentTimeUs}
+              durationUs={durationUs}
+              volume={volume}
+              onPlayPause={togglePlayPause}
+              onSkipBack={(delta) => seek(Math.max(0, currentTimeUs - delta))}
+              onSkipForward={(delta) => seek(Math.min(durationUs, currentTimeUs + delta))}
+              onVolumeChange={setVolume}
+            />
           </div>
         </div>
 
-        {/* Sidebar */}
+        {/* Media Library Sidebar */}
         <aside
           style={{
-            width: 300,
+            width: MEDIA_LIBRARY.WIDTH,
             borderLeft: '1px solid #333',
-            padding: 16,
             display: 'flex',
             flexDirection: 'column',
-            gap: 16,
           }}
         >
-          <h3 style={{ margin: 0, fontSize: 14 }}>Load HLS Source</h3>
-
-          <input
-            type="text"
-            placeholder="Enter HLS URL (.m3u8)"
-            value={hlsUrl}
-            onChange={(e) => setHlsUrl(e.target.value)}
-            style={{
-              padding: '8px 12px',
-              backgroundColor: '#1a1a1a',
-              border: '1px solid #333',
-              borderRadius: 4,
-              color: '#fff',
-              fontSize: 13,
-            }}
+          <MediaLibrary
+            sources={composition.sources}
+            onLoadHls={handleLoadHls}
+            isLoading={isLoading}
+            loadingProgress={loadingProgressPercent}
           />
-
-          <button
-            onClick={handleLoadHls}
-            disabled={isLoading || !hlsUrl}
-            style={{
-              padding: '8px 16px',
-              fontSize: 13,
-              backgroundColor: isLoading ? '#333' : '#10b981',
-              color: '#fff',
-              border: 'none',
-              borderRadius: 4,
-              cursor: isLoading ? 'not-allowed' : 'pointer',
-            }}
-          >
-            {isLoading ? `Loading... ${loadingProgressPercent.toFixed(0)}%` : 'Load HLS'}
-          </button>
-
-          <hr style={{ border: 'none', borderTop: '1px solid #333' }} />
-
-          <h3 style={{ margin: 0, fontSize: 14 }}>Timeline Controls</h3>
-
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button
-              onClick={zoomIn}
-              style={{
-                flex: 1,
-                padding: 8,
-                backgroundColor: '#333',
-                color: '#fff',
-                border: 'none',
-                borderRadius: 4,
-                cursor: 'pointer',
-              }}
-            >
-              Zoom +
-            </button>
-            <button
-              onClick={zoomOut}
-              style={{
-                flex: 1,
-                padding: 8,
-                backgroundColor: '#333',
-                color: '#fff',
-                border: 'none',
-                borderRadius: 4,
-                cursor: 'pointer',
-              }}
-            >
-              Zoom -
-            </button>
-            <button
-              onClick={() => resetViewport(durationUs)}
-              style={{
-                flex: 1,
-                padding: 8,
-                backgroundColor: '#333',
-                color: '#fff',
-                border: 'none',
-                borderRadius: 4,
-                cursor: 'pointer',
-              }}
-            >
-              Fit
-            </button>
-          </div>
         </aside>
       </main>
 
@@ -438,6 +385,8 @@ export function EditorApp(props: EditorAppProps) {
           onTrackSolo={setTrackSolo}
           onTrackLock={setTrackLocked}
           onTrackResize={setTrackHeight}
+          onFitToView={() => resetViewport(durationUs)}
+          onExternalDropToTrack={handleExternalDropToTrack}
           selectedClipId={selectedClipId}
           style={{ height: '100%' }}
         />

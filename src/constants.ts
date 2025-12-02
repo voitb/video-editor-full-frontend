@@ -169,3 +169,11 @@ export const AUDIO = {
   /** Resync threshold if audio drifts (ms) */
   RESYNC_THRESHOLD_MS: 50,
 } as const;
+
+/** Media library constants */
+export const MEDIA_LIBRARY = {
+  /** Panel width in pixels */
+  WIDTH: 280,
+  /** List item height in pixels */
+  ITEM_HEIGHT: 56,
+} as const;
