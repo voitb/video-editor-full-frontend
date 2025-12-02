@@ -9,6 +9,7 @@ import { HlsSource } from '../core/HlsSource';
 import type {
   RenderWorkerCommand,
   RenderWorkerEvent,
+  AudioDataEvent,
 } from '../workers/messages/renderMessages';
 import { TIME, PLAYBACK } from '../constants';
 import { createLogger } from '../utils/logger';
@@ -55,7 +56,10 @@ export class Engine {
 
   // Audio context for playback
   private audioContext: AudioContext | null = null;
-  private audioSources: Map<string, AudioBufferSourceNode> = new Map();
+  private audioBuffers: Map<string, { buffer: AudioBuffer; timestampUs: number }[]> = new Map();
+  private audioReady: Map<string, boolean> = new Map();
+  private currentAudioNodes: Map<string, AudioBufferSourceNode> = new Map();
+  private gainNodes: Map<string, GainNode> = new Map();
 
   // Sync state
   private syncIntervalId: number | null = null;
@@ -289,6 +293,10 @@ export class Engine {
       this.composition.unregisterSource(sourceId);
     }
 
+    // Remove audio buffers for this source
+    this.audioBuffers.delete(sourceId);
+    this.audioReady.delete(sourceId);
+
     // Remove from worker
     if (this.worker) {
       const cmd: RenderWorkerCommand = {
@@ -314,12 +322,20 @@ export class Engine {
       this.audioContext = new AudioContext();
     }
 
+    // Resume audio context if suspended (browser autoplay policy)
+    if (this.audioContext.state === 'suspended') {
+      this.audioContext.resume();
+    }
+
     // Update active clips before playing
     this.updateActiveClips();
 
     // Start playback
     const cmd: RenderWorkerCommand = { type: 'PLAY' };
     this.worker.postMessage(cmd);
+
+    // Schedule audio for all active clips
+    this.scheduleAllAudio();
 
     // Start sync interval
     this.startSyncInterval();
@@ -424,14 +440,59 @@ export class Engine {
   // AUDIO HANDLING
   // ============================================================================
 
-  private handleAudioData(event: { sourceId: string; audioData: ArrayBuffer; sampleRate: number; channels: number }): void {
-    // Store audio data for later playback
-    // TODO: Implement full audio engine with mixing
-    logger.info('Received audio data', { sourceId: event.sourceId, channels: event.channels });
+  private handleAudioData(event: AudioDataEvent): void {
+    if (!this.audioContext) {
+      // Create audio context if not exists (will be resumed on first play)
+      this.audioContext = new AudioContext();
+    }
+
+    const { sourceId, audioData, sampleRate, channels, timestampUs, isComplete } = event;
+
+    // If this is the completion marker, mark source as audio-ready
+    if (isComplete) {
+      this.audioReady.set(sourceId, true);
+      logger.info('Audio decoding complete', { sourceId });
+      return;
+    }
+
+    // Skip empty buffers
+    if (audioData.byteLength === 0) return;
+
+    // Convert ArrayBuffer to AudioBuffer
+    const pcmData = new Float32Array(audioData);
+    const frameCount = Math.floor(pcmData.length / channels);
+
+    if (frameCount === 0) return;
+
+    const audioBuffer = this.audioContext.createBuffer(channels, frameCount, sampleRate);
+
+    // Copy interleaved PCM data to separate channels
+    for (let ch = 0; ch < channels; ch++) {
+      const channelData = audioBuffer.getChannelData(ch);
+      for (let i = 0; i < frameCount; i++) {
+        channelData[i] = pcmData[i * channels + ch] ?? 0;
+      }
+    }
+
+    // Store buffer with timestamp
+    if (!this.audioBuffers.has(sourceId)) {
+      this.audioBuffers.set(sourceId, []);
+    }
+    this.audioBuffers.get(sourceId)!.push({ buffer: audioBuffer, timestampUs });
+
+    logger.info('Buffered audio', {
+      sourceId,
+      timestampUs,
+      frames: frameCount,
+      channels,
+      sampleRate,
+      totalBuffers: this.audioBuffers.get(sourceId)!.length,
+    });
   }
 
   private stopAllAudio(): void {
-    for (const source of this.audioSources.values()) {
+    // Stop all playing audio source nodes
+    for (const source of this.currentAudioNodes.values()) {
       try {
         source.stop();
         source.disconnect();
@@ -439,7 +500,104 @@ export class Engine {
         // Ignore errors if already stopped
       }
     }
-    this.audioSources.clear();
+    this.currentAudioNodes.clear();
+
+    // Disconnect gain nodes
+    for (const gain of this.gainNodes.values()) {
+      try {
+        gain.disconnect();
+      } catch {
+        // Ignore errors
+      }
+    }
+    this.gainNodes.clear();
+  }
+
+  /**
+   * Schedule audio playback for a specific clip
+   */
+  private scheduleAudio(clip: ActiveClip): void {
+    if (!this.audioContext) return;
+
+    const buffers = this.audioBuffers.get(clip.sourceId);
+    if (!buffers || buffers.length === 0) {
+      logger.info('No audio buffers for source', { sourceId: clip.sourceId });
+      return;
+    }
+
+    // Create gain node for volume control
+    const gainNode = this.audioContext.createGain();
+    gainNode.gain.value = clip.volume;
+    gainNode.connect(this.audioContext.destination);
+    this.gainNodes.set(clip.clipId, gainNode);
+
+    // Calculate the source time we need to start from
+    const sourceTimeUs = this._currentTimeUs - clip.timelineStartUs + clip.sourceStartUs;
+    const currentAudioTime = this.audioContext.currentTime;
+
+    logger.info('Scheduling audio', {
+      clipId: clip.clipId,
+      sourceId: clip.sourceId,
+      sourceTimeUs,
+      currentTimeUs: this._currentTimeUs,
+      buffersCount: buffers.length,
+      volume: clip.volume,
+    });
+
+    // Find and schedule audio buffers
+    for (let i = 0; i < buffers.length; i++) {
+      const { buffer, timestampUs } = buffers[i]!;
+
+      // Calculate when this buffer should play relative to the source time
+      const bufferStartInSourceUs = timestampUs;
+      const bufferEndInSourceUs = timestampUs + (buffer.duration * TIME.US_PER_SECOND);
+
+      // Skip buffers that end before our current position
+      if (bufferEndInSourceUs < sourceTimeUs) continue;
+
+      // Skip buffers that start after the clip ends
+      const clipEndSourceUs = clip.sourceEndUs;
+      if (bufferStartInSourceUs >= clipEndSourceUs) continue;
+
+      // Create source node
+      const sourceNode = this.audioContext.createBufferSource();
+      sourceNode.buffer = buffer;
+      sourceNode.connect(gainNode);
+
+      // Calculate offset and start time
+      let offsetInBuffer = 0;
+      let startDelay = 0;
+
+      if (bufferStartInSourceUs < sourceTimeUs) {
+        // Buffer started before current time - need to skip into it
+        offsetInBuffer = (sourceTimeUs - bufferStartInSourceUs) / TIME.US_PER_SECOND;
+      } else {
+        // Buffer starts after current time - schedule for future
+        startDelay = (bufferStartInSourceUs - sourceTimeUs) / TIME.US_PER_SECOND;
+      }
+
+      // Calculate duration to play (accounting for clip boundaries)
+      const remainingBufferDuration = buffer.duration - offsetInBuffer;
+      const timeUntilClipEnd = (clipEndSourceUs - Math.max(bufferStartInSourceUs, sourceTimeUs)) / TIME.US_PER_SECOND;
+      const playDuration = Math.min(remainingBufferDuration, timeUntilClipEnd);
+
+      if (playDuration <= 0) continue;
+
+      // Start the audio source
+      sourceNode.start(currentAudioTime + startDelay, offsetInBuffer, playDuration);
+
+      // Store reference for cleanup
+      this.currentAudioNodes.set(`${clip.clipId}-${i}`, sourceNode);
+    }
+  }
+
+  /**
+   * Schedule audio for all active clips
+   */
+  private scheduleAllAudio(): void {
+    for (const clip of this.lastActiveClips) {
+      this.scheduleAudio(clip);
+    }
   }
 
   // ============================================================================
@@ -509,6 +667,10 @@ export class Engine {
     this.pause();
     this.stopSyncInterval();
     this.stopAllAudio();
+
+    // Clear audio buffers
+    this.audioBuffers.clear();
+    this.audioReady.clear();
 
     if (this.audioContext) {
       this.audioContext.close();

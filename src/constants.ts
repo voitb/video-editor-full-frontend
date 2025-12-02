@@ -90,3 +90,13 @@ export const RENDERER = {
   /** Clear color (black) */
   CLEAR_COLOR: [0, 0, 0, 1] as const,
 } as const;
+
+/** Audio constants */
+export const AUDIO = {
+  /** Maximum decoded audio chunks to hold before sending to main thread */
+  MAX_PENDING_CHUNKS: 50,
+  /** Audio buffer ahead threshold (ms) */
+  BUFFER_AHEAD_MS: 500,
+  /** Resync threshold if audio drifts (ms) */
+  RESYNC_THRESHOLD_MS: 50,
+} as const;

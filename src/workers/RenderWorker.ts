@@ -5,7 +5,7 @@
  */
 
 import * as MP4Box from 'mp4box';
-import type { MP4File, MP4VideoTrack, MP4Sample, MP4Info } from 'mp4box';
+import type { MP4File, MP4VideoTrack, MP4AudioTrack, MP4Sample, MP4Info } from 'mp4box';
 import type {
   RenderWorkerCommand,
   RenderWorkerEvent,
@@ -14,6 +14,7 @@ import type {
   TimeUpdateEvent,
   PlaybackStateEvent,
   ErrorEvent,
+  AudioDataEvent,
 } from './messages/renderMessages';
 import type { ActiveClip } from '../core/types';
 import { WebGLRenderer } from '../renderer/WebGLRenderer';
@@ -41,6 +42,14 @@ interface SourceDecodeState {
   isStreaming: boolean;
   streamOffset: number;
   lastQueuedSample: number;
+
+  // Audio decoding
+  audioTrack: MP4AudioTrack | null;
+  audioDecoder: AudioDecoder | null;
+  decodedAudioChunks: { data: Float32Array; timestampUs: number; durationUs: number }[];
+  audioSampleRate: number;
+  audioChannels: number;
+  audioDecodingComplete: boolean;
 }
 
 type WorkerState = 'idle' | 'ready' | 'playing';
@@ -199,6 +208,9 @@ function appendSourceChunk(sourceId: string, chunk: ArrayBuffer, isLast: boolean
   if (isLast) {
     sourceState.mp4File.flush();
     sourceState.isStreaming = false;
+
+    // Flush audio decoder to get remaining samples for streaming sources
+    flushAudioDecoder(sourceState);
   }
 }
 
@@ -219,6 +231,14 @@ function createSourceState(sourceId: string, isStreaming: boolean): SourceDecode
     isStreaming,
     streamOffset: 0,
     lastQueuedSample: -1,
+
+    // Audio fields
+    audioTrack: null,
+    audioDecoder: null,
+    decodedAudioChunks: [],
+    audioSampleRate: 0,
+    audioChannels: 0,
+    audioDecodingComplete: false,
   };
 
   // Handle MP4Box events
@@ -234,25 +254,63 @@ function createSourceState(sourceId: string, isStreaming: boolean): SourceDecode
     sourceState.height = videoTrack.video.height;
     sourceState.durationUs = Math.round((videoTrack.duration / videoTrack.timescale) * TIME.US_PER_SECOND);
 
-    // Initialize decoder
+    // Initialize video decoder
     initDecoder(sourceState, videoTrack);
 
-    // Request samples
-    mp4File.setExtractionOptions(videoTrack.id, null, { nbSamples: 1000 });
+    // Request video samples
+    mp4File.setExtractionOptions(videoTrack.id, 'video', { nbSamples: 1000 });
+
+    // Extract audio track if present
+    const audioTrack = info.audioTracks[0];
+    if (audioTrack) {
+      sourceState.audioTrack = audioTrack;
+      sourceState.audioSampleRate = audioTrack.audio.sample_rate;
+      sourceState.audioChannels = audioTrack.audio.channel_count;
+
+      // Initialize audio decoder
+      initAudioDecoder(sourceState, audioTrack);
+
+      // Request audio samples
+      mp4File.setExtractionOptions(audioTrack.id, 'audio', { nbSamples: 1000 });
+    } else {
+      // No audio track - mark audio as complete
+      sourceState.audioDecodingComplete = true;
+    }
+
     mp4File.start();
   };
 
-  mp4File.onSamples = (_trackId: number, _ref: unknown, samples: MP4Sample[]) => {
+  mp4File.onSamples = (trackId: number, _ref: unknown, samples: MP4Sample[]) => {
+    const isAudioTrack = sourceState.audioTrack && trackId === sourceState.audioTrack.id;
+
     for (const sample of samples) {
-      sourceState.samples.push(sample);
-      if (sample.is_sync) {
-        sourceState.keyframeIndices.push(sourceState.samples.length - 1);
+      if (isAudioTrack) {
+        // Audio sample - decode it
+        if (sourceState.audioDecoder && sourceState.audioDecoder.state === 'configured') {
+          const chunk = new EncodedAudioChunk({
+            type: sample.is_sync ? 'key' : 'delta',
+            timestamp: Math.round((sample.cts / sample.timescale) * TIME.US_PER_SECOND),
+            duration: Math.round((sample.duration / sample.timescale) * TIME.US_PER_SECOND),
+            data: sample.data,
+          });
+          sourceState.audioDecoder.decode(chunk);
+        }
+      } else {
+        // Video sample - existing logic
+        sourceState.samples.push(sample);
+        if (sample.is_sync) {
+          sourceState.keyframeIndices.push(sourceState.samples.length - 1);
+        }
       }
     }
 
     // Mark ready when we have all samples for non-streaming
     if (!sourceState.isStreaming && !sourceState.isReady) {
       sourceState.isReady = true;
+
+      // Flush audio decoder to get remaining samples
+      flushAudioDecoder(sourceState);
+
       const event: SourceReadyEvent = {
         type: 'SOURCE_READY',
         sourceId,
@@ -311,13 +369,154 @@ function getCodecDescription(mp4File: MP4File, trackId: number): Uint8Array | nu
   return null;
 }
 
+// ============================================================================
+// AUDIO DECODING
+// ============================================================================
+
+function initAudioDecoder(sourceState: SourceDecodeState, audioTrack: MP4AudioTrack): void {
+  sourceState.audioDecoder = new AudioDecoder({
+    output: (audioData: AudioData) => {
+      // Get the number of channels and frames
+      const numberOfChannels = audioData.numberOfChannels;
+      const numberOfFrames = audioData.numberOfFrames;
+
+      // Create interleaved Float32Array for all channels
+      const pcmData = new Float32Array(numberOfFrames * numberOfChannels);
+
+      // Copy each channel's data
+      for (let ch = 0; ch < numberOfChannels; ch++) {
+        const channelData = new Float32Array(numberOfFrames);
+        audioData.copyTo(channelData, { planeIndex: ch, format: 'f32-planar' });
+
+        // Interleave the channel data
+        for (let i = 0; i < numberOfFrames; i++) {
+          pcmData[i * numberOfChannels + ch] = channelData[i]!;
+        }
+      }
+
+      sourceState.decodedAudioChunks.push({
+        data: pcmData,
+        timestampUs: audioData.timestamp,
+        durationUs: audioData.duration,
+      });
+
+      audioData.close();
+
+      // Check if we have enough audio data to send
+      if (sourceState.decodedAudioChunks.length >= 50) {
+        sendAudioChunks(sourceState);
+      }
+    },
+    error: (err) => {
+      postError(`Audio decoder error: ${err.message}`, sourceState.sourceId);
+    },
+  });
+
+  // Get audio codec description (for AAC)
+  const codecDescription = getAudioCodecDescription(sourceState.mp4File, audioTrack.id);
+
+  sourceState.audioDecoder.configure({
+    codec: audioTrack.codec,
+    sampleRate: audioTrack.audio.sample_rate,
+    numberOfChannels: audioTrack.audio.channel_count,
+    description: codecDescription ?? undefined,
+  });
+}
+
+function getAudioCodecDescription(mp4File: MP4File, trackId: number): Uint8Array | null {
+  const track = mp4File.getTrackById(trackId);
+  if (!track) return null;
+
+  for (const entry of (track as any).mdia.minf.stbl.stsd.entries) {
+    // AAC codec specific data (esds box)
+    const esds = entry.esds;
+    if (esds && esds.esd && esds.esd.descs) {
+      for (const desc of esds.esd.descs) {
+        if (desc.tag === 5 && desc.data) {
+          return new Uint8Array(desc.data);
+        }
+      }
+    }
+    // Try mp4a box
+    if (entry.type === 'mp4a' && entry.esds) {
+      const esdsData = entry.esds;
+      if (esdsData.esd && esdsData.esd.descs) {
+        for (const desc of esdsData.esd.descs) {
+          if (desc.tag === 5 && desc.data) {
+            return new Uint8Array(desc.data);
+          }
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function sendAudioChunks(sourceState: SourceDecodeState): void {
+  if (sourceState.decodedAudioChunks.length === 0) return;
+
+  // Batch all chunks into a single buffer
+  const chunks = sourceState.decodedAudioChunks.splice(0, sourceState.decodedAudioChunks.length);
+  const totalSamples = chunks.reduce((sum, c) => sum + c.data.length, 0);
+  const combined = new Float32Array(totalSamples);
+
+  let offset = 0;
+  for (const chunk of chunks) {
+    combined.set(chunk.data, offset);
+    offset += chunk.data.length;
+  }
+
+  const firstChunk = chunks[0]!;
+  const lastChunk = chunks[chunks.length - 1]!;
+  const totalDurationUs = (lastChunk.timestampUs + lastChunk.durationUs) - firstChunk.timestampUs;
+
+  const event: AudioDataEvent = {
+    type: 'AUDIO_DATA',
+    sourceId: sourceState.sourceId,
+    audioData: combined.buffer,
+    sampleRate: sourceState.audioSampleRate,
+    channels: sourceState.audioChannels,
+    timestampUs: firstChunk.timestampUs,
+    durationUs: totalDurationUs,
+  };
+
+  postResponse(event, [combined.buffer]);
+}
+
+function flushAudioDecoder(sourceState: SourceDecodeState): void {
+  if (sourceState.audioDecoder && sourceState.audioDecoder.state === 'configured') {
+    sourceState.audioDecoder.flush().then(() => {
+      // Send any remaining audio chunks
+      sendAudioChunks(sourceState);
+      sourceState.audioDecodingComplete = true;
+
+      // Notify main thread that audio is complete
+      postResponse({
+        type: 'AUDIO_DATA',
+        sourceId: sourceState.sourceId,
+        audioData: new ArrayBuffer(0),
+        sampleRate: sourceState.audioSampleRate,
+        channels: sourceState.audioChannels,
+        timestampUs: 0,
+        durationUs: 0,
+        isComplete: true,
+      } as AudioDataEvent & { isComplete: boolean });
+    });
+  }
+}
+
 function removeSource(sourceId: string): void {
   const sourceState = sources.get(sourceId);
   if (!sourceState) return;
 
-  // Close decoder
+  // Close video decoder
   if (sourceState.decoder?.state !== 'closed') {
     sourceState.decoder?.close();
+  }
+
+  // Close audio decoder
+  if (sourceState.audioDecoder?.state !== 'closed') {
+    sourceState.audioDecoder?.close();
   }
 
   // Close queued frames

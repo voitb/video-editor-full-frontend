@@ -149,7 +149,10 @@ export interface AudioDataEvent {
   audioData: ArrayBuffer;
   sampleRate: number;
   channels: number;
+  timestampUs: number;
   durationUs: number;
+  /** True when this is the final audio chunk for the source */
+  isComplete?: boolean;
 }
 
 /** Error occurred */
