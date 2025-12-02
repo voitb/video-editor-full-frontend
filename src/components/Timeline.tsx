@@ -4,7 +4,7 @@
  */
 
 import type { CSSProperties } from 'react';
-import { useCallback, useMemo, useRef } from 'react';
+import { useCallback, useMemo, useRef, useState, useEffect } from 'react';
 import type { Track } from '../core/Track';
 import type { Clip } from '../core/Clip';
 import type { TimelineViewport } from '../core/types';
@@ -182,18 +182,20 @@ export function Timeline(props: TimelineProps) {
       </div>
 
       {/* Tracks */}
-      <div style={{ position: 'relative' }}>
+      <div style={{ position: 'relative' }} onClick={handleTimelineClick}>
         {tracks.map((track) => (
           <TrackLane
             key={track.id}
             track={track}
             height={trackHeight}
             timeToPixel={timeToPixel}
+            pixelToTime={pixelToTime}
             selectedClipId={selectedClipId}
             onClipSelect={onClipSelect}
             onClipMove={onClipMove}
             onClipTrimStart={onClipTrimStart}
             onClipTrimEnd={onClipTrimEnd}
+            onSeek={onSeek}
           />
         ))}
       </div>
@@ -236,11 +238,13 @@ interface TrackLaneProps {
   track: Track;
   height: number;
   timeToPixel: (timeUs: number) => number;
+  pixelToTime: (pixel: number) => number;
   selectedClipId?: string;
   onClipSelect?: (clipId: string, trackId: string) => void;
   onClipMove?: (clipId: string, newStartUs: number) => void;
   onClipTrimStart?: (clipId: string, newStartUs: number) => void;
   onClipTrimEnd?: (clipId: string, newEndUs: number) => void;
+  onSeek?: (timeUs: number) => void;
 }
 
 function TrackLane(props: TrackLaneProps) {
@@ -248,8 +252,12 @@ function TrackLane(props: TrackLaneProps) {
     track,
     height,
     timeToPixel,
+    pixelToTime,
     selectedClipId,
     onClipSelect,
+    onClipTrimStart,
+    onClipTrimEnd,
+    onSeek,
   } = props;
 
   return (
@@ -284,8 +292,12 @@ function TrackLane(props: TrackLaneProps) {
           trackId={track.id}
           trackType={track.type}
           timeToPixel={timeToPixel}
+          pixelToTime={pixelToTime}
           isSelected={clip.id === selectedClipId}
           onSelect={onClipSelect}
+          onTrimStart={onClipTrimStart}
+          onTrimEnd={onClipTrimEnd}
+          onSeek={onSeek}
         />
       ))}
     </div>
@@ -301,8 +313,12 @@ interface ClipBlockProps {
   trackId: string;
   trackType: 'video' | 'audio';
   timeToPixel: (timeUs: number) => number;
+  pixelToTime: (pixel: number) => number;
   isSelected: boolean;
   onSelect?: (clipId: string, trackId: string) => void;
+  onTrimStart?: (clipId: string, newStartUs: number) => void;
+  onTrimEnd?: (clipId: string, newEndUs: number) => void;
+  onSeek?: (timeUs: number) => void;
 }
 
 function ClipBlock(props: ClipBlockProps) {
@@ -311,17 +327,96 @@ function ClipBlock(props: ClipBlockProps) {
     trackId,
     trackType,
     timeToPixel,
+    pixelToTime,
     isSelected,
     onSelect,
+    onTrimStart,
+    onTrimEnd,
+    onSeek,
   } = props;
+
+  // Drag state for trim handles
+  const [dragState, setDragState] = useState<{
+    handle: 'start' | 'end';
+    initialTimeUs: number;
+    initialMouseX: number;
+  } | null>(null);
 
   const left = timeToPixel(clip.startUs);
   const width = timeToPixel(clip.startUs + clip.durationUs) - left;
 
+  // Handle click on clip: first click selects, click on selected seeks
   const handleClick = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
-    onSelect?.(clip.id, trackId);
-  }, [clip.id, trackId, onSelect]);
+
+    if (isSelected && onSeek) {
+      // Already selected - seek to click position within the clip
+      const rect = e.currentTarget.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      const clipProgress = clickX / rect.width;
+      const seekTimeUs = clip.startUs + Math.round(clip.durationUs * clipProgress);
+      onSeek(seekTimeUs);
+    } else {
+      // Not selected - just select
+      onSelect?.(clip.id, trackId);
+    }
+  }, [isSelected, clip, trackId, onSelect, onSeek]);
+
+  // Left trim handle mouse down
+  const handleTrimStartMouseDown = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+
+    setDragState({
+      handle: 'start',
+      initialTimeUs: clip.startUs,
+      initialMouseX: e.clientX,
+    });
+  }, [clip.startUs]);
+
+  // Right trim handle mouse down
+  const handleTrimEndMouseDown = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+
+    setDragState({
+      handle: 'end',
+      initialTimeUs: clip.startUs + clip.durationUs,
+      initialMouseX: e.clientX,
+    });
+  }, [clip.startUs, clip.durationUs]);
+
+  // Global mouse move/up handlers during drag
+  useEffect(() => {
+    if (!dragState) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      // Calculate delta in pixels and convert to time delta
+      const deltaX = e.clientX - dragState.initialMouseX;
+      // Use pixelToTime to convert delta (relative to viewport)
+      const deltaTimeUs = pixelToTime(deltaX) - pixelToTime(0);
+
+      if (dragState.handle === 'start') {
+        const newStartUs = Math.max(0, dragState.initialTimeUs + deltaTimeUs);
+        onTrimStart?.(clip.id, newStartUs);
+      } else {
+        const newEndUs = dragState.initialTimeUs + deltaTimeUs;
+        onTrimEnd?.(clip.id, newEndUs);
+      }
+    };
+
+    const handleMouseUp = () => {
+      setDragState(null);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [dragState, clip.id, pixelToTime, onTrimStart, onTrimEnd]);
 
   // Clip colors based on type and selection
   const backgroundColor = isSelected
@@ -360,8 +455,9 @@ function ClipBlock(props: ClipBlockProps) {
         {clip.label || 'Untitled'}
       </span>
 
-      {/* Trim handles (visual only for now) */}
+      {/* Left trim handle */}
       <div
+        onMouseDown={handleTrimStartMouseDown}
         style={{
           position: 'absolute',
           left: 0,
@@ -369,10 +465,12 @@ function ClipBlock(props: ClipBlockProps) {
           bottom: 0,
           width: 6,
           cursor: 'ew-resize',
-          backgroundColor: 'rgba(255,255,255,0.1)',
+          backgroundColor: dragState?.handle === 'start' ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.1)',
         }}
       />
+      {/* Right trim handle */}
       <div
+        onMouseDown={handleTrimEndMouseDown}
         style={{
           position: 'absolute',
           right: 0,
@@ -380,7 +478,7 @@ function ClipBlock(props: ClipBlockProps) {
           bottom: 0,
           width: 6,
           cursor: 'ew-resize',
-          backgroundColor: 'rgba(255,255,255,0.1)',
+          backgroundColor: dragState?.handle === 'end' ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.1)',
         }}
       />
     </div>

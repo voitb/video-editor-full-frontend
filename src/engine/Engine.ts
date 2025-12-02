@@ -436,6 +436,22 @@ export class Engine {
     return true;
   }
 
+  /**
+   * Force update active clips to worker.
+   * Call this after modifying clip trim points or any composition change.
+   */
+  forceUpdateActiveClips(): void {
+    // Reset last clips to force comparison to pass
+    this.lastActiveClips = [];
+    this.updateActiveClips();
+
+    // Clamp playhead if beyond new duration
+    const newDuration = this.composition.durationUs;
+    if (this._currentTimeUs > newDuration) {
+      this.seek(Math.max(0, newDuration));
+    }
+  }
+
   // ============================================================================
   // AUDIO HANDLING
   // ============================================================================

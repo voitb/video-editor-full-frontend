@@ -51,6 +51,8 @@ export function EditorApp(props: EditorAppProps) {
     durationUs,
     createTrack,
     addClip,
+    getClip,
+    refresh,
   } = useComposition({
     config: { width: 1920, height: 1080, frameRate: 30 },
   });
@@ -65,6 +67,7 @@ export function EditorApp(props: EditorAppProps) {
     loadHlsSource,
     togglePlayPause,
     seek,
+    notifyCompositionChanged,
   } = useEngine({ composition });
 
   const {
@@ -127,6 +130,34 @@ export function EditorApp(props: EditorAppProps) {
   const handleSeek = useCallback((timeUs: number) => {
     seek(timeUs);
   }, [seek]);
+
+  // Handle trim from start (left edge drag)
+  const handleClipTrimStart = useCallback((clipId: string, newStartUs: number) => {
+    const found = getClip(clipId);
+    if (!found) return;
+
+    const { clip } = found;
+    const source = composition.getSource(clip.sourceId);
+    const sourceDuration = source?.durationUs ?? Infinity;
+
+    clip.trimStart(newStartUs, sourceDuration);
+    refresh();
+    notifyCompositionChanged();
+  }, [getClip, composition, refresh, notifyCompositionChanged]);
+
+  // Handle trim from end (right edge drag)
+  const handleClipTrimEnd = useCallback((clipId: string, newEndUs: number) => {
+    const found = getClip(clipId);
+    if (!found) return;
+
+    const { clip } = found;
+    const source = composition.getSource(clip.sourceId);
+    const sourceDuration = source?.durationUs ?? Infinity;
+
+    clip.trimEnd(newEndUs, sourceDuration);
+    refresh();
+    notifyCompositionChanged();
+  }, [getClip, composition, refresh, notifyCompositionChanged]);
 
   // Get loading progress for display
   const loadingProgressPercent = Array.from(loadingProgress.values()).reduce(
@@ -330,6 +361,8 @@ export function EditorApp(props: EditorAppProps) {
           viewport={viewport}
           onSeek={handleSeek}
           onClipSelect={handleClipSelect}
+          onClipTrimStart={handleClipTrimStart}
+          onClipTrimEnd={handleClipTrimEnd}
           selectedClipId={selectedClipId}
           style={{ height: '100%' }}
         />

@@ -51,6 +51,8 @@ export interface UseEngineReturn {
   seekSeconds: (seconds: number) => void;
   /** Dispose engine */
   dispose: () => void;
+  /** Notify engine that composition changed (e.g., after trim) */
+  notifyCompositionChanged: () => void;
 }
 
 /**
@@ -202,6 +204,12 @@ export function useEngine(options: UseEngineOptions): UseEngineReturn {
     setError(null);
   }, []);
 
+  // Notify composition changed (call after trim operations)
+  const notifyCompositionChanged = useCallback(() => {
+    engineRef.current?.forceUpdateActiveClips();
+    setDurationUs(composition.durationUs);
+  }, [composition]);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -227,5 +235,6 @@ export function useEngine(options: UseEngineOptions): UseEngineReturn {
     seek,
     seekSeconds,
     dispose,
+    notifyCompositionChanged,
   };
 }
