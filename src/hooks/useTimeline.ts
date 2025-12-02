@@ -27,8 +27,8 @@ export interface UseTimelineReturn {
   pan: (deltaUs: number) => void;
   /** Center viewport on time */
   centerOn: (timeUs: number) => void;
-  /** Reset viewport to show full timeline */
-  resetViewport: () => void;
+  /** Reset viewport to show full timeline (optionally with a new duration) */
+  resetViewport: (newDurationUs?: number) => void;
   /** Convert timeline time to pixel position */
   timeToPixel: (timeUs: number, containerWidth: number) => number;
   /** Convert pixel position to timeline time */
@@ -222,11 +222,12 @@ export function useTimeline(options: UseTimelineOptions): UseTimelineReturn {
     });
   }, [durationUs]);
 
-  // Reset viewport
-  const resetViewport = useCallback(() => {
+  // Reset viewport (accepts optional new duration to avoid stale closure issues)
+  const resetViewport = useCallback((newDurationUs?: number) => {
+    const effectiveDuration = newDurationUs ?? durationUs ?? TIMELINE.MIN_VISIBLE_DURATION_US;
     setViewport({
       startTimeUs: 0,
-      endTimeUs: durationUs || TIMELINE.MIN_VISIBLE_DURATION_US,
+      endTimeUs: effectiveDuration,
       zoomLevel: 1,
     });
   }, [durationUs]);

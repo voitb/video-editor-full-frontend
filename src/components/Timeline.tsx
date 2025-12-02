@@ -1179,6 +1179,9 @@ function ClipBlock(props: ClipBlockProps) {
     targetTrackId?: string;
   } | null>(null);
 
+  // Track if a drag actually happened (to prevent seek after drag)
+  const didDragRef = useRef(false);
+
   const left = timeToPixel(clip.startUs);
   const width = timeToPixel(clip.startUs + clip.durationUs) - left;
 
@@ -1190,6 +1193,12 @@ function ClipBlock(props: ClipBlockProps) {
   // Handle click on clip: first click selects, click on selected seeks
   const handleClick = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
+
+    // Skip seek if a drag just happened (click fires after mouseup from drag)
+    if (didDragRef.current) {
+      didDragRef.current = false;
+      return;
+    }
 
     if (isSelected && onSeek) {
       // Already selected - seek to click position within the clip
@@ -1243,6 +1252,9 @@ function ClipBlock(props: ClipBlockProps) {
     e.stopPropagation();
     e.preventDefault();
 
+    // Reset drag tracking ref
+    didDragRef.current = false;
+
     // Select if not already selected
     if (!isSelected) {
       onSelect?.(clip.id, trackId);
@@ -1275,6 +1287,9 @@ function ClipBlock(props: ClipBlockProps) {
         const newEndUs = dragState.initialTimeUs + deltaTimeUs;
         onTrimEnd?.(clip.id, newEndUs);
       } else if (dragState.type === 'move') {
+        // Mark that a drag movement occurred (to prevent seek after drag)
+        didDragRef.current = true;
+
         // Calculate new start position
         let newStartUs = Math.max(0, dragState.initialTimeUs + deltaTimeUs);
 

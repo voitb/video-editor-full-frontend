@@ -135,7 +135,8 @@ export function EditorApp(props: EditorAppProps) {
         });
       }
 
-      resetViewport();
+      // Pass source duration to avoid stale closure issue
+      resetViewport(source.durationUs);
     } catch (err) {
       console.error('Failed to load HLS source:', err);
     } finally {
@@ -383,7 +384,7 @@ export function EditorApp(props: EditorAppProps) {
               Zoom -
             </button>
             <button
-              onClick={resetViewport}
+              onClick={() => resetViewport(durationUs)}
               style={{
                 flex: 1,
                 padding: 8,
