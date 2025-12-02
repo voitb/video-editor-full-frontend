@@ -67,6 +67,14 @@ export class Engine {
   private lastHasClipsAtTime = false;
   private lastCompositionDurationUs = 0;
 
+  // Seek acknowledgment state
+  private pendingSeekTimeUs: number | null = null;
+  private isSeekingWhilePlaying = false;
+
+  // Audio-video drift tracking
+  private audioScheduledAtTimeUs = 0;
+  private audioScheduledAtAudioContextTime = 0;
+
   // Event listeners
   private listeners: Set<EngineEventCallback> = new Set();
 
@@ -136,6 +144,20 @@ export class Engine {
       case 'PLAYBACK_STATE':
         this._isPlaying = event.isPlaying;
         this.setState(event.isPlaying ? 'playing' : 'paused');
+        break;
+
+      case 'SEEK_COMPLETE':
+        // Only schedule audio if we were playing when seek started
+        // and we're still at the seek position and still playing
+        if (
+          this.isSeekingWhilePlaying &&
+          this.pendingSeekTimeUs === event.timeUs &&
+          this._isPlaying
+        ) {
+          this.scheduleAllAudio();
+        }
+        this.pendingSeekTimeUs = null;
+        this.isSeekingWhilePlaying = false;
         break;
 
       case 'AUDIO_DATA':
@@ -369,16 +391,17 @@ export class Engine {
     const clampedTime = Math.max(0, Math.min(timeUs, this.composition.durationUs));
     this._currentTimeUs = clampedTime;
 
-    // Stop current audio
+    // Stop current audio immediately
     this.stopAllAudio();
 
     // Update active clips FIRST (before seek) to ensure worker has correct clips for rendering
     this.updateActiveClips();
 
-    // Reschedule audio if currently playing
-    if (this._isPlaying) {
-      this.scheduleAllAudio();
-    }
+    // Track if we need to reschedule audio after seek completes
+    // DON'T schedule audio here - wait for SEEK_COMPLETE event from worker
+    // This ensures audio starts only after video is at correct position
+    this.isSeekingWhilePlaying = this._isPlaying;
+    this.pendingSeekTimeUs = clampedTime;
 
     // Then send seek command
     const cmd: RenderWorkerCommand = {
@@ -444,11 +467,14 @@ export class Engine {
     };
     this.worker.postMessage(cmd);
 
-    // Reschedule audio when clips change during playback
-    // This handles entering/exiting clips during playback
-    if (this._isPlaying && clipsChanged) {
+    // Always stop audio when clips change - prevents stale audio nodes
+    // This handles entering/exiting clips both during playback and when paused
+    if (clipsChanged) {
       this.stopAllAudio();
-      this.scheduleAllAudio();
+      // Only reschedule if playing (and not in the middle of a seek)
+      if (this._isPlaying && this.pendingSeekTimeUs === null) {
+        this.scheduleAllAudio();
+      }
     }
   }
 
@@ -638,6 +664,10 @@ export class Engine {
    * Schedule audio for all active clips
    */
   private scheduleAllAudio(): void {
+    // Record timing for drift detection
+    this.audioScheduledAtTimeUs = this._currentTimeUs;
+    this.audioScheduledAtAudioContextTime = this.audioContext?.currentTime ?? 0;
+
     for (const clip of this.lastActiveClips) {
       this.scheduleAudio(clip);
     }
@@ -672,6 +702,30 @@ export class Engine {
 
     // Update active clips periodically
     this.updateActiveClips();
+
+    // Check for audio-video drift during playback
+    if (
+      this._isPlaying &&
+      this.audioContext &&
+      this.currentAudioNodes.size > 0 &&
+      this.audioScheduledAtAudioContextTime > 0
+    ) {
+      const expectedVideoTimeUs = this._currentTimeUs;
+      const audioElapsed = this.audioContext.currentTime - this.audioScheduledAtAudioContextTime;
+      const expectedAudioTimeUs = this.audioScheduledAtTimeUs + audioElapsed * TIME.US_PER_SECOND;
+      const driftUs = Math.abs(expectedVideoTimeUs - expectedAudioTimeUs);
+
+      // If drift exceeds threshold, reschedule audio
+      if (driftUs > PLAYBACK.AUDIO_DRIFT_THRESHOLD_US) {
+        logger.warn('Audio drift detected, rescheduling', {
+          driftUs,
+          expectedVideoTimeUs,
+          expectedAudioTimeUs,
+        });
+        this.stopAllAudio();
+        this.scheduleAllAudio();
+      }
+    }
   }
 
   // ============================================================================

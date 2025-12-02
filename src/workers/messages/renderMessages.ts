@@ -171,6 +171,12 @@ export interface WorkerReadyEvent {
   type: 'WORKER_READY';
 }
 
+/** Seek operation completed */
+export interface SeekCompleteEvent {
+  type: 'SEEK_COMPLETE';
+  timeUs: number;
+}
+
 /** All possible events */
 export type RenderWorkerEvent =
   | SourceReadyEvent
@@ -181,7 +187,8 @@ export type RenderWorkerEvent =
   | FirstFrameEvent
   | AudioDataEvent
   | ErrorEvent
-  | WorkerReadyEvent;
+  | WorkerReadyEvent
+  | SeekCompleteEvent;
 
 // ============================================================================
 // TYPE GUARDS

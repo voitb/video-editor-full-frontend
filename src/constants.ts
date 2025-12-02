@@ -108,6 +108,8 @@ export const PLAYBACK = {
   BUFFER_AHEAD_THRESHOLD_US: 500_000,
   /** Playable threshold - samples needed before playback can start */
   PLAYABLE_SAMPLE_COUNT: 45,
+  /** Audio drift threshold - reschedule audio if drift exceeds this (50ms) */
+  AUDIO_DRIFT_THRESHOLD_US: 50_000,
 } as const;
 
 /** Composition defaults */

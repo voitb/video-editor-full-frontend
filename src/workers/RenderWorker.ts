@@ -15,6 +15,7 @@ import type {
   PlaybackStateEvent,
   ErrorEvent,
   AudioDataEvent,
+  SeekCompleteEvent,
 } from './messages/renderMessages';
 import type { ActiveClip } from '../core/types';
 import { WebGLRenderer } from '../renderer/WebGLRenderer';
@@ -672,6 +673,9 @@ async function seek(timeUs: number): Promise<void> {
   }
 
   postResponse({ type: 'TIME_UPDATE', currentTimeUs: timeUs } as TimeUpdateEvent);
+
+  // Notify main thread that seek is complete and audio can be scheduled
+  postResponse({ type: 'SEEK_COMPLETE', timeUs } as SeekCompleteEvent);
 }
 
 function syncToTime(timeUs: number): void {
