@@ -375,6 +375,11 @@ export class Engine {
     // Update active clips FIRST (before seek) to ensure worker has correct clips for rendering
     this.updateActiveClips();
 
+    // Reschedule audio if currently playing
+    if (this._isPlaying) {
+      this.scheduleAllAudio();
+    }
+
     // Then send seek command
     const cmd: RenderWorkerCommand = {
       type: 'SEEK',
@@ -438,6 +443,13 @@ export class Engine {
       compositionDurationUs,
     };
     this.worker.postMessage(cmd);
+
+    // Reschedule audio when clips change during playback
+    // This handles entering/exiting clips during playback
+    if (this._isPlaying && clipsChanged) {
+      this.stopAllAudio();
+      this.scheduleAllAudio();
+    }
   }
 
   private activeClipsEqual(a: ActiveClip[], b: ActiveClip[]): boolean {
