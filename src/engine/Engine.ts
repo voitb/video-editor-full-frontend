@@ -70,6 +70,7 @@ export class Engine {
   // Seek acknowledgment state
   private pendingSeekTimeUs: number | null = null;
   private isSeekingWhilePlaying = false;
+  private seekInProgress = false;
 
   // Audio-video drift tracking
   private audioScheduledAtTimeUs = 0;
@@ -138,7 +139,11 @@ export class Engine {
       case 'TIME_UPDATE':
         this._currentTimeUs = event.currentTimeUs;
         this.emit({ type: 'timeUpdate', currentTimeUs: event.currentTimeUs });
-        this.updateActiveClips();
+        // Don't update active clips during seek - wait for SEEK_COMPLETE
+        // This prevents audio state corruption from TIME_UPDATE events arriving during seek
+        if (!this.seekInProgress) {
+          this.updateActiveClips();
+        }
         break;
 
       case 'PLAYBACK_STATE':
@@ -147,6 +152,9 @@ export class Engine {
         break;
 
       case 'SEEK_COMPLETE':
+        // Unlock audio operations - seek is complete
+        this.seekInProgress = false;
+
         // Only schedule audio if we were playing when seek started
         // and we're still at the seek position and still playing
         if (
@@ -387,6 +395,9 @@ export class Engine {
   seek(timeUs: number): void {
     if (!this.worker) return;
 
+    // Lock audio operations during seek to prevent race conditions
+    this.seekInProgress = true;
+
     // Clamp to valid range
     const clampedTime = Math.max(0, Math.min(timeUs, this.composition.durationUs));
     this._currentTimeUs = clampedTime;
@@ -471,8 +482,9 @@ export class Engine {
     // This handles entering/exiting clips both during playback and when paused
     if (clipsChanged) {
       this.stopAllAudio();
-      // Only reschedule if playing (and not in the middle of a seek)
-      if (this._isPlaying && this.pendingSeekTimeUs === null) {
+      // Only reschedule if playing and not in the middle of a seek
+      // Use seekInProgress flag instead of pendingSeekTimeUs for more reliable locking
+      if (this._isPlaying && !this.seekInProgress) {
         this.scheduleAllAudio();
       }
     }
@@ -576,6 +588,11 @@ export class Engine {
       }
     }
     this.gainNodes.clear();
+
+    // Reset drift tracking to prevent false positives after resume
+    // This ensures the next scheduleAllAudio() starts fresh
+    this.audioScheduledAtTimeUs = 0;
+    this.audioScheduledAtAudioContextTime = 0;
   }
 
   /**
@@ -587,6 +604,19 @@ export class Engine {
     // CRITICAL: Only play audio for clips on audio tracks
     // Video track clips should not produce audio - audio comes from audio tracks only
     if (clip.trackType !== 'audio') return;
+
+    // Validate clip is actually active at current time (sanity check)
+    const clipDuration = clip.sourceEndUs - clip.sourceStartUs;
+    const clipEnd = clip.timelineStartUs + clipDuration;
+    if (this._currentTimeUs < clip.timelineStartUs || this._currentTimeUs >= clipEnd) {
+      logger.warn('Attempted to schedule audio for inactive clip', {
+        clipId: clip.clipId,
+        currentTimeUs: this._currentTimeUs,
+        clipStart: clip.timelineStartUs,
+        clipEnd,
+      });
+      return;
+    }
 
     const buffers = this.audioBuffers.get(clip.sourceId);
     if (!buffers || buffers.length === 0) {
@@ -664,11 +694,24 @@ export class Engine {
    * Schedule audio for all active clips
    */
   private scheduleAllAudio(): void {
+    // CRITICAL: Query fresh clips instead of using cached lastActiveClips
+    // This prevents scheduling wrong audio after seek or clip changes
+    const currentActiveClips = this.composition.getActiveClipsAt(this._currentTimeUs);
+
+    // Update cache to stay in sync
+    this.lastActiveClips = currentActiveClips;
+
     // Record timing for drift detection
     this.audioScheduledAtTimeUs = this._currentTimeUs;
     this.audioScheduledAtAudioContextTime = this.audioContext?.currentTime ?? 0;
 
-    for (const clip of this.lastActiveClips) {
+    logger.info('Scheduling all audio', {
+      currentTimeUs: this._currentTimeUs,
+      clipCount: currentActiveClips.length,
+      audioClips: currentActiveClips.filter(c => c.trackType === 'audio').map(c => c.clipId),
+    });
+
+    for (const clip of currentActiveClips) {
       this.scheduleAudio(clip);
     }
   }
@@ -700,15 +743,25 @@ export class Engine {
       return;
     }
 
+    // Don't run sync checks during seek - wait for seek to complete
+    if (this.seekInProgress) return;
+
     // Update active clips periodically
     this.updateActiveClips();
 
     // Check for audio-video drift during playback
+    // Only check drift if we've been playing for a bit (avoid initial sync issues)
+    const minStablePlaybackMs = 200;
+    const playbackElapsedMs = this.audioContext?.currentTime
+      ? (this.audioContext.currentTime - this.audioScheduledAtAudioContextTime) * 1000
+      : 0;
+
     if (
       this._isPlaying &&
       this.audioContext &&
       this.currentAudioNodes.size > 0 &&
-      this.audioScheduledAtAudioContextTime > 0
+      this.audioScheduledAtAudioContextTime > 0 &&
+      playbackElapsedMs > minStablePlaybackMs // Wait for stable playback before checking drift
     ) {
       const expectedVideoTimeUs = this._currentTimeUs;
       const audioElapsed = this.audioContext.currentTime - this.audioScheduledAtAudioContextTime;
@@ -721,6 +774,7 @@ export class Engine {
           driftUs,
           expectedVideoTimeUs,
           expectedAudioTimeUs,
+          playbackElapsedMs,
         });
         this.stopAllAudio();
         this.scheduleAllAudio();
