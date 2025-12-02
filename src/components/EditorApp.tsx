@@ -3,7 +3,7 @@
  * Demonstrates how to use the video editor components together.
  */
 
-import { useRef, useEffect, useCallback, useState } from 'react';
+import { useRef, useEffect, useCallback, useState, useMemo } from 'react';
 import { useComposition } from '../hooks/useComposition';
 import { useEngine } from '../hooks/useEngine';
 import { useTimeline } from '../hooks/useTimeline';
@@ -78,7 +78,24 @@ export function EditorApp(props: EditorAppProps) {
     zoomIn,
     zoomOut,
     resetViewport,
+    zoomAtPosition,
+    setZoom,
+    setViewportFromScroll,
+    getScrollLeft,
+    trackStates,
+    setTrackMuted,
+    setTrackSolo,
+    setTrackLocked,
+    setTrackHeight,
   } = useTimeline({ durationUs });
+
+  // Sort tracks: video tracks first, then audio tracks (professional NLE layout)
+  // Use tracks.length as dependency to ensure re-computation when tracks are added/removed
+  const sortedTracks = useMemo(() => {
+    const videoTracks = tracks.filter(t => t.type === 'video');
+    const audioTracks = tracks.filter(t => t.type === 'audio');
+    return [...videoTracks, ...audioTracks];
+  }, [tracks, tracks.length]);
 
   // Initialize engine when canvas is ready
   useEffect(() => {
@@ -90,11 +107,13 @@ export function EditorApp(props: EditorAppProps) {
 
   // Create default tracks on mount
   useEffect(() => {
-    if (tracks.length === 0) {
-      createTrack({ type: 'video', label: 'Video 1' });
-      createTrack({ type: 'audio', label: 'Audio 1' });
+    if (composition.tracks.length === 0) {
+      composition.createTrack({ type: 'video', label: 'Video 1' });
+      composition.createTrack({ type: 'audio', label: 'Audio 1' });
+      refresh();
     }
-  }, [tracks.length, createTrack]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Load HLS source
   const handleLoadHls = useCallback(async () => {
@@ -104,8 +123,8 @@ export function EditorApp(props: EditorAppProps) {
     try {
       const source = await loadHlsSource(hlsUrl);
 
-      // Find video track and add clip
-      const videoTrack = tracks.find(t => t.type === 'video');
+      // Use composition.tracks directly to avoid stale closure
+      const videoTrack = composition.tracks.find(t => t.type === 'video');
       if (videoTrack) {
         addClip(videoTrack.id, {
           sourceId: source.id,
@@ -122,7 +141,7 @@ export function EditorApp(props: EditorAppProps) {
     } finally {
       setIsLoading(false);
     }
-  }, [hlsUrl, loadHlsSource, tracks, addClip, resetViewport]);
+  }, [hlsUrl, loadHlsSource, composition, addClip, resetViewport]);
 
   // Handle clip selection
   const handleClipSelect = useCallback((clipId: string) => {
@@ -384,12 +403,12 @@ export function EditorApp(props: EditorAppProps) {
       {/* Timeline */}
       <footer
         style={{
-          height: 200,
+          height: 280,
           borderTop: '1px solid #333',
         }}
       >
         <Timeline
-          tracks={tracks}
+          tracks={sortedTracks}
           currentTimeUs={currentTimeUs}
           durationUs={durationUs}
           viewport={viewport}
@@ -401,6 +420,15 @@ export function EditorApp(props: EditorAppProps) {
           onClipTrimEnd={handleClipTrimEnd}
           onTrackAdd={handleTrackAdd}
           onTrackRemove={handleTrackRemove}
+          onZoomAtPosition={zoomAtPosition}
+          onZoomChange={setZoom}
+          onViewportScroll={setViewportFromScroll}
+          getScrollLeft={getScrollLeft}
+          trackStates={trackStates}
+          onTrackMute={setTrackMuted}
+          onTrackSolo={setTrackSolo}
+          onTrackLock={setTrackLocked}
+          onTrackResize={setTrackHeight}
           selectedClipId={selectedClipId}
           style={{ height: '100%' }}
         />

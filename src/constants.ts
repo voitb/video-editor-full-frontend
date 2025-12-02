@@ -29,6 +29,64 @@ export const TIMELINE = {
   SNAP_THRESHOLD_PX: 10,
   /** Track header width in pixels */
   TRACK_HEADER_WIDTH: 120,
+  /** Minimum track height in pixels */
+  MIN_TRACK_HEIGHT: 40,
+  /** Maximum track height in pixels */
+  MAX_TRACK_HEIGHT: 200,
+  /** Default track height in pixels */
+  DEFAULT_TRACK_HEIGHT: 60,
+  /** Minimap height in pixels */
+  MINIMAP_HEIGHT: 40,
+  /** Scrollbar height in pixels */
+  SCROLLBAR_HEIGHT: 14,
+  /** Zoom slider width in pixels */
+  ZOOM_SLIDER_WIDTH: 150,
+  /** Time ruler height in pixels */
+  TIME_RULER_HEIGHT: 28,
+} as const;
+
+/** Timeline color palette */
+export const TIMELINE_COLORS = {
+  // Backgrounds
+  background: '#0a0a0a',
+  trackHeaderBg: '#151515',
+  trackVideoBg: '#1e293b',
+  trackAudioBg: '#1e3b2e',
+  trackVideoDropBg: '#2a4a6a',
+  trackAudioDropBg: '#2a6a4a',
+  rulerBg: '#1a1a1a',
+  minimapBg: '#0d0d0d',
+  scrollbarBg: '#1a1a1a',
+  scrollbarThumb: '#444',
+  scrollbarThumbHover: '#555',
+
+  // Clips
+  clipVideo: '#3b5998',
+  clipVideoSelected: '#4f83cc',
+  clipVideoHover: '#4a6fb5',
+  clipAudio: '#3b9858',
+  clipAudioSelected: '#4fcc83',
+  clipAudioHover: '#4ab56a',
+
+  // UI Elements
+  playhead: '#ff4444',
+  snapLine: '#ffcc00',
+  selection: 'rgba(79, 131, 204, 0.3)',
+  viewportRect: 'rgba(255, 255, 255, 0.15)',
+  viewportBorder: 'rgba(255, 255, 255, 0.4)',
+
+  // Track states
+  mutedOverlay: 'rgba(0, 0, 0, 0.5)',
+  lockedOverlay: 'rgba(255, 0, 0, 0.05)',
+
+  // Text
+  textPrimary: '#fff',
+  textSecondary: '#ccc',
+  textMuted: '#888',
+
+  // Borders
+  border: '#333',
+  borderLight: '#444',
 } as const;
 
 /** Playback constants */

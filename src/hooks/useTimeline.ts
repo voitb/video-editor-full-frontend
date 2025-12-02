@@ -3,8 +3,8 @@
  * React hook for timeline viewport and interactions.
  */
 
-import { useState, useCallback, useMemo } from 'react';
-import type { TimelineViewport } from '../core/types';
+import { useState, useCallback, useMemo, useRef } from 'react';
+import type { TimelineViewport, TrackUIState } from '../core/types';
 import { TIMELINE } from '../constants';
 
 export interface UseTimelineOptions {
@@ -37,6 +37,32 @@ export interface UseTimelineReturn {
   visibleDurationUs: number;
   /** Pixels per microsecond at current zoom */
   pixelsPerUs: (containerWidth: number) => number;
+  /** Zoom at a specific position (ratio 0-1 within visible viewport) */
+  zoomAtPosition: (positionRatio: number, direction: 'in' | 'out') => void;
+
+  // Scroll synchronization
+  /** Set viewport from scroll position */
+  setViewportFromScroll: (scrollLeft: number, containerWidth: number, totalWidth: number) => void;
+  /** Get scroll position from current viewport */
+  getScrollLeft: (containerWidth: number, totalWidth: number) => number;
+  /** Get total timeline width for current zoom */
+  getTotalWidth: (containerWidth: number) => number;
+
+  // Track UI state
+  /** Track UI states (mute/solo/lock/height) */
+  trackStates: Record<string, TrackUIState>;
+  /** Set track muted state */
+  setTrackMuted: (trackId: string, muted: boolean) => void;
+  /** Set track solo state */
+  setTrackSolo: (trackId: string, solo: boolean) => void;
+  /** Set track locked state */
+  setTrackLocked: (trackId: string, locked: boolean) => void;
+  /** Set track height */
+  setTrackHeight: (trackId: string, height: number) => void;
+  /** Get effective track height (from state or default) */
+  getTrackHeight: (trackId: string) => number;
+  /** Initialize track state if not exists */
+  initTrackState: (trackId: string) => void;
 }
 
 /**
@@ -228,6 +254,166 @@ export function useTimeline(options: UseTimelineOptions): UseTimelineReturn {
     return containerWidth / duration;
   }, [viewport]);
 
+  // Zoom at a specific position (DaVinci Resolve style - keeps cursor point stationary)
+  const zoomAtPosition = useCallback((positionRatio: number, direction: 'in' | 'out') => {
+    setViewport(prev => {
+      const currentDuration = prev.endTimeUs - prev.startTimeUs;
+
+      // Anchor point: time at cursor position
+      const cursorTimeUs = prev.startTimeUs + positionRatio * currentDuration;
+
+      // New zoom level
+      const newZoom = direction === 'in'
+        ? Math.min(prev.zoomLevel * TIMELINE.ZOOM_STEP, TIMELINE.MAX_ZOOM_LEVEL)
+        : Math.max(prev.zoomLevel / TIMELINE.ZOOM_STEP, 1);
+
+      // New visible duration
+      const newDuration = Math.max(durationUs / newZoom, TIMELINE.MIN_VISIBLE_DURATION_US);
+
+      // Keep cursor at same position ratio
+      let newStartTimeUs = cursorTimeUs - positionRatio * newDuration;
+      let newEndTimeUs = newStartTimeUs + newDuration;
+
+      // Clamp to bounds
+      if (newStartTimeUs < 0) {
+        newStartTimeUs = 0;
+        newEndTimeUs = newDuration;
+      }
+      if (newEndTimeUs > durationUs) {
+        newEndTimeUs = durationUs;
+        newStartTimeUs = Math.max(0, durationUs - newDuration);
+      }
+
+      return {
+        startTimeUs: newStartTimeUs,
+        endTimeUs: newEndTimeUs,
+        zoomLevel: newZoom,
+      };
+    });
+  }, [durationUs]);
+
+  // ============================================================================
+  // SCROLL SYNCHRONIZATION
+  // ============================================================================
+
+  // Get total timeline width for current zoom level
+  const getTotalWidth = useCallback((containerWidth: number): number => {
+    if (containerWidth <= 0) return containerWidth;
+    const effectiveDuration = Math.max(durationUs, TIMELINE.MIN_VISIBLE_DURATION_US);
+    // At zoom=1, totalWidth = containerWidth (fits exactly)
+    // At zoom>1, totalWidth > containerWidth (enables scrolling)
+    return containerWidth * viewport.zoomLevel;
+  }, [durationUs, viewport.zoomLevel]);
+
+  // Set viewport from scroll position (called when user scrolls)
+  const setViewportFromScroll = useCallback((
+    scrollLeft: number,
+    containerWidth: number,
+    totalWidth: number
+  ) => {
+    if (totalWidth <= containerWidth || containerWidth <= 0) return;
+
+    const effectiveDuration = Math.max(durationUs, TIMELINE.MIN_VISIBLE_DURATION_US);
+    const visibleDuration = effectiveDuration / viewport.zoomLevel;
+
+    // Calculate new start time from scroll position
+    const scrollRatio = scrollLeft / (totalWidth - containerWidth);
+    const maxStartTime = effectiveDuration - visibleDuration;
+    const newStartTime = scrollRatio * maxStartTime;
+
+    setViewport(prev => ({
+      ...prev,
+      startTimeUs: Math.max(0, newStartTime),
+      endTimeUs: Math.min(effectiveDuration, newStartTime + visibleDuration),
+    }));
+  }, [durationUs, viewport.zoomLevel]);
+
+  // Get scroll position from current viewport
+  const getScrollLeft = useCallback((containerWidth: number, totalWidth: number): number => {
+    if (totalWidth <= containerWidth || containerWidth <= 0) return 0;
+
+    const effectiveDuration = Math.max(durationUs, TIMELINE.MIN_VISIBLE_DURATION_US);
+    const visibleDuration = viewport.endTimeUs - viewport.startTimeUs;
+    const maxStartTime = effectiveDuration - visibleDuration;
+
+    if (maxStartTime <= 0) return 0;
+
+    const scrollRatio = viewport.startTimeUs / maxStartTime;
+    return scrollRatio * (totalWidth - containerWidth);
+  }, [durationUs, viewport.startTimeUs, viewport.endTimeUs]);
+
+  // ============================================================================
+  // TRACK UI STATE
+  // ============================================================================
+
+  const [trackStates, setTrackStates] = useState<Record<string, TrackUIState>>({});
+
+  // Initialize track state if not exists
+  const initTrackState = useCallback((trackId: string) => {
+    setTrackStates(prev => {
+      if (prev[trackId]) return prev;
+      return {
+        ...prev,
+        [trackId]: {
+          muted: false,
+          solo: false,
+          locked: false,
+          height: TIMELINE.DEFAULT_TRACK_HEIGHT,
+        },
+      };
+    });
+  }, []);
+
+  // Set track muted state
+  const setTrackMuted = useCallback((trackId: string, muted: boolean) => {
+    setTrackStates(prev => ({
+      ...prev,
+      [trackId]: {
+        ...(prev[trackId] ?? { muted: false, solo: false, locked: false, height: TIMELINE.DEFAULT_TRACK_HEIGHT }),
+        muted,
+      },
+    }));
+  }, []);
+
+  // Set track solo state
+  const setTrackSolo = useCallback((trackId: string, solo: boolean) => {
+    setTrackStates(prev => ({
+      ...prev,
+      [trackId]: {
+        ...(prev[trackId] ?? { muted: false, solo: false, locked: false, height: TIMELINE.DEFAULT_TRACK_HEIGHT }),
+        solo,
+      },
+    }));
+  }, []);
+
+  // Set track locked state
+  const setTrackLocked = useCallback((trackId: string, locked: boolean) => {
+    setTrackStates(prev => ({
+      ...prev,
+      [trackId]: {
+        ...(prev[trackId] ?? { muted: false, solo: false, locked: false, height: TIMELINE.DEFAULT_TRACK_HEIGHT }),
+        locked,
+      },
+    }));
+  }, []);
+
+  // Set track height
+  const setTrackHeight = useCallback((trackId: string, height: number) => {
+    const clampedHeight = Math.max(TIMELINE.MIN_TRACK_HEIGHT, Math.min(height, TIMELINE.MAX_TRACK_HEIGHT));
+    setTrackStates(prev => ({
+      ...prev,
+      [trackId]: {
+        ...(prev[trackId] ?? { muted: false, solo: false, locked: false, height: TIMELINE.DEFAULT_TRACK_HEIGHT }),
+        height: clampedHeight,
+      },
+    }));
+  }, []);
+
+  // Get track height (from state or default)
+  const getTrackHeight = useCallback((trackId: string): number => {
+    return trackStates[trackId]?.height ?? TIMELINE.DEFAULT_TRACK_HEIGHT;
+  }, [trackStates]);
+
   return {
     viewport,
     zoomIn,
@@ -240,5 +426,18 @@ export function useTimeline(options: UseTimelineOptions): UseTimelineReturn {
     pixelToTime,
     visibleDurationUs,
     pixelsPerUs,
+    zoomAtPosition,
+    // Scroll sync
+    setViewportFromScroll,
+    getScrollLeft,
+    getTotalWidth,
+    // Track UI state
+    trackStates,
+    setTrackMuted,
+    setTrackSolo,
+    setTrackLocked,
+    setTrackHeight,
+    getTrackHeight,
+    initTrackState,
   };
 }
