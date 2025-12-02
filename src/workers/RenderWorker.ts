@@ -20,8 +20,12 @@ import type { ActiveClip } from '../core/types';
 import { WebGLRenderer } from '../renderer/WebGLRenderer';
 import { Compositor, type CompositorLayer } from '../renderer/Compositor';
 import { PLAYBACK, TIME } from '../constants';
+import { createLogger, setLogLevel } from '../utils/logger';
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
+// Force verbose logging while debugging seek/preview issues.
+setLogLevel('debug');
+const logger = createLogger('RenderWorker');
 
 // ============================================================================
 // TYPES
@@ -64,6 +68,10 @@ let compositor: Compositor | null = null;
 
 const sources = new Map<string, SourceDecodeState>();
 let activeClips: ActiveClip[] = [];
+
+// When paused after a seek we may need to re-render once fresh frames arrive
+// (e.g., when waiting on streamed data). Track that requirement here.
+let pendingPausedRender = false;
 
 let state: WorkerState = 'idle';
 let currentTimeUs = 0;
@@ -115,8 +123,15 @@ ctx.onmessage = async (e: MessageEvent<RenderWorkerCommand>) => {
 
       case 'SET_ACTIVE_CLIPS':
         activeClips = cmd.clips;
+        logger.info('SET_ACTIVE_CLIPS', {
+          count: activeClips.length,
+          clipIds: activeClips.map(c => c.clipId),
+          state,
+          timelineTimeUs: currentTimeUs,
+        });
         if (state !== 'playing') {
-          renderFrame(currentTimeUs);
+          const rendered = renderFrame(currentTimeUs);
+          pendingPausedRender = !rendered;
         }
         break;
 
@@ -211,6 +226,26 @@ function appendSourceChunk(sourceId: string, chunk: ArrayBuffer, isLast: boolean
 
     // Flush audio decoder to get remaining samples for streaming sources
     flushAudioDecoder(sourceState);
+  }
+
+  // If we're paused and waiting for a frame (e.g., user seeked ahead of
+  // currently buffered data), try to decode and render again now that more
+  // samples are available.
+  if (pendingPausedRender && state !== 'playing') {
+    logger.info('New chunk while paused - retry render', {
+      sourceId,
+      samples: sourceState.samples.length,
+      framesQueued: sourceState.frameQueue.length,
+    });
+    feedDecoders(currentTimeUs, { reason: 'stream-pending' });
+    void flushAllDecoders().then(() => {
+      if (state !== 'playing' && pendingPausedRender) {
+        const rendered = renderFrame(currentTimeUs);
+        if (rendered) {
+          pendingPausedRender = false;
+        }
+      }
+    });
   }
 }
 
@@ -339,6 +374,22 @@ function initDecoder(sourceState: SourceDecodeState, videoTrack: MP4VideoTrack):
       while (sourceState.frameQueue.length > PLAYBACK.MAX_QUEUE_SIZE) {
         const oldest = sourceState.frameQueue.shift();
         oldest?.frame.close();
+      }
+
+      // If we're paused and waiting for a frame after a seek, render as soon
+      // as one becomes available (e.g., once streamed data arrives).
+      if (state !== 'playing' && pendingPausedRender) {
+        const rendered = renderFrame(currentTimeUs);
+        logger.debug('Decoder output while paused', {
+          sourceId: sourceState.sourceId,
+          frameTs: frame.timestamp,
+          pendingPausedRender,
+          rendered,
+          queueLength: sourceState.frameQueue.length,
+        });
+        if (rendered) {
+          pendingPausedRender = false;
+        }
       }
     },
     error: (err) => {
@@ -536,6 +587,7 @@ function play(): void {
   if (state !== 'ready') return;
 
   state = 'playing';
+  pendingPausedRender = false;
   playbackStartTimeUs = currentTimeUs;
   playbackStartWallTime = performance.now();
 
@@ -557,6 +609,15 @@ function pause(): void {
 
 async function seek(timeUs: number): Promise<void> {
   currentTimeUs = timeUs;
+
+  // If paused, remember that we owe the UI a render for this position
+  pendingPausedRender = state !== 'playing';
+
+  logger.info('Seek requested', {
+    timeUs,
+    state,
+    activeClips: activeClips.length,
+  });
 
   // If playing, reset playback timing to prevent loop from reverting position
   if (state === 'playing') {
@@ -580,7 +641,7 @@ async function seek(timeUs: number): Promise<void> {
   }
 
   // Pre-decode frames for current time
-  feedDecoders(timeUs);
+  feedDecoders(timeUs, { reason: 'seek' });
 
   // Wait for decoders to finish processing, then render
   if (state !== 'playing') {
@@ -593,7 +654,12 @@ async function seek(timeUs: number): Promise<void> {
       sourceState.lastQueuedSample = -1;
     }
 
-    renderFrame(timeUs);
+    const rendered = renderFrame(timeUs);
+    pendingPausedRender = !rendered;
+    logger.debug('Seek render result', {
+      rendered,
+      pendingPausedRender,
+    });
   }
 
   postResponse({ type: 'TIME_UPDATE', currentTimeUs: timeUs } as TimeUpdateEvent);
@@ -629,7 +695,7 @@ function playbackLoop(): void {
   currentTimeUs = targetTimeUs;
 
   // Feed decoders
-  feedDecoders(currentTimeUs);
+  feedDecoders(currentTimeUs, { reason: 'playback' });
 
   // Render frame
   renderFrame(currentTimeUs);
@@ -659,14 +725,17 @@ async function flushAllDecoders(): Promise<void> {
     }
   }
 
-  await Promise.all(flushPromises);
+  await Promise.all(flushPromises).catch((err) => {
+    logger.error('Decoder flush failed', { err });
+  });
 }
 
 // ============================================================================
 // DECODING
 // ============================================================================
 
-function feedDecoders(timelineTimeUs: number): void {
+function feedDecoders(timelineTimeUs: number, opts?: { reason?: string }): void {
+  const reason = opts?.reason ?? 'loop';
   for (const clip of activeClips) {
     if (!isClipActiveAt(clip, timelineTimeUs)) continue;
 
@@ -685,6 +754,20 @@ function feedDecoders(timelineTimeUs: number): void {
     // Queue samples from keyframe to target + buffer ahead
     const startIdx = Math.max(sourceState.lastQueuedSample + 1, keyframeIdx);
     const endIdx = Math.min(targetSample + PLAYBACK.MAX_QUEUE_SIZE, sourceState.samples.length - 1);
+
+    logger.info('Queue decode', {
+      clipId: clip.clipId,
+      sourceId: clip.sourceId,
+      reason,
+      targetTimeUs: timelineTimeUs,
+      sourceTimeUs,
+      targetSample,
+      keyframeIdx,
+      startIdx,
+      endIdx,
+      lastQueuedSample: sourceState.lastQueuedSample,
+      decoderState: sourceState.decoder.state,
+    });
 
     for (let i = startIdx; i <= endIdx; i++) {
       const sample = sourceState.samples[i];
@@ -748,8 +831,11 @@ function findKeyframeBefore(sourceState: SourceDecodeState, sampleIdx: number): 
 // RENDERING
 // ============================================================================
 
-function renderFrame(timelineTimeUs: number): void {
-  if (!compositor) return;
+function renderFrame(timelineTimeUs: number): boolean {
+  if (!compositor) {
+    logger.debug('Render skipped - no compositor', { timelineTimeUs });
+    return false;
+  }
 
   const layers: CompositorLayer[] = [];
 
@@ -768,15 +854,28 @@ function renderFrame(timelineTimeUs: number): void {
   }
 
   if (layers.length > 0) {
+    logger.info('Rendering composed frame', {
+      timelineTimeUs,
+      layers: layers.map(l => ({ clipId: l.clip.clipId, trackIndex: l.clip.trackIndex, sourceId: l.clip.sourceId, frameTs: l.frame.timestamp })),
+    });
+
     compositor.composite(layers);
 
     // Close frames after compositing
     for (const { frame } of layers) {
       frame.close();
     }
+    return true;
   }
+
   // When no frames available, retain the last rendered frame on screen
   // (removing compositor.clear() fixes flickering during playback)
+  logger.info('Render skipped - no frames', {
+    timelineTimeUs,
+    activeClips: activeClips.length,
+    queues: Array.from(sources.entries()).map(([id, s]) => ({ sourceId: id, queue: s.frameQueue.length, samples: s.samples.length })),
+  });
+  return false;
 }
 
 function getFrameAtTime(sourceState: SourceDecodeState, targetTimeUs: number): VideoFrame | null {
@@ -787,6 +886,11 @@ function getFrameAtTime(sourceState: SourceDecodeState, targetTimeUs: number): V
   let bestIdx = -1;
   let bestDiff = Infinity;
 
+  // Fallback: nearest frame even if it's after the target (prevents black when
+  // only future frames are buffered after a seek)
+  let fallbackIdx = -1;
+  let fallbackDiff = Infinity;
+
   for (let i = 0; i < queue.length; i++) {
     const entry = queue[i]!;
     const diff = targetTimeUs - entry.timestampUs;
@@ -796,12 +900,37 @@ function getFrameAtTime(sourceState: SourceDecodeState, targetTimeUs: number): V
       bestDiff = diff;
       bestIdx = i;
     }
+
+    // Track closest frame in either direction as a fallback
+    const absDiff = Math.abs(diff);
+    if (absDiff < fallbackDiff) {
+      fallbackDiff = absDiff;
+      fallbackIdx = i;
+    }
   }
 
-  if (bestIdx < 0) return null;
+  if (bestIdx < 0) {
+    // Nothing at/before target; use nearest frame (likely slightly in the future)
+    bestIdx = fallbackIdx;
+    logger.info('No suitable frame found in queue', {
+      sourceId: sourceState.sourceId,
+      targetTimeUs,
+      queueLength: queue.length,
+      timestamps: queue.map(q => q.timestampUs),
+      chosenFallbackIdx: fallbackIdx,
+      fallbackDiff,
+    });
+  }
 
   // Clone frame for rendering (don't remove from queue yet)
   const entry = queue[bestIdx]!;
+
+  logger.info('Selected frame for render', {
+    sourceId: sourceState.sourceId,
+    targetTimeUs,
+    frameTs: entry.timestampUs,
+    queueLength: queue.length,
+  });
 
   // Drop old frames
   while (queue.length > 0 && queue[0]!.timestampUs < entry.timestampUs - PLAYBACK.MAX_FRAME_LAG_US) {
