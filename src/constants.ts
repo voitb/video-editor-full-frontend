@@ -25,6 +25,10 @@ export const TIMELINE = {
   MIN_CLIP_DURATION_US: 100_000,
   /** Throttle delay for seek during drag (ms) */
   SEEK_THROTTLE_MS: 50,
+  /** Snap threshold in pixels for clip movement */
+  SNAP_THRESHOLD_PX: 10,
+  /** Track header width in pixels */
+  TRACK_HEADER_WIDTH: 120,
 } as const;
 
 /** Playback constants */

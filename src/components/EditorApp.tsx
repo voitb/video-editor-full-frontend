@@ -50,8 +50,11 @@ export function EditorApp(props: EditorAppProps) {
     tracks,
     durationUs,
     createTrack,
+    removeTrack,
     addClip,
     getClip,
+    moveClip,
+    moveClipToTrack,
     refresh,
   } = useComposition({
     config: { width: 1920, height: 1080, frameRate: 30 },
@@ -158,6 +161,37 @@ export function EditorApp(props: EditorAppProps) {
     refresh();
     notifyCompositionChanged();
   }, [getClip, composition, refresh, notifyCompositionChanged]);
+
+  // Handle clip move (horizontal)
+  const handleClipMove = useCallback((clipId: string, newStartUs: number): boolean => {
+    const success = moveClip(clipId, newStartUs);
+    if (success) {
+      notifyCompositionChanged();
+    }
+    return success;
+  }, [moveClip, notifyCompositionChanged]);
+
+  // Handle clip move to different track
+  const handleClipMoveToTrack = useCallback((clipId: string, targetTrackId: string, newStartUs: number): boolean => {
+    const success = moveClipToTrack(clipId, targetTrackId, newStartUs);
+    if (success) {
+      notifyCompositionChanged();
+    }
+    return success;
+  }, [moveClipToTrack, notifyCompositionChanged]);
+
+  // Handle adding a new track
+  const handleTrackAdd = useCallback((type: 'video' | 'audio') => {
+    const trackCount = tracks.filter(t => t.type === type).length + 1;
+    const label = type === 'video' ? `Video ${trackCount}` : `Audio ${trackCount}`;
+    createTrack({ type, label });
+  }, [createTrack, tracks]);
+
+  // Handle removing a track
+  const handleTrackRemove = useCallback((trackId: string) => {
+    removeTrack(trackId);
+    notifyCompositionChanged();
+  }, [removeTrack, notifyCompositionChanged]);
 
   // Get loading progress for display
   const loadingProgressPercent = Array.from(loadingProgress.values()).reduce(
@@ -361,8 +395,12 @@ export function EditorApp(props: EditorAppProps) {
           viewport={viewport}
           onSeek={handleSeek}
           onClipSelect={handleClipSelect}
+          onClipMove={handleClipMove}
+          onClipMoveToTrack={handleClipMoveToTrack}
           onClipTrimStart={handleClipTrimStart}
           onClipTrimEnd={handleClipTrimEnd}
+          onTrackAdd={handleTrackAdd}
+          onTrackRemove={handleTrackRemove}
           selectedClipId={selectedClipId}
           style={{ height: '100%' }}
         />
