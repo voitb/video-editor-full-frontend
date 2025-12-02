@@ -69,6 +69,7 @@ export interface TimelineProps {
 interface SnapTarget {
   timeUs: number;
   type: 'playhead' | 'clip-start' | 'clip-end' | 'timeline-start';
+  clipId?: string; // Track which clip this target belongs to
 }
 
 interface SnapResult {
@@ -112,10 +113,12 @@ export function Timeline(props: TimelineProps) {
   const timelineContentRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const timeRulerScrollRef = useRef<HTMLDivElement>(null);
+  const leftPanelScrollRef = useRef<HTMLDivElement>(null);
   const [activeSnapLine, setActiveSnapLine] = useState<number | null>(null);
   const [dropTargetTrackId, setDropTargetTrackId] = useState<string | null>(null);
   const [containerWidth, setContainerWidth] = useState(0);
   const [isRulerDragging, setIsRulerDragging] = useState(false);
+  const [scrollLeft, setScrollLeft] = useState(0);
 
   // Track container width for responsive timeline
   useEffect(() => {
@@ -167,18 +170,28 @@ export function Timeline(props: TimelineProps) {
     return (pixel / pixelsPerSecond) * 1_000_000;
   }, [pixelsPerSecond]);
 
-  // Handle scroll synchronization between time ruler and track content
+  // Handle scroll synchronization between all panels
   const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
-    const scrollLeft = e.currentTarget.scrollLeft;
+    const target = e.currentTarget;
+    const newScrollLeft = target.scrollLeft;
+    const newScrollTop = target.scrollTop;
 
-    // Sync time ruler scroll
+    // Update scroll state for scrollbar
+    setScrollLeft(newScrollLeft);
+
+    // Sync time ruler horizontal scroll
     if (timeRulerScrollRef.current) {
-      timeRulerScrollRef.current.scrollLeft = scrollLeft;
+      timeRulerScrollRef.current.scrollLeft = newScrollLeft;
+    }
+
+    // Sync left panel vertical scroll (track headers)
+    if (leftPanelScrollRef.current) {
+      leftPanelScrollRef.current.scrollTop = newScrollTop;
     }
 
     // Notify parent of viewport scroll for viewport sync
     if (onViewportScroll) {
-      onViewportScroll(scrollLeft, containerWidth, totalTimelineWidth);
+      onViewportScroll(newScrollLeft, containerWidth, totalTimelineWidth);
     }
   }, [onViewportScroll, containerWidth, totalTimelineWidth]);
 
@@ -204,8 +217,8 @@ export function Timeline(props: TimelineProps) {
 
     for (const track of tracks) {
       for (const clip of track.clips) {
-        targets.push({ timeUs: clip.startUs, type: 'clip-start' });
-        targets.push({ timeUs: clip.endUs, type: 'clip-end' });
+        targets.push({ timeUs: clip.startUs, type: 'clip-start', clipId: clip.id });
+        targets.push({ timeUs: clip.endUs, type: 'clip-end', clipId: clip.id });
       }
     }
 
@@ -224,11 +237,11 @@ export function Timeline(props: TimelineProps) {
     let bestDelta = Infinity;
     let snappedStartUs = proposedStartUs;
 
-    // Filter out snap targets from the clip being moved
+    // Filter out snap targets from the clip being moved (don't snap to own edges)
     const filteredTargets = snapTargets.filter(target => {
       if (!excludeClipId) return true;
       // Don't snap to the clip's own edges
-      return true; // We'd need clip info to filter properly, skip for now
+      return target.clipId !== excludeClipId;
     });
 
     for (const target of filteredTargets) {
@@ -376,6 +389,9 @@ export function Timeline(props: TimelineProps) {
   // Playhead position
   const playheadPosition = timeToPixel(currentTimeUs);
 
+  // Check if scrollbar should be visible
+  const showScrollbar = totalTimelineWidth > containerWidth;
+
   return (
     <div
       ref={containerRef}
@@ -385,20 +401,29 @@ export function Timeline(props: TimelineProps) {
         overflow: 'hidden',
         userSelect: 'none',
         display: 'flex',
-        flexDirection: 'column',
+        flexDirection: 'row', // Two-panel horizontal layout
         ...style,
       }}
     >
-      {/* Top row: header corner with zoom slider + time ruler (synced with horizontal scroll) */}
-      <div style={{ display: 'flex', flexShrink: 0, height: TIMELINE.TIME_RULER_HEIGHT }}>
+      {/* ============================================================ */}
+      {/* LEFT PANEL - Fixed width, contains track headers */}
+      {/* ============================================================ */}
+      <div
+        style={{
+          width: TIMELINE.TRACK_HEADER_WIDTH,
+          flexShrink: 0,
+          display: 'flex',
+          flexDirection: 'column',
+          backgroundColor: TIMELINE_COLORS.trackHeaderBg,
+          borderRight: `1px solid ${TIMELINE_COLORS.border}`,
+          zIndex: 20, // Above everything in right panel
+        }}
+      >
         {/* Header corner with zoom slider */}
         <div
           style={{
-            width: TIMELINE.TRACK_HEADER_WIDTH,
             height: TIMELINE.TIME_RULER_HEIGHT,
-            backgroundColor: TIMELINE_COLORS.trackHeaderBg,
             borderBottom: `1px solid ${TIMELINE_COLORS.border}`,
-            borderRight: `1px solid ${TIMELINE_COLORS.border}`,
             flexShrink: 0,
             display: 'flex',
             alignItems: 'center',
@@ -408,7 +433,6 @@ export function Timeline(props: TimelineProps) {
             overflow: 'hidden',
           }}
         >
-          {/* Zoom Slider */}
           {onZoomChange && (
             <TimelineZoomSlider
               zoomLevel={viewport.zoomLevel}
@@ -419,16 +443,123 @@ export function Timeline(props: TimelineProps) {
           )}
         </div>
 
-        {/* Time ruler container - syncs scroll with track content, supports drag-to-seek */}
+        {/* Track headers - scrolls vertically only, synced with right panel */}
+        <div
+          ref={leftPanelScrollRef}
+          className="timeline-scroll-hide"
+          style={{
+            flex: 1,
+            overflowY: 'auto',
+            overflowX: 'hidden',
+          }}
+        >
+          {tracks.map((track) => (
+            <TrackHeader
+              key={track.id}
+              track={track}
+              height={getTrackHeight(track.id)}
+              isDropTarget={dropTargetTrackId === track.id}
+              trackState={trackStates?.[track.id]}
+              onRemove={onTrackRemove}
+              onMute={onTrackMute}
+              onSolo={onTrackSolo}
+              onLock={onTrackLock}
+              onResize={onTrackResize}
+            />
+          ))}
+
+          {/* Add track buttons */}
+          {onTrackAdd && (
+            <div
+              style={{
+                padding: 8,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 4,
+              }}
+            >
+              <button
+                onClick={() => onTrackAdd('video')}
+                style={{
+                  padding: '4px 8px',
+                  fontSize: 11,
+                  backgroundColor: '#2a4a7a',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: 3,
+                  cursor: 'pointer',
+                }}
+              >
+                + Video Track
+              </button>
+              <button
+                onClick={() => onTrackAdd('audio')}
+                style={{
+                  padding: '4px 8px',
+                  fontSize: 11,
+                  backgroundColor: '#2a7a4a',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: 3,
+                  cursor: 'pointer',
+                }}
+              >
+                + Audio Track
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Minimap label */}
+        <div
+          style={{
+            height: TIMELINE.MINIMAP_HEIGHT,
+            borderTop: `1px solid ${TIMELINE_COLORS.border}`,
+            flexShrink: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <span style={{ fontSize: 9, color: TIMELINE_COLORS.textMuted }}>OVERVIEW</span>
+        </div>
+
+        {/* Scrollbar spacer - only when scrollbar visible */}
+        {showScrollbar && (
+          <div
+            style={{
+              height: TIMELINE.SCROLLBAR_HEIGHT,
+              borderTop: `1px solid ${TIMELINE_COLORS.border}`,
+              flexShrink: 0,
+            }}
+          />
+        )}
+      </div>
+
+      {/* ============================================================ */}
+      {/* RIGHT PANEL - Flexible width, contains timeline content */}
+      {/* ============================================================ */}
+      <div
+        style={{
+          flex: 1,
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden',
+          minWidth: 0, // Allow flex shrink
+        }}
+      >
+        {/* Time ruler - syncs horizontal scroll with track content */}
         <div
           ref={timeRulerScrollRef}
           onMouseDown={handleRulerMouseDown}
+          className="timeline-scroll-hide"
           style={{
-            flex: 1,
             height: TIMELINE.TIME_RULER_HEIGHT,
             backgroundColor: TIMELINE_COLORS.rulerBg,
             borderBottom: `1px solid ${TIMELINE_COLORS.border}`,
-            overflow: 'hidden',
+            overflowX: 'auto',
+            overflowY: 'hidden',
+            flexShrink: 0,
             position: 'relative',
             zIndex: 5,
             boxShadow: '0 2px 4px rgba(0, 0, 0, 0.3)',
@@ -444,153 +575,71 @@ export function Timeline(props: TimelineProps) {
             }}
           >
             {timeMarkers.map((marker, index) => {
-              // Don't center the first marker to prevent left edge cutoff
               const isFirstMarker = index === 0 && marker.timeUs === 0;
               return (
-              <div
-                key={marker.timeUs}
-                style={{
-                  position: 'absolute',
-                  left: timeToPixel(marker.timeUs),
-                  top: 0,
-                  height: '100%',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: isFirstMarker ? 'flex-start' : 'center',
-                  justifyContent: 'flex-end',
-                  paddingBottom: 2,
-                  transform: isFirstMarker ? 'none' : 'translateX(-50%)',
-                  pointerEvents: 'none',
-                }}
-              >
-                {/* Tick mark - extends full height, matches grid color */}
                 <div
+                  key={marker.timeUs}
                   style={{
                     position: 'absolute',
+                    left: timeToPixel(marker.timeUs),
                     top: 0,
-                    width: 1,
                     height: '100%',
-                    backgroundColor: TIMELINE_COLORS.gridMajor,
-                  }}
-                />
-                {/* Label */}
-                <span
-                  style={{
-                    fontSize: 10,
-                    color: TIMELINE_COLORS.textMuted,
-                    whiteSpace: 'nowrap',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: isFirstMarker ? 'flex-start' : 'center',
+                    justifyContent: 'flex-end',
+                    paddingBottom: 2,
+                    transform: isFirstMarker ? 'none' : 'translateX(-50%)',
+                    pointerEvents: 'none',
                   }}
                 >
-                  {marker.label}
-                </span>
-              </div>
+                  {/* Tick mark */}
+                  <div
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      width: 1,
+                      height: '100%',
+                      backgroundColor: TIMELINE_COLORS.gridMajor,
+                    }}
+                  />
+                  {/* Label */}
+                  <span
+                    style={{
+                      fontSize: 10,
+                      color: TIMELINE_COLORS.textMuted,
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {marker.label}
+                  </span>
+                </div>
               );
             })}
           </div>
         </div>
-      </div>
 
-      {/* Scrollable tracks area - handles both horizontal and vertical scroll */}
-      <div
-        ref={scrollContainerRef}
-        className="timeline-scroll-hide"
-        style={{
-          flex: 1,
-          overflow: 'auto',
-        }}
-        onScroll={handleScroll}
-      >
-        {/* Content row - contains sticky headers + track lanes */}
+        {/* Track content area - scrolls both horizontally and vertically */}
         <div
+          ref={scrollContainerRef}
+          className="timeline-scroll-hide"
           style={{
-            display: 'flex',
-            minHeight: '100%',
+            flex: 1,
+            overflow: 'auto',
           }}
+          onScroll={handleScroll}
         >
-          {/* Sticky track headers column */}
-          <div
-            style={{
-              width: TIMELINE.TRACK_HEADER_WIDTH,
-              minWidth: TIMELINE.TRACK_HEADER_WIDTH,
-              backgroundColor: TIMELINE_COLORS.trackHeaderBg,
-              borderRight: `1px solid ${TIMELINE_COLORS.border}`,
-              flexShrink: 0,
-              position: 'sticky',
-              left: 0,
-              zIndex: 10,
-              display: 'flex',
-              flexDirection: 'column',
-            }}
-          >
-            {tracks.map((track) => (
-              <TrackHeader
-                key={track.id}
-                track={track}
-                height={getTrackHeight(track.id)}
-                isDropTarget={dropTargetTrackId === track.id}
-                trackState={trackStates?.[track.id]}
-                onRemove={onTrackRemove}
-                onMute={onTrackMute}
-                onSolo={onTrackSolo}
-                onLock={onTrackLock}
-                onResize={onTrackResize}
-              />
-            ))}
-
-            {/* Add track buttons */}
-            {onTrackAdd && (
-              <div
-                style={{
-                  padding: 8,
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 4,
-                }}
-              >
-                <button
-                  onClick={() => onTrackAdd('video')}
-                  style={{
-                    padding: '4px 8px',
-                    fontSize: 11,
-                    backgroundColor: '#2a4a7a',
-                    color: '#fff',
-                    border: 'none',
-                    borderRadius: 3,
-                    cursor: 'pointer',
-                  }}
-                >
-                  + Video Track
-                </button>
-                <button
-                  onClick={() => onTrackAdd('audio')}
-                  style={{
-                    padding: '4px 8px',
-                    fontSize: 11,
-                    backgroundColor: '#2a7a4a',
-                    color: '#fff',
-                    border: 'none',
-                    borderRadius: 3,
-                    cursor: 'pointer',
-                  }}
-                >
-                  + Audio Track
-                </button>
-              </div>
-            )}
-          </div>
-
-          {/* Timeline content (tracks with clips) */}
+          {/* Timeline content */}
           <div
             ref={timelineContentRef}
             style={{
               width: totalTimelineWidth,
               minWidth: totalTimelineWidth,
-              flexShrink: 0,
               position: 'relative',
             }}
             onClick={handleTimelineClick}
           >
-            {/* Grid lines - hierarchical vertical lines (DaVinci Resolve style) */}
+            {/* Grid lines */}
             <div
               style={{
                 position: 'absolute',
@@ -622,6 +671,7 @@ export function Timeline(props: TimelineProps) {
               ))}
             </div>
 
+            {/* Track lanes */}
             {tracks.map((track, trackIndex) => (
               <TrackLane
                 key={track.id}
@@ -690,47 +740,50 @@ export function Timeline(props: TimelineProps) {
             </div>
           </div>
         </div>
-      </div>
 
-      {/* Minimap */}
-      <TimelineMinimap
-        tracks={tracks}
-        durationUs={durationUs}
-        currentTimeUs={currentTimeUs}
-        viewport={viewport}
-        containerWidth={containerWidth}
-        totalTimelineWidth={totalTimelineWidth}
-        onViewportChange={onViewportScroll ? (startTimeUs) => {
-          // Calculate scroll position from start time
-          const effectiveDuration = Math.max(durationUs, TIMELINE.MIN_VISIBLE_DURATION_US);
-          const visibleDuration = effectiveDuration / viewport.zoomLevel;
-          const maxStartTime = effectiveDuration - visibleDuration;
-          if (maxStartTime > 0) {
-            const scrollRatio = startTimeUs / maxStartTime;
-            const scrollLeft = scrollRatio * (totalTimelineWidth - containerWidth);
-            onViewportScroll(scrollLeft, containerWidth, totalTimelineWidth);
-            // Also update the scroll container
-            if (scrollContainerRef.current) {
-              scrollContainerRef.current.scrollLeft = scrollLeft;
+        {/* Minimap */}
+        <TimelineMinimapCanvas
+          tracks={tracks}
+          durationUs={durationUs}
+          currentTimeUs={currentTimeUs}
+          viewport={viewport}
+          containerWidth={containerWidth}
+          totalTimelineWidth={totalTimelineWidth}
+          onViewportChange={onViewportScroll ? (startTimeUs) => {
+            const effectiveDuration = Math.max(durationUs, TIMELINE.MIN_VISIBLE_DURATION_US);
+            const visibleDuration = effectiveDuration / viewport.zoomLevel;
+            const maxStartTime = effectiveDuration - visibleDuration;
+            if (maxStartTime > 0) {
+              const scrollRatio = startTimeUs / maxStartTime;
+              const newScrollLeft = scrollRatio * (totalTimelineWidth - containerWidth);
+              onViewportScroll(newScrollLeft, containerWidth, totalTimelineWidth);
+              if (scrollContainerRef.current) {
+                scrollContainerRef.current.scrollLeft = newScrollLeft;
+              }
             }
-          }
-        } : undefined}
-        onSeek={onSeek}
-        trackStates={trackStates}
-        getTrackHeight={getTrackHeight}
-      />
+          } : undefined}
+          onSeek={onSeek}
+          trackStates={trackStates}
+          getTrackHeight={getTrackHeight}
+        />
 
-      {/* Custom Horizontal Scrollbar */}
-      <TimelineScrollbar
-        containerWidth={containerWidth}
-        totalWidth={totalTimelineWidth}
-        scrollLeft={scrollContainerRef.current?.scrollLeft ?? 0}
-        onScroll={(scrollLeft) => {
-          if (scrollContainerRef.current) {
-            scrollContainerRef.current.scrollLeft = scrollLeft;
-          }
-        }}
-      />
+        {/* Custom Horizontal Scrollbar */}
+        {showScrollbar && (
+          <TimelineScrollbarSimple
+            containerWidth={containerWidth}
+            totalWidth={totalTimelineWidth}
+            scrollLeft={scrollLeft}
+            onScroll={(newScrollLeft) => {
+              if (scrollContainerRef.current) {
+                scrollContainerRef.current.scrollLeft = newScrollLeft;
+              }
+              if (timeRulerScrollRef.current) {
+                timeRulerScrollRef.current.scrollLeft = newScrollLeft;
+              }
+            }}
+          />
+        )}
+      </div>
     </div>
   );
 }
@@ -1908,6 +1961,330 @@ function TimelineScrollbar({ containerWidth, totalWidth, scrollLeft, onScroll }:
           }}
         />
       </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// MINIMAP CANVAS (No left spacer - for two-panel layout)
+// ============================================================================
+
+interface TimelineMinimapCanvasProps {
+  tracks: readonly Track[];
+  durationUs: number;
+  currentTimeUs: number;
+  viewport: TimelineViewport;
+  containerWidth: number;
+  totalTimelineWidth: number;
+  onViewportChange?: (startTimeUs: number) => void;
+  onSeek?: (timeUs: number) => void;
+  trackStates?: Record<string, TrackUIState>;
+  getTrackHeight: (trackId: string) => number;
+}
+
+function TimelineMinimapCanvas({
+  tracks,
+  durationUs,
+  currentTimeUs,
+  viewport,
+  containerWidth,
+  onViewportChange,
+  onSeek,
+  trackStates,
+  getTrackHeight,
+}: TimelineMinimapCanvasProps) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [isHovering, setIsHovering] = useState(false);
+  const dragStartX = useRef(0);
+  const dragStartViewport = useRef(0);
+
+  const effectiveDuration = Math.max(durationUs, TIMELINE.MIN_VISIBLE_DURATION_US);
+
+  // Calculate total tracks height for proper scaling
+  const totalTracksHeight = useMemo(() => {
+    return tracks.reduce((sum, track) => sum + getTrackHeight(track.id), 0);
+  }, [tracks, getTrackHeight]);
+
+  // Render minimap on canvas
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || containerWidth <= 0) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // Set canvas size with device pixel ratio for sharp rendering
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = containerWidth * dpr;
+    canvas.height = TIMELINE.MINIMAP_HEIGHT * dpr;
+    ctx.scale(dpr, dpr);
+
+    const width = containerWidth;
+    const height = TIMELINE.MINIMAP_HEIGHT;
+
+    // Clear canvas
+    ctx.clearRect(0, 0, width, height);
+
+    // Draw background
+    ctx.fillStyle = TIMELINE_COLORS.minimapBg;
+    ctx.fillRect(0, 0, width, height);
+
+    // Scale factors
+    const timeScale = width / effectiveDuration;
+    let yOffset = 0;
+
+    // Draw track lanes and clips
+    for (const track of tracks) {
+      const trackHeight = getTrackHeight(track.id);
+      const scaledTrackHeight = (trackHeight / Math.max(totalTracksHeight, 1)) * height;
+      const isMuted = trackStates?.[track.id]?.muted ?? false;
+
+      // Track background (subtle)
+      ctx.fillStyle = track.type === 'video'
+        ? 'rgba(59, 89, 152, 0.2)'
+        : 'rgba(59, 152, 88, 0.2)';
+      ctx.fillRect(0, yOffset, width, scaledTrackHeight);
+
+      // Draw clips
+      for (const clip of track.clips) {
+        const clipX = clip.startUs * timeScale;
+        const clipWidth = Math.max(1, clip.durationUs * timeScale);
+
+        ctx.fillStyle = isMuted
+          ? 'rgba(128, 128, 128, 0.5)'
+          : track.type === 'video'
+            ? TIMELINE_COLORS.clipVideo
+            : TIMELINE_COLORS.clipAudio;
+
+        ctx.fillRect(clipX, yOffset + 1, clipWidth, scaledTrackHeight - 2);
+      }
+
+      yOffset += scaledTrackHeight;
+    }
+
+    // Draw viewport rectangle
+    const viewportX = (viewport.startTimeUs / effectiveDuration) * width;
+    const viewportWidth = ((viewport.endTimeUs - viewport.startTimeUs) / effectiveDuration) * width;
+
+    ctx.fillStyle = TIMELINE_COLORS.viewportRect;
+    ctx.fillRect(viewportX, 0, viewportWidth, height);
+
+    ctx.strokeStyle = isHovering || isDragging ? 'rgba(255, 255, 255, 0.6)' : TIMELINE_COLORS.viewportBorder;
+    ctx.lineWidth = isHovering || isDragging ? 2 : 1;
+    ctx.strokeRect(viewportX + 0.5, 0.5, viewportWidth - 1, height - 1);
+
+    // Draw playhead
+    const playheadX = (currentTimeUs / effectiveDuration) * width;
+    ctx.fillStyle = TIMELINE_COLORS.playhead;
+    ctx.fillRect(playheadX - 1, 0, 2, height);
+
+  }, [tracks, durationUs, currentTimeUs, viewport, effectiveDuration, totalTracksHeight, trackStates, getTrackHeight, containerWidth, isDragging, isHovering]);
+
+  // Check if mouse is over viewport rectangle
+  const isOverViewport = useCallback((e: React.MouseEvent) => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return false;
+
+    const clickX = e.clientX - rect.left;
+    const viewportX = (viewport.startTimeUs / effectiveDuration) * rect.width;
+    const viewportWidth = ((viewport.endTimeUs - viewport.startTimeUs) / effectiveDuration) * rect.width;
+
+    return clickX >= viewportX && clickX <= viewportX + viewportWidth;
+  }, [effectiveDuration, viewport]);
+
+  // Handle mouse move for hover state
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    if (!isDragging) {
+      setIsHovering(isOverViewport(e));
+    }
+  }, [isDragging, isOverViewport]);
+
+  // Handle click on minimap (seek or navigate)
+  const handleClick = useCallback((e: React.MouseEvent) => {
+    if (isDragging) return;
+
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    const clickX = e.clientX - rect.left;
+    const clickRatio = clickX / rect.width;
+    const clickTimeUs = clickRatio * effectiveDuration;
+
+    if (isOverViewport(e)) {
+      // Click inside viewport - seek to position
+      onSeek?.(clickTimeUs);
+    } else {
+      // Click outside viewport - center viewport on click position
+      const visibleDuration = viewport.endTimeUs - viewport.startTimeUs;
+      const newStartTime = Math.max(0, Math.min(effectiveDuration - visibleDuration, clickTimeUs - visibleDuration / 2));
+      onViewportChange?.(newStartTime);
+    }
+  }, [isDragging, effectiveDuration, viewport, onSeek, onViewportChange, isOverViewport]);
+
+  // Handle drag to pan viewport
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    if (isOverViewport(e)) {
+      e.preventDefault();
+      setIsDragging(true);
+      dragStartX.current = e.clientX;
+      dragStartViewport.current = viewport.startTimeUs;
+    }
+  }, [viewport, isOverViewport]);
+
+  useEffect(() => {
+    if (!isDragging) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const rect = containerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+
+      const deltaX = e.clientX - dragStartX.current;
+      const deltaTime = (deltaX / rect.width) * effectiveDuration;
+      const visibleDuration = viewport.endTimeUs - viewport.startTimeUs;
+      const newStartTime = Math.max(0, Math.min(effectiveDuration - visibleDuration, dragStartViewport.current + deltaTime));
+
+      onViewportChange?.(newStartTime);
+    };
+
+    const handleMouseUp = () => {
+      setIsDragging(false);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isDragging, effectiveDuration, viewport, onViewportChange]);
+
+  return (
+    <div
+      ref={containerRef}
+      onClick={handleClick}
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseLeave={() => setIsHovering(false)}
+      style={{
+        height: TIMELINE.MINIMAP_HEIGHT,
+        borderTop: `1px solid ${TIMELINE_COLORS.border}`,
+        cursor: isDragging ? 'grabbing' : isHovering ? 'grab' : 'pointer',
+        flexShrink: 0,
+      }}
+    >
+      <canvas
+        ref={canvasRef}
+        style={{
+          width: containerWidth,
+          height: TIMELINE.MINIMAP_HEIGHT,
+          display: 'block',
+        }}
+      />
+    </div>
+  );
+}
+
+// ============================================================================
+// SCROLLBAR SIMPLE (No left spacer - for two-panel layout)
+// ============================================================================
+
+interface TimelineScrollbarSimpleProps {
+  containerWidth: number;
+  totalWidth: number;
+  scrollLeft: number;
+  onScroll: (scrollLeft: number) => void;
+}
+
+function TimelineScrollbarSimple({ containerWidth, totalWidth, scrollLeft, onScroll }: TimelineScrollbarSimpleProps) {
+  const [isDragging, setIsDragging] = useState(false);
+  const [isHovered, setIsHovered] = useState(false);
+  const trackRef = useRef<HTMLDivElement>(null);
+  const dragStartX = useRef(0);
+  const dragStartScroll = useRef(0);
+
+  const thumbWidth = Math.max(30, (containerWidth / totalWidth) * containerWidth);
+  const maxScroll = totalWidth - containerWidth;
+  const thumbPosition = maxScroll > 0 ? (scrollLeft / maxScroll) * (containerWidth - thumbWidth) : 0;
+
+  const handleTrackClick = useCallback((e: React.MouseEvent) => {
+    const rect = trackRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    const clickX = e.clientX - rect.left;
+
+    // Calculate new scroll position (center thumb on click)
+    const clickRatio = (clickX - thumbWidth / 2) / (containerWidth - thumbWidth);
+    const newScroll = Math.max(0, Math.min(maxScroll, clickRatio * maxScroll));
+    onScroll(newScroll);
+  }, [thumbWidth, maxScroll, containerWidth, onScroll]);
+
+  const handleThumbMouseDown = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setIsDragging(true);
+    dragStartX.current = e.clientX;
+    dragStartScroll.current = scrollLeft;
+  }, [scrollLeft]);
+
+  useEffect(() => {
+    if (!isDragging) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const deltaX = e.clientX - dragStartX.current;
+      const scrollDelta = (deltaX / (containerWidth - thumbWidth)) * maxScroll;
+      const newScroll = Math.max(0, Math.min(maxScroll, dragStartScroll.current + scrollDelta));
+
+      onScroll(newScroll);
+    };
+
+    const handleMouseUp = () => {
+      setIsDragging(false);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isDragging, maxScroll, thumbWidth, containerWidth, onScroll]);
+
+  return (
+    <div
+      ref={trackRef}
+      onClick={handleTrackClick}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+      style={{
+        height: TIMELINE.SCROLLBAR_HEIGHT,
+        backgroundColor: TIMELINE_COLORS.scrollbarBg,
+        borderTop: `1px solid ${TIMELINE_COLORS.border}`,
+        position: 'relative',
+        cursor: 'pointer',
+        flexShrink: 0,
+      }}
+    >
+      {/* Thumb */}
+      <div
+        onMouseDown={handleThumbMouseDown}
+        style={{
+          position: 'absolute',
+          top: 2,
+          bottom: 2,
+          left: thumbPosition,
+          width: thumbWidth,
+          backgroundColor: isDragging || isHovered
+            ? TIMELINE_COLORS.scrollbarThumbHover
+            : TIMELINE_COLORS.scrollbarThumb,
+          borderRadius: 4,
+          cursor: isDragging ? 'grabbing' : 'grab',
+          transition: isDragging ? 'none' : 'background-color 0.15s',
+        }}
+      />
     </div>
   );
 }

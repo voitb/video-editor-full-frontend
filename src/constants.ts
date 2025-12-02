@@ -88,10 +88,10 @@ export const TIMELINE_COLORS = {
   border: '#333',
   borderLight: '#444',
 
-  // Grid lines (hierarchical) - increased opacity for better visibility
-  gridMajor: 'rgba(255, 255, 255, 0.20)',
-  gridMinor: 'rgba(255, 255, 255, 0.10)',
-  gridSubMinor: 'rgba(255, 255, 255, 0.05)',
+  // Grid lines (hierarchical) - increased opacity for professional visibility
+  gridMajor: 'rgba(255, 255, 255, 0.35)',
+  gridMinor: 'rgba(255, 255, 255, 0.18)',
+  gridSubMinor: 'rgba(255, 255, 255, 0.08)',
 } as const;
 
 /** Playback constants */
