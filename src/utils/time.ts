@@ -61,19 +61,23 @@ export function formatTimecodeShort(us: number): string {
 
 /**
  * Format time adaptively based on visible duration (professional NLE style)
- * Uses milliseconds format for fine precision when zoomed in
+ * Uses frame-based format (HH:MM:SS:FF) like DaVinci Resolve / Premiere Pro
  * @param us - Time in microseconds
  * @param visibleDurationUs - Currently visible duration (determines precision)
+ * @param frameRate - Frame rate for frame number calculation (default 30)
  */
-export function formatTimecodeAdaptive(us: number, visibleDurationUs: number): string {
+export function formatTimecodeAdaptive(
+  us: number,
+  visibleDurationUs: number,
+  frameRate: number = 30
+): string {
   const totalSeconds = usToSeconds(us);
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = Math.floor(totalSeconds % 60);
-  const milliseconds = Math.floor((totalSeconds % 1) * 1000);
+  const frames = Math.floor((totalSeconds % 1) * frameRate);
 
   const pad2 = (n: number) => n.toString().padStart(2, '0');
-  const pad3 = (n: number) => n.toString().padStart(3, '0');
 
   // > 5 min visible: HH:MM:SS or MM:SS
   if (visibleDurationUs > 300_000_000) {
@@ -86,20 +90,18 @@ export function formatTimecodeAdaptive(us: number, visibleDurationUs: number): s
     return `${minutes}:${pad2(seconds)}`;
   }
 
-  // 10s-1min visible: MM:SS.m (1 decimal for tenths)
+  // 10s-1min visible: MM:SS:FF (with frames)
   if (visibleDurationUs > 10_000_000) {
-    const tenths = Math.floor((totalSeconds % 1) * 10);
-    return `${minutes}:${pad2(seconds)}.${tenths}`;
+    return `${minutes}:${pad2(seconds)}:${pad2(frames)}`;
   }
 
-  // 2-10s visible: SS.mm (2 decimals for hundredths)
+  // 2-10s visible: SS:FF (seconds and frames)
   if (visibleDurationUs > 2_000_000) {
-    const hundredths = Math.floor((totalSeconds % 1) * 100);
-    return `${seconds}.${hundredths.toString().padStart(2, '0')}`;
+    return `${seconds}:${pad2(frames)}`;
   }
 
-  // < 2s visible: SS.mmm (full milliseconds)
-  return `${seconds}.${pad3(milliseconds)}`;
+  // < 2s visible: :FF (frame number only with leading colon)
+  return `:${pad2(frames)}`;
 }
 
 /**

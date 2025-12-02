@@ -29,3 +29,13 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: #555;
 }
+
+/* Hide native scrollbar for timeline - use custom scrollbar instead */
+.timeline-scroll-hide {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE/Edge */
+}
+
+.timeline-scroll-hide::-webkit-scrollbar {
+  display: none; /* Chrome, Safari, Opera */
+}

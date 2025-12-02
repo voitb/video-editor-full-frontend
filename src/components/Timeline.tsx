@@ -115,6 +115,7 @@ export function Timeline(props: TimelineProps) {
   const [activeSnapLine, setActiveSnapLine] = useState<number | null>(null);
   const [dropTargetTrackId, setDropTargetTrackId] = useState<string | null>(null);
   const [containerWidth, setContainerWidth] = useState(0);
+  const [isRulerDragging, setIsRulerDragging] = useState(false);
 
   // Track container width for responsive timeline
   useEffect(() => {
@@ -257,25 +258,38 @@ export function Timeline(props: TimelineProps) {
   }, [trackStates]);
 
   // Handle wheel events for zooming (Ctrl/Cmd + scroll)
-  const handleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
-    // Only handle Ctrl/Cmd + scroll for zoom
-    if (!e.ctrlKey && !e.metaKey) return;
+  // Using native event listener with { passive: false } to allow preventDefault()
+  useEffect(() => {
+    const el = timelineContentRef.current;
+    if (!el) return;
 
-    e.preventDefault();
+    const handleWheelNative = (e: WheelEvent) => {
+      // Only handle Ctrl/Cmd + scroll for zoom
+      if (!e.ctrlKey && !e.metaKey) return;
 
-    if (!onZoomAtPosition || !timelineContentRef.current) return;
+      e.preventDefault();
 
-    // Get mouse position relative to timeline content area
-    const rect = timelineContentRef.current.getBoundingClientRect();
-    const mouseX = e.clientX - rect.left;
+      if (!onZoomAtPosition) return;
 
-    // Calculate position ratio (0-1) within the timeline content
-    const positionRatio = Math.max(0, Math.min(1, mouseX / rect.width));
+      // Get mouse position relative to timeline content area
+      const rect = el.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
 
-    // Determine zoom direction
-    const direction = e.deltaY < 0 ? 'in' : 'out';
+      // Calculate position ratio (0-1) within the timeline content
+      const positionRatio = Math.max(0, Math.min(1, mouseX / rect.width));
 
-    onZoomAtPosition(positionRatio, direction);
+      // Determine zoom direction
+      const direction = e.deltaY < 0 ? 'in' : 'out';
+
+      onZoomAtPosition(positionRatio, direction);
+    };
+
+    // CRITICAL: { passive: false } allows preventDefault() to work
+    el.addEventListener('wheel', handleWheelNative, { passive: false });
+
+    return () => {
+      el.removeEventListener('wheel', handleWheelNative);
+    };
   }, [onZoomAtPosition]);
 
   // Handle timeline click for seeking
@@ -291,35 +305,73 @@ export function Timeline(props: TimelineProps) {
     onSeek(clampedTime);
   }, [onSeek, pixelToTime, durationUs]);
 
-  // Generate time markers based on viewport visible duration (adapts to zoom)
-  const timeMarkers = useMemo(() => {
-    const markers: { timeUs: number; label: string }[] = [];
-    const step = getTimeStep(effectiveVisibleDuration);
+  // Handle ruler mouse down for drag-to-seek (like Premiere/DaVinci)
+  const handleRulerMouseDown = useCallback((e: React.MouseEvent) => {
+    if (!onSeek || !timeRulerScrollRef.current) return;
 
-    // Start from the beginning of the viewport (aligned to step)
-    const start = Math.floor(viewport.startTimeUs / step) * step;
+    setIsRulerDragging(true);
 
-    // Generate markers across the visible range plus buffer for smooth scrolling
-    for (let time = start; time <= viewport.endTimeUs + step; time += step) {
-      if (time >= 0) {
-        markers.push({
-          timeUs: time,
-          label: formatTimecodeAdaptive(time, effectiveVisibleDuration),
-        });
-      }
-    }
+    // Calculate time from click position
+    const rect = timeRulerScrollRef.current.getBoundingClientRect();
+    const scrollLeft = timeRulerScrollRef.current.scrollLeft;
+    const x = e.clientX - rect.left + scrollLeft;
+    const time = pixelToTime(x);
 
-    return markers;
-  }, [effectiveVisibleDuration, viewport.startTimeUs, viewport.endTimeUs]);
+    // Seek to click position immediately
+    const clampedTime = Math.max(0, Math.min(time, durationUs));
+    onSeek(clampedTime);
+  }, [onSeek, pixelToTime, durationUs]);
 
-  // Generate hierarchical grid lines
-  const gridLines = useMemo(() => {
-    return getGridLines(
+  // Handle ruler drag for scrubbing playhead
+  useEffect(() => {
+    if (!isRulerDragging) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!timeRulerScrollRef.current || !onSeek) return;
+
+      const rect = timeRulerScrollRef.current.getBoundingClientRect();
+      const scrollLeft = timeRulerScrollRef.current.scrollLeft;
+      const x = e.clientX - rect.left + scrollLeft;
+      const time = pixelToTime(x);
+
+      // Clamp and seek
+      const clampedTime = Math.max(0, Math.min(time, durationUs));
+      onSeek(clampedTime);
+    };
+
+    const handleMouseUp = () => {
+      setIsRulerDragging(false);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isRulerDragging, pixelToTime, durationUs, onSeek]);
+
+  // Generate unified grid lines and time markers (ensures they align perfectly)
+  const { timeMarkers, gridLines } = useMemo(() => {
+    const lines = getGridLines(
       effectiveVisibleDuration,
       viewport.startTimeUs,
       viewport.endTimeUs
     );
-  }, [effectiveVisibleDuration, viewport.startTimeUs, viewport.endTimeUs]);
+
+    // Major grid lines become ruler markers (ensures perfect alignment)
+    const markers = lines
+      .filter(l => l.type === 'major')
+      .map(l => ({
+        timeUs: l.timeUs,
+        label: formatTimecodeAdaptive(l.timeUs, effectiveVisibleDuration),
+      }))
+      // Filter out markers too close to the edge to prevent cutoff
+      .filter(m => timeToPixel(m.timeUs) < totalTimelineWidth - 40);
+
+    return { timeMarkers: markers, gridLines: lines };
+  }, [effectiveVisibleDuration, viewport.startTimeUs, viewport.endTimeUs, timeToPixel, totalTimelineWidth]);
 
   // Playhead position
   const playheadPosition = timeToPixel(currentTimeUs);
@@ -351,7 +403,7 @@ export function Timeline(props: TimelineProps) {
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            padding: '0 6px',
+            padding: '0 4px',
             boxSizing: 'border-box',
             overflow: 'hidden',
           }}
@@ -367,9 +419,10 @@ export function Timeline(props: TimelineProps) {
           )}
         </div>
 
-        {/* Time ruler container - syncs scroll with track content */}
+        {/* Time ruler container - syncs scroll with track content, supports drag-to-seek */}
         <div
           ref={timeRulerScrollRef}
+          onMouseDown={handleRulerMouseDown}
           style={{
             flex: 1,
             height: TIMELINE.TIME_RULER_HEIGHT,
@@ -379,6 +432,7 @@ export function Timeline(props: TimelineProps) {
             position: 'relative',
             zIndex: 5,
             boxShadow: '0 2px 4px rgba(0, 0, 0, 0.3)',
+            cursor: isRulerDragging ? 'grabbing' : 'pointer',
           }}
         >
           {/* Time ruler inner - has full timeline width */}
@@ -409,14 +463,14 @@ export function Timeline(props: TimelineProps) {
                   pointerEvents: 'none',
                 }}
               >
-                {/* Tick mark */}
+                {/* Tick mark - extends full height, matches grid color */}
                 <div
                   style={{
                     position: 'absolute',
                     top: 0,
                     width: 1,
-                    height: 8,
-                    backgroundColor: TIMELINE_COLORS.textMuted,
+                    height: '100%',
+                    backgroundColor: TIMELINE_COLORS.gridMajor,
                   }}
                 />
                 {/* Label */}
@@ -439,6 +493,7 @@ export function Timeline(props: TimelineProps) {
       {/* Scrollable tracks area - handles both horizontal and vertical scroll */}
       <div
         ref={scrollContainerRef}
+        className="timeline-scroll-hide"
         style={{
           flex: 1,
           overflow: 'auto',
@@ -534,7 +589,6 @@ export function Timeline(props: TimelineProps) {
               position: 'relative',
             }}
             onClick={handleTimelineClick}
-            onWheel={handleWheel}
           >
             {/* Grid lines - hierarchical vertical lines (DaVinci Resolve style) */}
             <div
@@ -1470,13 +1524,13 @@ function TimelineZoomSlider({ zoomLevel, minZoom, maxZoom, onChange }: TimelineZ
       style={{
         display: 'flex',
         alignItems: 'center',
-        gap: 4,
+        gap: 2,
         width: '100%',
         minWidth: 0,
         overflow: 'hidden',
       }}
     >
-      <span style={{ fontSize: 9, color: TIMELINE_COLORS.textMuted, flexShrink: 0 }}>−</span>
+      <span style={{ fontSize: 8, color: TIMELINE_COLORS.textMuted, flexShrink: 0 }}>−</span>
       <input
         type="range"
         min={0}
@@ -1495,7 +1549,7 @@ function TimelineZoomSlider({ zoomLevel, minZoom, maxZoom, onChange }: TimelineZ
           cursor: 'pointer',
         }}
       />
-      <span style={{ fontSize: 9, color: TIMELINE_COLORS.textMuted, flexShrink: 0 }}>+</span>
+      <span style={{ fontSize: 8, color: TIMELINE_COLORS.textMuted, flexShrink: 0 }}>+</span>
     </div>
   );
 }
