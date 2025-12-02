@@ -605,18 +605,9 @@ export class Engine {
     // Video track clips should not produce audio - audio comes from audio tracks only
     if (clip.trackType !== 'audio') return;
 
-    // Validate clip is actually active at current time (sanity check)
-    const clipDuration = clip.sourceEndUs - clip.sourceStartUs;
-    const clipEnd = clip.timelineStartUs + clipDuration;
-    if (this._currentTimeUs < clip.timelineStartUs || this._currentTimeUs >= clipEnd) {
-      logger.warn('Attempted to schedule audio for inactive clip', {
-        clipId: clip.clipId,
-        currentTimeUs: this._currentTimeUs,
-        clipStart: clip.timelineStartUs,
-        clipEnd,
-      });
-      return;
-    }
+    // NOTE: We don't validate clip timing here because scheduleAllAudio() already
+    // queries fresh clips from composition.getActiveClipsAt(). Adding validation
+    // here caused false rejections due to timing edge cases.
 
     const buffers = this.audioBuffers.get(clip.sourceId);
     if (!buffers || buffers.length === 0) {

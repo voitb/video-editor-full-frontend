@@ -847,12 +847,19 @@ function renderFrame(timelineTimeUs: number): boolean {
 
   const layers: CompositorLayer[] = [];
 
+  // Track if we have any VIDEO clips that SHOULD render (regardless of buffer state)
+  // This is different from hasClipsAtCurrentTime which includes audio clips
+  let hasVideoClipsAtTime = false;
+
   for (const clip of activeClips) {
     // CRITICAL: Only render video for clips on video tracks
     // Audio track clips should not produce video - video comes from video tracks only
     if (clip.trackType !== 'video') continue;
 
     if (!isClipActiveAt(clip, timelineTimeUs)) continue;
+
+    // Mark that we have video clips even if we can't get a frame yet
+    hasVideoClipsAtTime = true;
 
     const sourceState = sources.get(clip.sourceId);
     if (!sourceState) continue;
@@ -881,18 +888,25 @@ function renderFrame(timelineTimeUs: number): boolean {
   }
 
   // No frames rendered - distinguish between GAP and BUFFERING
-  if (!hasClipsAtCurrentTime) {
-    // GAP: No clips exist at this time - clear to black
-    logger.info('Render clearing for gap', { timelineTimeUs, hasClipsAtCurrentTime });
+  // GAP: No VIDEO clips at this time (even if audio clips exist) → clear to black
+  // BUFFERING: Video clips exist but frames not decoded yet → retain last frame
+  if (!hasVideoClipsAtTime) {
+    // Clear to black - either no clips at all, or only audio clips (no video to show)
+    logger.info('Render clearing - no video at this time', {
+      timelineTimeUs,
+      hasClipsAtCurrentTime,
+      hasVideoClipsAtTime,
+    });
     compositor.clear();
     return true; // We did render (black frame)
   }
 
-  // BUFFERING: Clips exist but frames not decoded yet - retain last frame
+  // BUFFERING: Video clips exist but frames not decoded yet - retain last frame
   // This prevents flickering during playback when waiting for frames
-  logger.info('Render skipped - buffering', {
+  logger.info('Render skipped - buffering video', {
     timelineTimeUs,
     activeClips: activeClips.length,
+    hasVideoClipsAtTime,
     queues: Array.from(sources.entries()).map(([id, s]) => ({ sourceId: id, queue: s.frameQueue.length, samples: s.samples.length })),
   });
   return false;
