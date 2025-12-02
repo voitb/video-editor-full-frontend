@@ -64,6 +64,8 @@ export class Engine {
   // Sync state
   private syncIntervalId: number | null = null;
   private lastActiveClips: ActiveClip[] = [];
+  private lastHasClipsAtTime = false;
+  private lastCompositionDurationUs = 0;
 
   // Event listeners
   private listeners: Set<EngineEventCallback> = new Set();
@@ -413,17 +415,27 @@ export class Engine {
     if (!this.worker) return;
 
     const activeClips = this.composition.getActiveClipsAt(this._currentTimeUs);
+    const hasClipsAtTime = activeClips.length > 0;
+    const compositionDurationUs = this.composition.durationUs;
 
-    // Only update if clips changed
-    if (this.activeClipsEqual(activeClips, this.lastActiveClips)) {
+    // Only update if clips, hasClipsAtTime, or duration changed
+    const clipsChanged = !this.activeClipsEqual(activeClips, this.lastActiveClips);
+    const hasClipsChanged = hasClipsAtTime !== this.lastHasClipsAtTime;
+    const durationChanged = compositionDurationUs !== this.lastCompositionDurationUs;
+
+    if (!clipsChanged && !hasClipsChanged && !durationChanged) {
       return;
     }
 
     this.lastActiveClips = activeClips;
+    this.lastHasClipsAtTime = hasClipsAtTime;
+    this.lastCompositionDurationUs = compositionDurationUs;
 
     const cmd: RenderWorkerCommand = {
       type: 'SET_ACTIVE_CLIPS',
       clips: activeClips,
+      hasClipsAtTime,
+      compositionDurationUs,
     };
     this.worker.postMessage(cmd);
   }
@@ -441,15 +453,14 @@ export class Engine {
    * Call this after modifying clip trim points or any composition change.
    */
   forceUpdateActiveClips(): void {
-    // Reset last clips to force comparison to pass
+    // Reset cached state to force update
     this.lastActiveClips = [];
+    this.lastHasClipsAtTime = false;
+    this.lastCompositionDurationUs = 0;
     this.updateActiveClips();
 
-    // Clamp playhead if beyond new duration
-    const newDuration = this.composition.durationUs;
-    if (this._currentTimeUs > newDuration) {
-      this.seek(Math.max(0, newDuration));
-    }
+    // Don't clamp playhead during trim operations - let the user decide
+    // if they want to seek. The playhead should stay where it is.
   }
 
   // ============================================================================

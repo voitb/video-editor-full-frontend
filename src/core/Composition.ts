@@ -22,6 +22,7 @@ export class Composition {
 
   private _tracks: Track[] = [];
   private _sources: Map<string, Source> = new Map();
+  private _fixedDurationUs: number | null = null;
 
   constructor(config?: Partial<CompositionConfig>, id?: string) {
     this.id = id ?? createCompositionId();
@@ -30,6 +31,10 @@ export class Composition {
       height: config?.height ?? COMPOSITION.DEFAULT_HEIGHT,
       frameRate: config?.frameRate ?? COMPOSITION.DEFAULT_FRAME_RATE,
     };
+    // Initialize fixed duration from config if provided
+    if (config?.fixedDurationUs !== undefined) {
+      this._fixedDurationUs = config.fixedDurationUs;
+    }
   }
 
   // ============================================================================
@@ -213,11 +218,37 @@ export class Composition {
   // ============================================================================
 
   /**
-   * Get total composition duration (longest track)
+   * Get total composition duration.
+   * Returns fixed duration if set, otherwise computes from longest track.
    */
   get durationUs(): number {
+    if (this._fixedDurationUs !== null) {
+      return this._fixedDurationUs;
+    }
     if (this._tracks.length === 0) return 0;
     return Math.max(...this._tracks.map(t => t.durationUs));
+  }
+
+  /**
+   * Get computed duration from clips (ignoring fixed duration)
+   */
+  get computedDurationUs(): number {
+    if (this._tracks.length === 0) return 0;
+    return Math.max(...this._tracks.map(t => t.durationUs));
+  }
+
+  /**
+   * Get fixed duration (null means use computed duration)
+   */
+  get fixedDurationUs(): number | null {
+    return this._fixedDurationUs;
+  }
+
+  /**
+   * Set fixed duration (null to use computed duration)
+   */
+  set fixedDurationUs(value: number | null) {
+    this._fixedDurationUs = value;
   }
 
   /**
@@ -279,7 +310,10 @@ export class Composition {
   toJSON(): CompositionJSON {
     return {
       id: this.id,
-      config: { ...this.config },
+      config: {
+        ...this.config,
+        fixedDurationUs: this._fixedDurationUs ?? undefined,
+      },
       tracks: this._tracks.map(t => t.toJSON()),
       sources: Array.from(this._sources.values()).map(s => s.toRefJSON()),
     };
@@ -290,6 +324,10 @@ export class Composition {
    */
   static fromJSON(json: CompositionJSON): Composition {
     const composition = new Composition(json.config, json.id);
+    // Restore fixed duration from config
+    if (json.config.fixedDurationUs !== undefined) {
+      composition.fixedDurationUs = json.config.fixedDurationUs;
+    }
     for (const trackJson of json.tracks) {
       composition.addTrack(Track.fromJSON(trackJson));
     }

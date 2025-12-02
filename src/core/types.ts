@@ -28,6 +28,8 @@ export interface CompositionConfig {
   height: number;
   /** Target frame rate */
   frameRate: number;
+  /** Fixed composition duration in microseconds (optional, overrides computed duration) */
+  fixedDurationUs?: number;
 }
 
 /** Clip configuration for creation/updates */

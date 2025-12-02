@@ -48,6 +48,10 @@ export interface RemoveSourceCommand {
 export interface SetActiveClipsCommand {
   type: 'SET_ACTIVE_CLIPS';
   clips: ActiveClip[];
+  /** True if any clip exists at the current timeline time (vs empty gap) */
+  hasClipsAtTime: boolean;
+  /** Total composition duration for playback end detection */
+  compositionDurationUs: number;
 }
 
 /** Seek to a specific time */

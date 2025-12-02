@@ -69,6 +69,11 @@ let compositor: Compositor | null = null;
 const sources = new Map<string, SourceDecodeState>();
 let activeClips: ActiveClip[] = [];
 
+// Track whether any clips exist at the current time (vs an empty gap)
+let hasClipsAtCurrentTime = false;
+// Composition duration for playback end detection
+let compositionDurationUs = 0;
+
 // When paused after a seek we may need to re-render once fresh frames arrive
 // (e.g., when waiting on streamed data). Track that requirement here.
 let pendingPausedRender = false;
@@ -123,8 +128,12 @@ ctx.onmessage = async (e: MessageEvent<RenderWorkerCommand>) => {
 
       case 'SET_ACTIVE_CLIPS':
         activeClips = cmd.clips;
+        hasClipsAtCurrentTime = cmd.hasClipsAtTime;
+        compositionDurationUs = cmd.compositionDurationUs;
         logger.info('SET_ACTIVE_CLIPS', {
           count: activeClips.length,
+          hasClipsAtTime: hasClipsAtCurrentTime,
+          compositionDurationUs,
           clipIds: activeClips.map(c => c.clipId),
           state,
           timelineTimeUs: currentTimeUs,
@@ -684,10 +693,10 @@ function playbackLoop(): void {
   const elapsed = performance.now() - playbackStartWallTime;
   const targetTimeUs = playbackStartTimeUs + Math.round(elapsed * 1000);
 
-  // Check if past duration
-  const maxDuration = getMaxDuration();
-  if (targetTimeUs >= maxDuration) {
-    currentTimeUs = maxDuration;
+  // Check if past composition duration (use compositionDurationUs from Engine,
+  // not computed from activeClips, to allow playback through gaps)
+  if (compositionDurationUs > 0 && targetTimeUs >= compositionDurationUs) {
+    currentTimeUs = compositionDurationUs;
     pause();
     return;
   }
@@ -705,15 +714,6 @@ function playbackLoop(): void {
 
   // Continue loop
   animationFrameId = requestAnimationFrame(playbackLoop);
-}
-
-function getMaxDuration(): number {
-  let max = 0;
-  for (const clip of activeClips) {
-    const clipEnd = clip.timelineStartUs + (clip.sourceEndUs - clip.sourceStartUs);
-    max = Math.max(max, clipEnd);
-  }
-  return max;
 }
 
 async function flushAllDecoders(): Promise<void> {
@@ -868,9 +868,17 @@ function renderFrame(timelineTimeUs: number): boolean {
     return true;
   }
 
-  // When no frames available, retain the last rendered frame on screen
-  // (removing compositor.clear() fixes flickering during playback)
-  logger.info('Render skipped - no frames', {
+  // No frames rendered - distinguish between GAP and BUFFERING
+  if (!hasClipsAtCurrentTime) {
+    // GAP: No clips exist at this time - clear to black
+    logger.info('Render clearing for gap', { timelineTimeUs, hasClipsAtCurrentTime });
+    compositor.clear();
+    return true; // We did render (black frame)
+  }
+
+  // BUFFERING: Clips exist but frames not decoded yet - retain last frame
+  // This prevents flickering during playback when waiting for frames
+  logger.info('Render skipped - buffering', {
     timelineTimeUs,
     activeClips: activeClips.length,
     queues: Array.from(sources.entries()).map(([id, s]) => ({ sourceId: id, queue: s.frameQueue.length, samples: s.samples.length })),
