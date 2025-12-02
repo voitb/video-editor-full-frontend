@@ -558,6 +558,12 @@ function pause(): void {
 function seek(timeUs: number): void {
   currentTimeUs = timeUs;
 
+  // If playing, reset playback timing to prevent loop from reverting position
+  if (state === 'playing') {
+    playbackStartTimeUs = timeUs;
+    playbackStartWallTime = performance.now();
+  }
+
   // Clear frame queues and reset decoders
   for (const sourceState of sources.values()) {
     for (const { frame } of sourceState.frameQueue) {

@@ -370,15 +370,15 @@ export class Engine {
     // Stop current audio
     this.stopAllAudio();
 
-    // Send seek command
+    // Update active clips FIRST (before seek) to ensure worker has correct clips for rendering
+    this.updateActiveClips();
+
+    // Then send seek command
     const cmd: RenderWorkerCommand = {
       type: 'SEEK',
       timeUs: clampedTime,
     };
     this.worker.postMessage(cmd);
-
-    // Update active clips
-    this.updateActiveClips();
 
     // Emit time update
     this.emit({ type: 'timeUpdate', currentTimeUs: clampedTime });
