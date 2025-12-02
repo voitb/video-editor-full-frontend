@@ -60,6 +60,49 @@ export function formatTimecodeShort(us: number): string {
 }
 
 /**
+ * Format time adaptively based on visible duration (professional NLE style)
+ * Uses milliseconds format for fine precision when zoomed in
+ * @param us - Time in microseconds
+ * @param visibleDurationUs - Currently visible duration (determines precision)
+ */
+export function formatTimecodeAdaptive(us: number, visibleDurationUs: number): string {
+  const totalSeconds = usToSeconds(us);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = Math.floor(totalSeconds % 60);
+  const milliseconds = Math.floor((totalSeconds % 1) * 1000);
+
+  const pad2 = (n: number) => n.toString().padStart(2, '0');
+  const pad3 = (n: number) => n.toString().padStart(3, '0');
+
+  // > 5 min visible: HH:MM:SS or MM:SS
+  if (visibleDurationUs > 300_000_000) {
+    if (hours > 0) return `${hours}:${pad2(minutes)}:${pad2(seconds)}`;
+    return `${minutes}:${pad2(seconds)}`;
+  }
+
+  // 1-5 min visible: MM:SS
+  if (visibleDurationUs > 60_000_000) {
+    return `${minutes}:${pad2(seconds)}`;
+  }
+
+  // 10s-1min visible: MM:SS.m (1 decimal for tenths)
+  if (visibleDurationUs > 10_000_000) {
+    const tenths = Math.floor((totalSeconds % 1) * 10);
+    return `${minutes}:${pad2(seconds)}.${tenths}`;
+  }
+
+  // 2-10s visible: SS.mm (2 decimals for hundredths)
+  if (visibleDurationUs > 2_000_000) {
+    const hundredths = Math.floor((totalSeconds % 1) * 100);
+    return `${seconds}.${hundredths.toString().padStart(2, '0')}`;
+  }
+
+  // < 2s visible: SS.mmm (full milliseconds)
+  return `${seconds}.${pad3(milliseconds)}`;
+}
+
+/**
  * Clamp a value between min and max
  */
 export function clamp(value: number, min: number, max: number): number {

@@ -87,6 +87,11 @@ export const TIMELINE_COLORS = {
   // Borders
   border: '#333',
   borderLight: '#444',
+
+  // Grid lines (hierarchical)
+  gridMajor: 'rgba(255, 255, 255, 0.15)',
+  gridMinor: 'rgba(255, 255, 255, 0.08)',
+  gridSubMinor: 'rgba(255, 255, 255, 0.04)',
 } as const;
 
 /** Playback constants */

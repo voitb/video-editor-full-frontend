@@ -8,7 +8,7 @@ import { useCallback, useMemo, useRef, useState, useEffect } from 'react';
 import type { Track } from '../core/Track';
 import type { Clip } from '../core/Clip';
 import type { TimelineViewport, TrackUIState } from '../core/types';
-import { formatTimecodeShort } from '../utils/time';
+import { formatTimecodeAdaptive } from '../utils/time';
 import { TIMELINE, TIMELINE_COLORS } from '../constants';
 
 // ============================================================================
@@ -304,12 +304,21 @@ export function Timeline(props: TimelineProps) {
       if (time >= 0) {
         markers.push({
           timeUs: time,
-          label: formatTimecodeShort(time),
+          label: formatTimecodeAdaptive(time, effectiveVisibleDuration),
         });
       }
     }
 
     return markers;
+  }, [effectiveVisibleDuration, viewport.startTimeUs, viewport.endTimeUs]);
+
+  // Generate hierarchical grid lines
+  const gridLines = useMemo(() => {
+    return getGridLines(
+      effectiveVisibleDuration,
+      viewport.startTimeUs,
+      viewport.endTimeUs
+    );
   }, [effectiveVisibleDuration, viewport.startTimeUs, viewport.endTimeUs]);
 
   // Playhead position
@@ -342,7 +351,9 @@ export function Timeline(props: TimelineProps) {
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            padding: '0 8px',
+            padding: '0 6px',
+            boxSizing: 'border-box',
+            overflow: 'hidden',
           }}
         >
           {/* Zoom Slider */}
@@ -365,6 +376,9 @@ export function Timeline(props: TimelineProps) {
             backgroundColor: TIMELINE_COLORS.rulerBg,
             borderBottom: `1px solid ${TIMELINE_COLORS.border}`,
             overflow: 'hidden',
+            position: 'relative',
+            zIndex: 5,
+            boxShadow: '0 2px 4px rgba(0, 0, 0, 0.3)',
           }}
         >
           {/* Time ruler inner - has full timeline width */}
@@ -375,7 +389,10 @@ export function Timeline(props: TimelineProps) {
               position: 'relative',
             }}
           >
-            {timeMarkers.map((marker) => (
+            {timeMarkers.map((marker, index) => {
+              // Don't center the first marker to prevent left edge cutoff
+              const isFirstMarker = index === 0 && marker.timeUs === 0;
+              return (
               <div
                 key={marker.timeUs}
                 style={{
@@ -385,9 +402,11 @@ export function Timeline(props: TimelineProps) {
                   height: '100%',
                   display: 'flex',
                   flexDirection: 'column',
-                  alignItems: 'center',
+                  alignItems: isFirstMarker ? 'flex-start' : 'center',
                   justifyContent: 'flex-end',
-                  paddingBottom: 4,
+                  paddingBottom: 2,
+                  transform: isFirstMarker ? 'none' : 'translateX(-50%)',
+                  pointerEvents: 'none',
                 }}
               >
                 {/* Tick mark */}
@@ -405,13 +424,14 @@ export function Timeline(props: TimelineProps) {
                   style={{
                     fontSize: 10,
                     color: TIMELINE_COLORS.textMuted,
-                    transform: 'translateX(-50%)',
+                    whiteSpace: 'nowrap',
                   }}
                 >
                   {marker.label}
                 </span>
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       </div>
@@ -429,7 +449,6 @@ export function Timeline(props: TimelineProps) {
         <div
           style={{
             display: 'flex',
-            width: totalTimelineWidth + TIMELINE.TRACK_HEADER_WIDTH,
             minHeight: '100%',
           }}
         >
@@ -437,6 +456,7 @@ export function Timeline(props: TimelineProps) {
           <div
             style={{
               width: TIMELINE.TRACK_HEADER_WIDTH,
+              minWidth: TIMELINE.TRACK_HEADER_WIDTH,
               backgroundColor: TIMELINE_COLORS.trackHeaderBg,
               borderRight: `1px solid ${TIMELINE_COLORS.border}`,
               flexShrink: 0,
@@ -509,12 +529,14 @@ export function Timeline(props: TimelineProps) {
             ref={timelineContentRef}
             style={{
               width: totalTimelineWidth,
+              minWidth: totalTimelineWidth,
+              flexShrink: 0,
               position: 'relative',
             }}
             onClick={handleTimelineClick}
             onWheel={handleWheel}
           >
-            {/* Grid lines - vertical lines at time intervals (DaVinci Resolve style) */}
+            {/* Grid lines - hierarchical vertical lines (DaVinci Resolve style) */}
             <div
               style={{
                 position: 'absolute',
@@ -526,16 +548,21 @@ export function Timeline(props: TimelineProps) {
                 zIndex: 1,
               }}
             >
-              {timeMarkers.map((marker) => (
+              {gridLines.map((line) => (
                 <div
-                  key={`grid-${marker.timeUs}`}
+                  key={`grid-${line.timeUs}`}
                   style={{
                     position: 'absolute',
-                    left: timeToPixel(marker.timeUs),
+                    left: timeToPixel(line.timeUs),
                     top: 0,
                     bottom: 0,
                     width: 1,
-                    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+                    backgroundColor:
+                      line.type === 'major'
+                        ? TIMELINE_COLORS.gridMajor
+                        : line.type === 'minor'
+                        ? TIMELINE_COLORS.gridMinor
+                        : TIMELINE_COLORS.gridSubMinor,
                   }}
                 />
               ))}
@@ -1343,6 +1370,77 @@ function getTimeStep(visibleDurationUs: number): number {
   return intervals[intervals.length - 1] ?? 60_000_000;
 }
 
+interface GridLine {
+  timeUs: number;
+  type: 'major' | 'minor' | 'sub-minor';
+}
+
+/**
+ * Generate hierarchical grid lines for professional NLE appearance
+ */
+function getGridLines(
+  visibleDurationUs: number,
+  startTimeUs: number,
+  endTimeUs: number
+): GridLine[] {
+  // Determine intervals based on visible duration
+  let majorInterval: number;
+  let minorInterval: number;
+  let subMinorInterval: number | null = null;
+
+  if (visibleDurationUs > 300_000_000) {
+    // > 5 min: major at 1min, minor at 10s
+    majorInterval = 60_000_000;
+    minorInterval = 10_000_000;
+  } else if (visibleDurationUs > 60_000_000) {
+    // 1-5 min: major at 10s, minor at 1s
+    majorInterval = 10_000_000;
+    minorInterval = 1_000_000;
+  } else if (visibleDurationUs > 10_000_000) {
+    // 10s-1min: major at 5s, minor at 1s, sub-minor at 0.5s
+    majorInterval = 5_000_000;
+    minorInterval = 1_000_000;
+    subMinorInterval = 500_000;
+  } else if (visibleDurationUs > 2_000_000) {
+    // 2-10s: major at 1s, minor at 0.5s, sub-minor at 0.1s
+    majorInterval = 1_000_000;
+    minorInterval = 500_000;
+    subMinorInterval = 100_000;
+  } else {
+    // < 2s: major at 0.5s, minor at 0.1s, sub-minor at ~1 frame (33ms)
+    majorInterval = 500_000;
+    minorInterval = 100_000;
+    subMinorInterval = 33_333;
+  }
+
+  // Use Map to deduplicate and prioritize (major > minor > sub-minor)
+  const lineMap = new Map<number, 'major' | 'minor' | 'sub-minor'>();
+
+  // Add sub-minor first (lowest priority)
+  if (subMinorInterval) {
+    const subStart = Math.floor(startTimeUs / subMinorInterval) * subMinorInterval;
+    for (let t = subStart; t <= endTimeUs; t += subMinorInterval) {
+      if (t >= 0) lineMap.set(t, 'sub-minor');
+    }
+  }
+
+  // Minor overrides sub-minor
+  const minorStart = Math.floor(startTimeUs / minorInterval) * minorInterval;
+  for (let t = minorStart; t <= endTimeUs; t += minorInterval) {
+    if (t >= 0) lineMap.set(t, 'minor');
+  }
+
+  // Major overrides all
+  const majorStart = Math.floor(startTimeUs / majorInterval) * majorInterval;
+  for (let t = majorStart; t <= endTimeUs; t += majorInterval) {
+    if (t >= 0) lineMap.set(t, 'major');
+  }
+
+  return Array.from(lineMap.entries())
+    .map(([timeUs, type]) => ({ timeUs, type }))
+    .sort((a, b) => a.timeUs - b.timeUs);
+}
+
 // ============================================================================
 // ZOOM SLIDER
 // ============================================================================
@@ -1372,11 +1470,13 @@ function TimelineZoomSlider({ zoomLevel, minZoom, maxZoom, onChange }: TimelineZ
       style={{
         display: 'flex',
         alignItems: 'center',
-        gap: 6,
+        gap: 4,
         width: '100%',
+        minWidth: 0,
+        overflow: 'hidden',
       }}
     >
-      <span style={{ fontSize: 9, color: TIMELINE_COLORS.textMuted }}>−</span>
+      <span style={{ fontSize: 9, color: TIMELINE_COLORS.textMuted, flexShrink: 0 }}>−</span>
       <input
         type="range"
         min={0}
@@ -1385,6 +1485,7 @@ function TimelineZoomSlider({ zoomLevel, minZoom, maxZoom, onChange }: TimelineZ
         onChange={handleChange}
         style={{
           flex: 1,
+          minWidth: 0,
           height: 4,
           WebkitAppearance: 'none',
           appearance: 'none',
@@ -1394,7 +1495,7 @@ function TimelineZoomSlider({ zoomLevel, minZoom, maxZoom, onChange }: TimelineZ
           cursor: 'pointer',
         }}
       />
-      <span style={{ fontSize: 9, color: TIMELINE_COLORS.textMuted }}>+</span>
+      <span style={{ fontSize: 9, color: TIMELINE_COLORS.textMuted, flexShrink: 0 }}>+</span>
     </div>
   );
 }
