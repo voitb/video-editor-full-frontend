@@ -558,6 +558,10 @@ export class Engine {
   private scheduleAudio(clip: ActiveClip): void {
     if (!this.audioContext) return;
 
+    // CRITICAL: Only play audio for clips on audio tracks
+    // Video track clips should not produce audio - audio comes from audio tracks only
+    if (clip.trackType !== 'audio') return;
+
     const buffers = this.audioBuffers.get(clip.sourceId);
     if (!buffers || buffers.length === 0) {
       logger.info('No audio buffers for source', { sourceId: clip.sourceId });

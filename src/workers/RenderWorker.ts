@@ -737,6 +737,10 @@ async function flushAllDecoders(): Promise<void> {
 function feedDecoders(timelineTimeUs: number, opts?: { reason?: string }): void {
   const reason = opts?.reason ?? 'loop';
   for (const clip of activeClips) {
+    // CRITICAL: Only decode video for clips on video tracks
+    // Audio track clips should not decode video - saves decoder resources
+    if (clip.trackType !== 'video') continue;
+
     if (!isClipActiveAt(clip, timelineTimeUs)) continue;
 
     const sourceState = sources.get(clip.sourceId);
@@ -840,6 +844,10 @@ function renderFrame(timelineTimeUs: number): boolean {
   const layers: CompositorLayer[] = [];
 
   for (const clip of activeClips) {
+    // CRITICAL: Only render video for clips on video tracks
+    // Audio track clips should not produce video - video comes from video tracks only
+    if (clip.trackType !== 'video') continue;
+
     if (!isClipActiveAt(clip, timelineTimeUs)) continue;
 
     const sourceState = sources.get(clip.sourceId);

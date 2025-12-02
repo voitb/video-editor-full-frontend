@@ -29,6 +29,9 @@ export class Clip {
   /** Display label */
   label: string;
 
+  /** ID of linked clip (for video-audio linking) */
+  linkedClipId?: string;
+
   constructor(config: ClipConfig, id?: string) {
     this.id = id ?? createClipId();
     this.sourceId = config.sourceId;
@@ -38,6 +41,7 @@ export class Clip {
     this.opacity = config.opacity ?? 1;
     this.volume = config.volume ?? 1;
     this.label = config.label ?? '';
+    this.linkedClipId = config.linkedClipId;
 
     this.validate();
   }
@@ -143,8 +147,9 @@ export class Clip {
 
   /**
    * Clone this clip with a new ID
+   * @param preserveLink - Whether to preserve the linkedClipId (default: false)
    */
-  clone(): Clip {
+  clone(preserveLink = false): Clip {
     return new Clip({
       sourceId: this.sourceId,
       startUs: this.startUs,
@@ -153,6 +158,7 @@ export class Clip {
       opacity: this.opacity,
       volume: this.volume,
       label: this.label,
+      linkedClipId: preserveLink ? this.linkedClipId : undefined,
     });
   }
 
@@ -190,6 +196,7 @@ export class Clip {
       opacity: this.opacity,
       volume: this.volume,
       label: this.label,
+      linkedClipId: this.linkedClipId,
     };
   }
 
@@ -206,6 +213,7 @@ export class Clip {
         opacity: json.opacity,
         volume: json.volume,
         label: json.label,
+        linkedClipId: json.linkedClipId,
       },
       json.id
     );

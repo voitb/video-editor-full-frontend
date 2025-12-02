@@ -64,6 +64,8 @@ export interface TimelineProps {
   onTrackLock?: (trackId: string, locked: boolean) => void;
   /** Callback when track height changes */
   onTrackResize?: (trackId: string, height: number) => void;
+  /** Callback when a clip is unlinked */
+  onClipUnlink?: (clipId: string) => void;
 }
 
 interface SnapTarget {
@@ -107,6 +109,7 @@ export function Timeline(props: TimelineProps) {
     onTrackSolo,
     onTrackLock,
     onTrackResize,
+    onClipUnlink,
   } = props;
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -689,6 +692,7 @@ export function Timeline(props: TimelineProps) {
                 onClipTrimStart={onClipTrimStart}
                 onClipTrimEnd={onClipTrimEnd}
                 onSeek={onSeek}
+                onClipUnlink={onClipUnlink}
                 applySnap={applySnap}
                 setActiveSnapLine={setActiveSnapLine}
                 setDropTargetTrackId={setDropTargetTrackId}
@@ -1056,6 +1060,7 @@ interface TrackLaneProps {
   onClipTrimStart?: (clipId: string, newStartUs: number) => void;
   onClipTrimEnd?: (clipId: string, newEndUs: number) => void;
   onSeek?: (timeUs: number) => void;
+  onClipUnlink?: (clipId: string) => void;
   applySnap: (proposedStartUs: number, clipDurationUs: number, excludeClipId?: string) => SnapResult;
   setActiveSnapLine: (timeUs: number | null) => void;
   setDropTargetTrackId: (trackId: string | null) => void;
@@ -1077,6 +1082,7 @@ function TrackLane(props: TrackLaneProps) {
     onClipTrimStart,
     onClipTrimEnd,
     onSeek,
+    onClipUnlink,
     applySnap,
     setActiveSnapLine,
     setDropTargetTrackId,
@@ -1115,6 +1121,7 @@ function TrackLane(props: TrackLaneProps) {
           onTrimStart={onClipTrimStart}
           onTrimEnd={onClipTrimEnd}
           onSeek={onSeek}
+          onUnlink={onClipUnlink}
           applySnap={applySnap}
           setActiveSnapLine={setActiveSnapLine}
           setDropTargetTrackId={setDropTargetTrackId}
@@ -1142,6 +1149,7 @@ interface ClipBlockProps {
   onTrimStart?: (clipId: string, newStartUs: number) => void;
   onTrimEnd?: (clipId: string, newEndUs: number) => void;
   onSeek?: (timeUs: number) => void;
+  onUnlink?: (clipId: string) => void;
   applySnap: (proposedStartUs: number, clipDurationUs: number, excludeClipId?: string) => SnapResult;
   setActiveSnapLine: (timeUs: number | null) => void;
   setDropTargetTrackId: (trackId: string | null) => void;
@@ -1162,6 +1170,7 @@ function ClipBlock(props: ClipBlockProps) {
     onTrimStart,
     onTrimEnd,
     onSeek,
+    onUnlink,
     applySnap,
     setActiveSnapLine,
     setDropTargetTrackId,
@@ -1178,6 +1187,9 @@ function ClipBlock(props: ClipBlockProps) {
     isColliding?: boolean;
     targetTrackId?: string;
   } | null>(null);
+
+  // Context menu state
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
 
   // Track if a drag actually happened (to prevent seek after drag)
   const didDragRef = useRef(false);
@@ -1212,6 +1224,28 @@ function ClipBlock(props: ClipBlockProps) {
       onSelect?.(clip.id, trackId);
     }
   }, [isSelected, clip, trackId, onSelect, onSeek]);
+
+  // Handle right-click for context menu
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({ x: e.clientX, y: e.clientY });
+  }, []);
+
+  // Close context menu when clicking elsewhere
+  useEffect(() => {
+    if (!contextMenu) return;
+
+    const handleClickOutside = () => setContextMenu(null);
+    window.addEventListener('click', handleClickOutside);
+    return () => window.removeEventListener('click', handleClickOutside);
+  }, [contextMenu]);
+
+  // Handle unlink from context menu
+  const handleUnlink = useCallback(() => {
+    onUnlink?.(clip.id);
+    setContextMenu(null);
+  }, [clip.id, onUnlink]);
 
   // Left trim handle mouse down
   const handleTrimStartMouseDown = useCallback((e: React.MouseEvent) => {
@@ -1393,6 +1427,7 @@ function ClipBlock(props: ClipBlockProps) {
   return (
     <div
       onClick={handleClick}
+      onContextMenu={handleContextMenu}
       onMouseDown={handleBodyMouseDown}
       style={{
         position: 'absolute',
@@ -1414,6 +1449,21 @@ function ClipBlock(props: ClipBlockProps) {
         zIndex: isMoving ? 50 : 'auto',
       }}
     >
+      {/* Link indicator */}
+      {clip.linkedClipId && (
+        <span
+          style={{
+            fontSize: 10,
+            color: 'rgba(255,255,255,0.7)',
+            marginRight: 4,
+            pointerEvents: 'none',
+          }}
+          title="Linked to another clip"
+        >
+          🔗
+        </span>
+      )}
+
       <span
         style={{
           fontSize: 11,
@@ -1453,6 +1503,57 @@ function ClipBlock(props: ClipBlockProps) {
           backgroundColor: dragState?.type === 'trim-end' ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.1)',
         }}
       />
+
+      {/* Context menu */}
+      {contextMenu && (
+        <div
+          style={{
+            position: 'fixed',
+            left: contextMenu.x,
+            top: contextMenu.y,
+            backgroundColor: '#1a1a1a',
+            border: '1px solid #444',
+            borderRadius: 4,
+            padding: 4,
+            zIndex: 1000,
+            minWidth: 120,
+            boxShadow: '0 2px 8px rgba(0,0,0,0.5)',
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {clip.linkedClipId ? (
+            <button
+              onClick={handleUnlink}
+              style={{
+                display: 'block',
+                width: '100%',
+                padding: '6px 12px',
+                backgroundColor: 'transparent',
+                border: 'none',
+                color: '#fff',
+                fontSize: 12,
+                textAlign: 'left',
+                cursor: 'pointer',
+                borderRadius: 2,
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#333')}
+              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+            >
+              🔗 Unlink Clip
+            </button>
+          ) : (
+            <div
+              style={{
+                padding: '6px 12px',
+                color: '#666',
+                fontSize: 12,
+              }}
+            >
+              No linked clip
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -32,6 +32,12 @@ export interface UseCompositionReturn {
   getTrack: (trackId: string) => Track | undefined;
   /** Add a clip to a track */
   addClip: (trackId: string, config: ClipConfig) => Clip | undefined;
+  /** Add a video clip with auto-extracted linked audio clip */
+  addVideoClipWithAudio: (
+    videoTrackId: string,
+    config: ClipConfig,
+    audioTrackId?: string
+  ) => { videoClip: Clip | undefined; audioClip: Clip | undefined };
   /** Remove a clip */
   removeClip: (clipId: string) => boolean;
   /** Get a clip by ID */
@@ -40,8 +46,12 @@ export interface UseCompositionReturn {
   updateClip: (clipId: string, updates: Partial<ClipConfig>) => boolean;
   /** Move a clip to a new start time (with collision detection) */
   moveClip: (clipId: string, newStartUs: number) => boolean;
+  /** Move a clip along with its linked clip */
+  moveClipWithLinked: (clipId: string, newStartUs: number) => boolean;
   /** Move a clip to a different track (with collision detection) */
   moveClipToTrack: (clipId: string, targetTrackId: string, newStartUs?: number) => boolean;
+  /** Unlink a clip from its linked clip */
+  unlinkClip: (clipId: string) => boolean;
   /** Clear all tracks and sources */
   clear: () => void;
   /** Force re-render */
@@ -114,6 +124,58 @@ export function useComposition(options: UseCompositionOptions = {}): UseComposit
     return clip;
   }, [composition, refresh]);
 
+  /**
+   * Add a video clip with automatically created linked audio clip
+   */
+  const addVideoClipWithAudio = useCallback((
+    videoTrackId: string,
+    config: ClipConfig,
+    audioTrackId?: string
+  ): { videoClip: Clip | undefined; audioClip: Clip | undefined } => {
+    // Add video clip
+    const videoClip = composition.addClipToTrack(videoTrackId, config);
+    if (!videoClip) {
+      return { videoClip: undefined, audioClip: undefined };
+    }
+
+    // Check if source has audio
+    const source = composition.getSource(config.sourceId);
+    if (!source?.hasAudio) {
+      refresh();
+      return { videoClip, audioClip: undefined };
+    }
+
+    // Find or create audio track
+    let audioTrack: Track | undefined;
+    if (audioTrackId) {
+      audioTrack = composition.getTrack(audioTrackId);
+    } else {
+      // Use first audio track or create one
+      audioTrack = composition.audioTracks[0];
+      if (!audioTrack) {
+        audioTrack = composition.createTrack({ type: 'audio', label: 'Audio 1' });
+      }
+    }
+
+    if (!audioTrack) {
+      refresh();
+      return { videoClip, audioClip: undefined };
+    }
+
+    // Create linked audio clip with same timing
+    const audioClip = audioTrack.createClip({
+      ...config,
+      label: config.label ? `${config.label} (Audio)` : 'Audio',
+      linkedClipId: videoClip.id,
+    });
+
+    // Link video clip back to audio clip
+    videoClip.linkedClipId = audioClip.id;
+
+    refresh();
+    return { videoClip, audioClip };
+  }, [composition, refresh]);
+
   const removeClip = useCallback((clipId: string): boolean => {
     const result = composition.removeClip(clipId);
     if (result) refresh();
@@ -157,6 +219,45 @@ export function useComposition(options: UseCompositionOptions = {}): UseComposit
     clip.moveTo(newStartUs);
     refresh();
     return true;
+  }, [composition, refresh]);
+
+  // Move clip along with its linked clip
+  const moveClipWithLinked = useCallback((clipId: string, newStartUs: number): boolean => {
+    const found = composition.getClip(clipId);
+    if (!found) return false;
+
+    const { clip, track } = found;
+    const newEndUs = newStartUs + clip.durationUs;
+
+    // Check for overlap with other clips on same track
+    if (track.wouldOverlap(newStartUs, newEndUs, clipId)) {
+      return false; // Blocked by collision
+    }
+
+    // Also check linked clip for collisions
+    if (clip.linkedClipId) {
+      const linkedFound = composition.getClip(clip.linkedClipId);
+      if (linkedFound) {
+        const delta = newStartUs - clip.startUs;
+        const linkedNewStart = linkedFound.clip.startUs + delta;
+        const linkedNewEnd = linkedNewStart + linkedFound.clip.durationUs;
+        if (linkedFound.track.wouldOverlap(linkedNewStart, linkedNewEnd, clip.linkedClipId)) {
+          return false; // Linked clip blocked by collision
+        }
+      }
+    }
+
+    // Move using composition method which handles linked clips
+    composition.moveClipWithLinked(clipId, newStartUs);
+    refresh();
+    return true;
+  }, [composition, refresh]);
+
+  // Unlink a clip from its linked clip
+  const unlinkClip = useCallback((clipId: string): boolean => {
+    const result = composition.unlinkClip(clipId);
+    if (result) refresh();
+    return result;
   }, [composition, refresh]);
 
   // Move clip to a different track
@@ -238,11 +339,14 @@ export function useComposition(options: UseCompositionOptions = {}): UseComposit
     removeTrack,
     getTrack,
     addClip,
+    addVideoClipWithAudio,
     removeClip,
     getClip,
     updateClip,
     moveClip,
+    moveClipWithLinked,
     moveClipToTrack,
+    unlinkClip,
     clear,
     refresh,
     toJSON,

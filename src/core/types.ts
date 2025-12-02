@@ -48,6 +48,8 @@ export interface ClipConfig {
   volume?: number;
   /** Optional label */
   label?: string;
+  /** ID of linked clip (for video-audio linking) */
+  linkedClipId?: string;
 }
 
 /** Track configuration for creation */
@@ -71,6 +73,8 @@ export interface ActiveClip {
   clipId: string;
   /** Source identifier */
   sourceId: string;
+  /** Track type for determining audio/video behavior */
+  trackType: TrackType;
   /** Track index for z-ordering (video) or mixing (audio) */
   trackIndex: number;
   /** Clip start time on timeline (microseconds) */
@@ -99,6 +103,8 @@ export interface ClipJSON {
   opacity: number;
   volume: number;
   label: string;
+  /** ID of linked clip (for video-audio linking) */
+  linkedClipId?: string;
 }
 
 /** Serialized track for persistence */

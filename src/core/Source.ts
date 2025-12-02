@@ -25,6 +25,9 @@ export abstract class Source {
   /** Error message if state is 'error' */
   protected _error: string | null = null;
 
+  /** Whether this source contains audio */
+  protected _hasAudio: boolean = false;
+
   /** Event listeners */
   private listeners: Map<string, Set<SourceEventCallback>> = new Map();
 
@@ -75,6 +78,18 @@ export abstract class Source {
 
   get hasError(): boolean {
     return this._state === 'error';
+  }
+
+  get hasAudio(): boolean {
+    return this._hasAudio;
+  }
+
+  /**
+   * Set whether this source has audio
+   * (called by Engine when audio data is detected)
+   */
+  setHasAudio(value: boolean): void {
+    this._hasAudio = value;
   }
 
   // ============================================================================

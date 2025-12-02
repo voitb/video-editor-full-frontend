@@ -214,6 +214,71 @@ export class Composition {
   }
 
   // ============================================================================
+  // CLIP LINKING
+  // ============================================================================
+
+  /**
+   * Get the linked clip for a given clip
+   */
+  getLinkedClip(clipId: string): { clip: Clip; track: Track } | undefined {
+    const result = this.getClip(clipId);
+    if (!result || !result.clip.linkedClipId) return undefined;
+    return this.getClip(result.clip.linkedClipId);
+  }
+
+  /**
+   * Link two clips bidirectionally
+   */
+  linkClips(clipId1: string, clipId2: string): boolean {
+    const result1 = this.getClip(clipId1);
+    const result2 = this.getClip(clipId2);
+    if (!result1 || !result2) return false;
+
+    result1.clip.linkedClipId = clipId2;
+    result2.clip.linkedClipId = clipId1;
+    return true;
+  }
+
+  /**
+   * Unlink a clip (removes link in both directions)
+   */
+  unlinkClip(clipId: string): boolean {
+    const result = this.getClip(clipId);
+    if (!result || !result.clip.linkedClipId) return false;
+
+    const linkedResult = this.getClip(result.clip.linkedClipId);
+    if (linkedResult) {
+      linkedResult.clip.linkedClipId = undefined;
+    }
+    result.clip.linkedClipId = undefined;
+    return true;
+  }
+
+  /**
+   * Move a clip along with its linked clip
+   */
+  moveClipWithLinked(clipId: string, newStartUs: number): boolean {
+    const result = this.getClip(clipId);
+    if (!result) return false;
+
+    const oldStartUs = result.clip.startUs;
+    const delta = newStartUs - oldStartUs;
+
+    // Move the primary clip
+    result.clip.moveTo(newStartUs);
+
+    // Move the linked clip by the same delta
+    if (result.clip.linkedClipId) {
+      const linkedResult = this.getClip(result.clip.linkedClipId);
+      if (linkedResult) {
+        linkedResult.clip.moveTo(linkedResult.clip.startUs + delta);
+      }
+    }
+
+    return true;
+  }
+
+  // ============================================================================
   // DURATION & ACTIVE CLIPS
   // ============================================================================
 
@@ -265,6 +330,7 @@ export class Composition {
         result.push({
           clipId: clip.id,
           sourceId: clip.sourceId,
+          trackType: track.type,
           trackIndex,
           timelineStartUs: clip.startUs,
           sourceStartUs: clip.trimIn,

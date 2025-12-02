@@ -54,6 +54,8 @@ export class HlsSource extends Source {
       fetchTimeout: options.fetchTimeout ?? HLS.FETCH_TIMEOUT_MS,
       maxRetries: options.maxRetries ?? HLS.MAX_RETRIES,
     };
+    // Most HLS video sources contain audio
+    this._hasAudio = true;
   }
 
   /**

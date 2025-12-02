@@ -51,10 +51,11 @@ export function EditorApp(props: EditorAppProps) {
     durationUs,
     createTrack,
     removeTrack,
-    addClip,
+    addVideoClipWithAudio,
     getClip,
-    moveClip,
+    moveClipWithLinked,
     moveClipToTrack,
+    unlinkClip,
     refresh,
   } = useComposition({
     config: { width: 1920, height: 1080, frameRate: 30 },
@@ -126,7 +127,8 @@ export function EditorApp(props: EditorAppProps) {
       // Use composition.tracks directly to avoid stale closure
       const videoTrack = composition.tracks.find(t => t.type === 'video');
       if (videoTrack) {
-        addClip(videoTrack.id, {
+        // Use addVideoClipWithAudio to auto-create linked audio clip
+        addVideoClipWithAudio(videoTrack.id, {
           sourceId: source.id,
           startUs: 0,
           trimIn: 0,
@@ -142,7 +144,7 @@ export function EditorApp(props: EditorAppProps) {
     } finally {
       setIsLoading(false);
     }
-  }, [hlsUrl, loadHlsSource, composition, addClip, resetViewport]);
+  }, [hlsUrl, loadHlsSource, composition, addVideoClipWithAudio, resetViewport]);
 
   // Handle clip selection
   const handleClipSelect = useCallback((clipId: string) => {
@@ -182,14 +184,14 @@ export function EditorApp(props: EditorAppProps) {
     notifyCompositionChanged();
   }, [getClip, composition, refresh, notifyCompositionChanged]);
 
-  // Handle clip move (horizontal)
+  // Handle clip move (horizontal) - moves linked clips together
   const handleClipMove = useCallback((clipId: string, newStartUs: number): boolean => {
-    const success = moveClip(clipId, newStartUs);
+    const success = moveClipWithLinked(clipId, newStartUs);
     if (success) {
       notifyCompositionChanged();
     }
     return success;
-  }, [moveClip, notifyCompositionChanged]);
+  }, [moveClipWithLinked, notifyCompositionChanged]);
 
   // Handle clip move to different track
   const handleClipMoveToTrack = useCallback((clipId: string, targetTrackId: string, newStartUs: number): boolean => {
@@ -212,6 +214,11 @@ export function EditorApp(props: EditorAppProps) {
     removeTrack(trackId);
     notifyCompositionChanged();
   }, [removeTrack, notifyCompositionChanged]);
+
+  // Handle unlinking a clip
+  const handleClipUnlink = useCallback((clipId: string) => {
+    unlinkClip(clipId);
+  }, [unlinkClip]);
 
   // Get loading progress for display
   const loadingProgressPercent = Array.from(loadingProgress.values()).reduce(
@@ -421,6 +428,7 @@ export function EditorApp(props: EditorAppProps) {
           onClipTrimEnd={handleClipTrimEnd}
           onTrackAdd={handleTrackAdd}
           onTrackRemove={handleTrackRemove}
+          onClipUnlink={handleClipUnlink}
           onZoomAtPosition={zoomAtPosition}
           onZoomChange={setZoom}
           onViewportScroll={setViewportFromScroll}
