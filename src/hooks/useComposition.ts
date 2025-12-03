@@ -203,49 +203,21 @@ export function useComposition(options: UseCompositionOptions = {}): UseComposit
     return true;
   }, [composition, refresh]);
 
-  // Move clip with collision detection
+  // Move clip (overlaps allowed - standard NLE behavior)
   const moveClip = useCallback((clipId: string, newStartUs: number): boolean => {
     const found = composition.getClip(clipId);
     if (!found) return false;
 
-    const { clip, track } = found;
-    const newEndUs = newStartUs + clip.durationUs;
-
-    // Check for overlap with other clips on same track
-    if (track.wouldOverlap(newStartUs, newEndUs, clipId)) {
-      return false; // Blocked by collision
-    }
-
+    const { clip } = found;
     clip.moveTo(newStartUs);
     refresh();
     return true;
   }, [composition, refresh]);
 
-  // Move clip along with its linked clip
+  // Move clip along with its linked clip (overlaps allowed - standard NLE behavior)
   const moveClipWithLinked = useCallback((clipId: string, newStartUs: number): boolean => {
     const found = composition.getClip(clipId);
     if (!found) return false;
-
-    const { clip, track } = found;
-    const newEndUs = newStartUs + clip.durationUs;
-
-    // Check for overlap with other clips on same track
-    if (track.wouldOverlap(newStartUs, newEndUs, clipId)) {
-      return false; // Blocked by collision
-    }
-
-    // Also check linked clip for collisions
-    if (clip.linkedClipId) {
-      const linkedFound = composition.getClip(clip.linkedClipId);
-      if (linkedFound) {
-        const delta = newStartUs - clip.startUs;
-        const linkedNewStart = linkedFound.clip.startUs + delta;
-        const linkedNewEnd = linkedNewStart + linkedFound.clip.durationUs;
-        if (linkedFound.track.wouldOverlap(linkedNewStart, linkedNewEnd, clip.linkedClipId)) {
-          return false; // Linked clip blocked by collision
-        }
-      }
-    }
 
     // Move using composition method which handles linked clips
     composition.moveClipWithLinked(clipId, newStartUs);
@@ -286,14 +258,8 @@ export function useComposition(options: UseCompositionOptions = {}): UseComposit
     }
 
     const startUs = newStartUs ?? clip.startUs;
-    const endUs = startUs + clip.durationUs;
 
-    // Check collision on target track
-    if (targetTrack.wouldOverlap(startUs, endUs)) {
-      return false;
-    }
-
-    // Remove from source track
+    // Remove from source track (overlaps allowed - standard NLE behavior)
     sourceTrack.removeClip(clipId);
 
     // Create new clip on target track with same properties

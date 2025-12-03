@@ -1260,7 +1260,6 @@ function ClipBlock(props: ClipBlockProps) {
     initialMouseX: number;
     initialMouseY: number;
     previewStartUs?: number;
-    isColliding?: boolean;
     targetTrackId?: string;
   } | null>(null);
 
@@ -1376,7 +1375,6 @@ function ClipBlock(props: ClipBlockProps) {
       initialMouseX: e.clientX,
       initialMouseY: e.clientY,
       previewStartUs: clip.startUs,
-      isColliding: false,
       targetTrackId: trackId,
     });
   }, [clip.startUs, clip.id, trackId, isSelected, onSelect]);
@@ -1403,14 +1401,19 @@ function ClipBlock(props: ClipBlockProps) {
         // Calculate new start position
         let newStartUs = Math.max(0, dragState.initialTimeUs + deltaTimeUs);
 
-        // Apply snapping
-        const snapResult = applySnap(newStartUs, clip.durationUs, clip.id);
-        newStartUs = snapResult.snappedTimeUs;
+        // Apply snapping only if Shift is NOT held (standard NLE behavior)
+        if (!e.shiftKey) {
+          const snapResult = applySnap(newStartUs, clip.durationUs, clip.id);
+          newStartUs = snapResult.snappedTimeUs;
 
-        // Show snap line if snapped
-        if (snapResult.snappedTo) {
-          setActiveSnapLine(snapResult.snappedTo.timeUs);
+          // Show snap line if snapped
+          if (snapResult.snappedTo) {
+            setActiveSnapLine(snapResult.snappedTo.timeUs);
+          } else {
+            setActiveSnapLine(null);
+          }
         } else {
+          // Shift held - disable snapping, clear snap line
           setActiveSnapLine(null);
         }
 
@@ -1495,7 +1498,7 @@ function ClipBlock(props: ClipBlockProps) {
   // Clip colors based on type, selection, and drag state
   const isMoving = dragState?.type === 'move';
   const backgroundColor = isMoving
-    ? (dragState.isColliding ? '#cc4444' : '#5593dd')
+    ? '#5593dd' // Blue during drag (overlaps allowed)
     : isSelected
       ? (trackType === 'video' ? '#4f83cc' : '#4fcc83')
       : (trackType === 'video' ? '#3b5998' : '#3b9858');
