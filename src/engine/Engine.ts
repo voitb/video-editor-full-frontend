@@ -56,6 +56,7 @@ export class Engine {
 
   // Audio context for playback
   private audioContext: AudioContext | null = null;
+  private masterGainNode: GainNode | null = null;
   private audioBuffers: Map<string, { buffer: AudioBuffer; timestampUs: number }[]> = new Map();
   private audioReady: Map<string, boolean> = new Map();
   private currentAudioNodes: Map<string, AudioBufferSourceNode> = new Map();
@@ -354,6 +355,12 @@ export class Engine {
       this.audioContext = new AudioContext();
     }
 
+    // Create master gain node for volume control
+    if (!this.masterGainNode && this.audioContext) {
+      this.masterGainNode = this.audioContext.createGain();
+      this.masterGainNode.connect(this.audioContext.destination);
+    }
+
     // Resume audio context if suspended (browser autoplay policy)
     if (this.audioContext.state === 'suspended') {
       this.audioContext.resume();
@@ -440,6 +447,20 @@ export class Engine {
       this.pause();
     } else {
       this.play();
+    }
+  }
+
+  /**
+   * Set master volume (0-1)
+   */
+  setMasterVolume(volume: number): void {
+    // Create master gain node if it doesn't exist yet
+    if (!this.masterGainNode && this.audioContext) {
+      this.masterGainNode = this.audioContext.createGain();
+      this.masterGainNode.connect(this.audioContext.destination);
+    }
+    if (this.masterGainNode) {
+      this.masterGainNode.gain.value = Math.max(0, Math.min(1, volume));
     }
   }
 
@@ -615,10 +636,11 @@ export class Engine {
       return;
     }
 
-    // Create gain node for volume control
+    // Create gain node for clip volume control
     const gainNode = this.audioContext.createGain();
     gainNode.gain.value = clip.volume;
-    gainNode.connect(this.audioContext.destination);
+    // Route through master gain node for global volume control
+    gainNode.connect(this.masterGainNode ?? this.audioContext.destination);
     this.gainNodes.set(clip.clipId, gainNode);
 
     // Calculate the source time we need to start from

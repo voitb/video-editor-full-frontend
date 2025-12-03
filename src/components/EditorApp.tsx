@@ -73,6 +73,7 @@ export function EditorApp(props: EditorAppProps) {
     loadHlsSource,
     togglePlayPause,
     seek,
+    setMasterVolume,
     notifyCompositionChanged,
   } = useEngine({ composition });
 
@@ -115,6 +116,11 @@ export function EditorApp(props: EditorAppProps) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Sync volume state to engine
+  useEffect(() => {
+    setMasterVolume(volume);
+  }, [volume, setMasterVolume]);
 
   // Load HLS source (does NOT auto-add to timeline - user drags from library)
   const handleLoadHls = useCallback(async (url: string) => {

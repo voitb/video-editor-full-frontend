@@ -49,6 +49,8 @@ export interface UseEngineReturn {
   seek: (timeUs: number) => void;
   /** Seek to time in seconds */
   seekSeconds: (seconds: number) => void;
+  /** Set master volume (0-1) */
+  setMasterVolume: (volume: number) => void;
   /** Dispose engine */
   dispose: () => void;
   /** Notify engine that composition changed (e.g., after trim) */
@@ -192,6 +194,10 @@ export function useEngine(options: UseEngineOptions): UseEngineReturn {
     engineRef.current?.seekSeconds(seconds);
   }, []);
 
+  const setMasterVolume = useCallback((volume: number) => {
+    engineRef.current?.setMasterVolume(volume);
+  }, []);
+
   // Dispose
   const dispose = useCallback(() => {
     if (engineRef.current) {
@@ -234,6 +240,7 @@ export function useEngine(options: UseEngineOptions): UseEngineReturn {
     togglePlayPause,
     seek,
     seekSeconds,
+    setMasterVolume,
     dispose,
     notifyCompositionChanged,
   };
