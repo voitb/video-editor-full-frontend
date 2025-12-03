@@ -51,9 +51,14 @@ export function EditorApp(props: EditorAppProps) {
   const [showExportModal, setShowExportModal] = useState(false);
   const [linkedSelection, setLinkedSelection] = useState(true);
   const [activeTab, setActiveTab] = useState<SidebarTab>('media');
+  const [actualContainerSize, setActualContainerSize] = useState({
+    width: previewWidth,
+    height: previewHeight,
+  });
 
   // Refs
   const previewRef = useRef<VideoPreviewHandle>(null);
+  const previewContainerRef = useRef<HTMLDivElement>(null);
 
   // Hooks
   const {
@@ -144,6 +149,25 @@ export function EditorApp(props: EditorAppProps) {
   useEffect(() => {
     setMasterVolume(volume);
   }, [volume, setMasterVolume]);
+
+  // Measure actual preview container dimensions for accurate overlay positioning
+  useEffect(() => {
+    const container = previewContainerRef.current;
+    if (!container) return;
+
+    const updateSize = () => {
+      const rect = container.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        setActualContainerSize({ width: rect.width, height: rect.height });
+      }
+    };
+
+    const resizeObserver = new ResizeObserver(updateSize);
+    resizeObserver.observe(container);
+    updateSize(); // Initial measurement
+
+    return () => resizeObserver.disconnect();
+  }, []);
 
   // Load HLS source (does NOT auto-add to timeline - user drags from library)
   const handleLoadHls = useCallback(async (url: string) => {
@@ -892,6 +916,7 @@ export function EditorApp(props: EditorAppProps) {
           >
             {/* Canvas container - maintains aspect ratio */}
             <div
+              ref={previewContainerRef}
               style={{
                 position: 'relative',
                 width: '100%',
@@ -919,8 +944,8 @@ export function EditorApp(props: EditorAppProps) {
                 tracks={tracks}
                 compositionWidth={composition.config.width}
                 compositionHeight={composition.config.height}
-                containerWidth={previewWidth}
-                containerHeight={previewHeight}
+                containerWidth={actualContainerSize.width}
+                containerHeight={actualContainerSize.height}
               />
               {/* HTML overlay for preview */}
               <HtmlOverlay
@@ -928,8 +953,8 @@ export function EditorApp(props: EditorAppProps) {
                 tracks={tracks}
                 compositionWidth={composition.config.width}
                 compositionHeight={composition.config.height}
-                containerWidth={previewWidth}
-                containerHeight={previewHeight}
+                containerWidth={actualContainerSize.width}
+                containerHeight={actualContainerSize.height}
                 selectedClipId={selectedClipId}
                 onPositionChange={handleOverlayPositionChange}
                 isInteractive={!isPlaying}
