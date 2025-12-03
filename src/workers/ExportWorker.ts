@@ -558,8 +558,8 @@ function getActiveClipsAt(timelineTimeUs: number): ActiveClipInfo[] {
   for (let trackIndex = 0; trackIndex < tracks.length; trackIndex++) {
     const track = tracks[trackIndex]!;
 
-    // Skip subtitle tracks - they are handled separately via getSubtitleTracks
-    if (track.type === 'subtitle') continue;
+    // Skip subtitle and overlay tracks - they are handled separately
+    if (track.type === 'subtitle' || track.type === 'overlay') continue;
 
     for (const clip of track.clips) {
       const clipDurationUs = clip.trimOut - clip.trimIn;

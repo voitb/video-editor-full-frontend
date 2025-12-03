@@ -51,3 +51,10 @@ export function createSubtitleClipId(): string {
 export function createCueId(): string {
   return createId('cue');
 }
+
+/**
+ * Generate an overlay clip ID
+ */
+export function createOverlayClipId(): string {
+  return createId('overlay');
+}

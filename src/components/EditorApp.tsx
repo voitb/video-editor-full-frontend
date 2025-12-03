@@ -11,11 +11,12 @@ import { useExportRange } from '../hooks/useExportRange';
 import { VideoPreview, type VideoPreviewHandle } from './VideoPreview';
 import { Timeline } from './Timeline';
 import { PlaybackControls } from './PlaybackControls';
-import { MediaLibrary } from './MediaLibrary';
+import { TabbedSidebar, type SidebarTab } from './TabbedSidebar';
 import { ExportModal } from './ExportModal';
 import { SubtitleOverlay } from './SubtitleOverlay';
-import { SubtitlePanel } from './SubtitlePanel';
-import { MEDIA_LIBRARY } from '../constants';
+import { HtmlOverlay } from './HtmlOverlay';
+import type { OverlayClip } from '../core/OverlayClip';
+import type { OverlayPosition } from '../core/types';
 import type { ExportSourceData } from '../workers/messages/exportMessages';
 
 export interface EditorAppProps {
@@ -49,6 +50,7 @@ export function EditorApp(props: EditorAppProps) {
   const [volume, setVolume] = useState(1);
   const [showExportModal, setShowExportModal] = useState(false);
   const [linkedSelection, setLinkedSelection] = useState(true);
+  const [activeTab, setActiveTab] = useState<SidebarTab>('media');
 
   // Refs
   const previewRef = useRef<VideoPreviewHandle>(null);
@@ -110,28 +112,15 @@ export function EditorApp(props: EditorAppProps) {
     clearOutPoint,
   } = useExportRange({ durationUs });
 
-  // Sort tracks: video tracks first, then audio tracks, then subtitle tracks (professional NLE layout)
+  // Sort tracks: video tracks first, then audio, overlay, then subtitle tracks (professional NLE layout)
   // Use tracks.length as dependency to ensure re-computation when tracks are added/removed
   const sortedTracks = useMemo(() => {
     const videoTracks = tracks.filter(t => t.type === 'video');
     const audioTracks = tracks.filter(t => t.type === 'audio');
+    const overlayTracks = tracks.filter(t => t.type === 'overlay');
     const subtitleTracks = tracks.filter(t => t.type === 'subtitle');
-    return [...videoTracks, ...audioTracks, ...subtitleTracks];
+    return [...videoTracks, ...audioTracks, ...overlayTracks, ...subtitleTracks];
   }, [tracks, tracks.length]);
-
-  // Check if the selected clip is a subtitle clip (for conditional panel rendering)
-  const selectedSubtitleClip = useMemo(() => {
-    if (!selectedClipId) return null;
-    for (const track of tracks) {
-      if (track.type !== 'subtitle') continue;
-      for (const clip of track.clips) {
-        if (clip.id === selectedClipId) {
-          return clip;
-        }
-      }
-    }
-    return null;
-  }, [selectedClipId, tracks]);
 
   // Initialize engine when canvas is ready
   useEffect(() => {
@@ -295,12 +284,14 @@ export function EditorApp(props: EditorAppProps) {
   }, [moveClipToTrack, notifyCompositionChanged]);
 
   // Handle adding a new track
-  const handleTrackAdd = useCallback((type: 'video' | 'audio' | 'subtitle') => {
+  const handleTrackAdd = useCallback((type: 'video' | 'audio' | 'subtitle' | 'overlay') => {
     const trackCount = tracks.filter(t => t.type === type).length + 1;
     const label = type === 'video'
       ? `Video ${trackCount}`
       : type === 'audio'
       ? `Audio ${trackCount}`
+      : type === 'overlay'
+      ? `Overlay ${trackCount}`
       : `Subtitles ${trackCount}`;
     createTrack({ type, label });
   }, [createTrack, tracks]);
@@ -529,6 +520,195 @@ export function EditorApp(props: EditorAppProps) {
     }
   }, [composition, refresh, notifyCompositionChanged]);
 
+  // ============================================================================
+  // OVERLAY HANDLERS
+  // ============================================================================
+
+  // Handle creating an overlay track
+  const handleCreateOverlayTrack = useCallback(() => {
+    const trackCount = composition.tracks.filter(t => t.type === 'overlay').length;
+    composition.createTrack({ type: 'overlay', label: `Overlay ${trackCount + 1}` });
+    refresh();
+    notifyCompositionChanged();
+  }, [composition, refresh, notifyCompositionChanged]);
+
+  // Handle adding an overlay clip
+  const handleAddOverlayClip = useCallback((trackId: string, clip: OverlayClip) => {
+    const track = composition.getTrack(trackId);
+    if (!track || track.type !== 'overlay') return;
+    track.addClip(clip);
+    refresh();
+    notifyCompositionChanged();
+    setSelectedClipId(clip.id);
+    setActiveTab('overlays');
+  }, [composition, refresh, notifyCompositionChanged]);
+
+  // Handle adding an overlay clip at a specific position (from timeline right-click)
+  const handleAddOverlayClipAtPosition = useCallback(
+    async (trackId: string, startUs: number) => {
+      const track = composition.getTrack(trackId);
+      if (!track || track.type !== 'overlay') return;
+
+      // Dynamically import OverlayClip to create an empty one
+      const { OverlayClip } = await import('../core/OverlayClip');
+      const newClip = OverlayClip.createText(startUs, 'New Overlay');
+      track.addClip(newClip);
+      refresh();
+      notifyCompositionChanged();
+      setSelectedClipId(newClip.id);
+      setActiveTab('overlays');
+    },
+    [composition, refresh, notifyCompositionChanged]
+  );
+
+  // Handle overlay clip update
+  const handleOverlayClipUpdate = useCallback((_clipId: string, _clip: OverlayClip) => {
+    refresh();
+    notifyCompositionChanged();
+  }, [refresh, notifyCompositionChanged]);
+
+  // Handle overlay position change from drag
+  const handleOverlayPositionChange = useCallback((clipId: string, position: OverlayPosition) => {
+    for (const track of composition.tracks) {
+      if (track.type !== 'overlay') continue;
+      for (const clip of track.clips) {
+        if (clip.id === clipId && 'setPosition' in clip) {
+          (clip as OverlayClip).setPosition(position);
+          refresh();
+          notifyCompositionChanged();
+          return;
+        }
+      }
+    }
+  }, [composition, refresh, notifyCompositionChanged]);
+
+  // Handle overlay clip trim start (left edge drag)
+  const handleOverlayTrimStart = useCallback((clipId: string, newStartUs: number) => {
+    for (const track of composition.tracks) {
+      if (track.type !== 'overlay') continue;
+      for (const clip of track.clips) {
+        if (clip.id === clipId && 'trimStart' in clip) {
+          (clip as OverlayClip).trimStart(newStartUs);
+          refresh();
+          notifyCompositionChanged();
+          return;
+        }
+      }
+    }
+  }, [composition, refresh, notifyCompositionChanged]);
+
+  // Handle overlay clip trim end (right edge drag)
+  const handleOverlayTrimEnd = useCallback((clipId: string, newEndUs: number) => {
+    for (const track of composition.tracks) {
+      if (track.type !== 'overlay') continue;
+      for (const clip of track.clips) {
+        if (clip.id === clipId && 'trimEnd' in clip) {
+          (clip as OverlayClip).trimEnd(newEndUs);
+          refresh();
+          notifyCompositionChanged();
+          return;
+        }
+      }
+    }
+  }, [composition, refresh, notifyCompositionChanged]);
+
+  // Handle overlay clip move (within same track)
+  const handleOverlayMove = useCallback((clipId: string, newStartUs: number) => {
+    for (const track of composition.tracks) {
+      if (track.type !== 'overlay') continue;
+      for (const clip of track.clips) {
+        if (clip.id === clipId && 'moveTo' in clip) {
+          (clip as OverlayClip).moveTo(newStartUs);
+          refresh();
+          notifyCompositionChanged();
+          return;
+        }
+      }
+    }
+  }, [composition, refresh, notifyCompositionChanged]);
+
+  // Handle overlay clip move to different track
+  const handleOverlayMoveToTrack = useCallback((clipId: string, targetTrackId: string, newStartUs: number) => {
+    let sourceTrack: import('../core/Track').Track | null = null;
+    let clipToMove: OverlayClip | null = null;
+
+    for (const track of composition.tracks) {
+      if (track.type !== 'overlay') continue;
+      for (const clip of track.clips) {
+        if (clip.id === clipId && 'moveTo' in clip) {
+          sourceTrack = track;
+          clipToMove = clip as OverlayClip;
+          break;
+        }
+      }
+      if (clipToMove) break;
+    }
+
+    if (!sourceTrack || !clipToMove) return false;
+
+    const targetTrack = composition.getTrack(targetTrackId);
+    if (!targetTrack || targetTrack.type !== 'overlay') return false;
+
+    sourceTrack.removeClip(clipId);
+    clipToMove.moveTo(newStartUs);
+    targetTrack.addClip(clipToMove);
+
+    refresh();
+    notifyCompositionChanged();
+    return true;
+  }, [composition, refresh, notifyCompositionChanged]);
+
+  // Handle overlay clip duplicate
+  const handleOverlayDuplicate = useCallback((clipId: string) => {
+    for (const track of composition.tracks) {
+      if (track.type !== 'overlay') continue;
+      for (const clip of track.clips) {
+        if (clip.id === clipId && 'clone' in clip) {
+          const originalClip = clip as OverlayClip;
+          const clonedClip = originalClip.clone();
+          clonedClip.moveTo(originalClip.endUs);
+          track.addClip(clonedClip);
+          refresh();
+          notifyCompositionChanged();
+          setSelectedClipId(clonedClip.id);
+          return;
+        }
+      }
+    }
+  }, [composition, refresh, notifyCompositionChanged]);
+
+  // Handle overlay clip split at playhead
+  const handleOverlaySplit = useCallback((clipId: string, timeUs: number) => {
+    for (const track of composition.tracks) {
+      if (track.type !== 'overlay') continue;
+      for (const clip of track.clips) {
+        if (clip.id === clipId && 'splitAt' in clip) {
+          const originalClip = clip as OverlayClip;
+          const secondClip = originalClip.splitAt(timeUs);
+          if (secondClip) {
+            track.addClip(secondClip);
+            refresh();
+            notifyCompositionChanged();
+            setSelectedClipId(secondClip.id);
+          }
+          return;
+        }
+      }
+    }
+  }, [composition, refresh, notifyCompositionChanged]);
+
+  // Handle overlay clip select (switch to overlays tab)
+  const handleOverlayClipSelect = useCallback((clipId: string, _trackId: string) => {
+    setSelectedClipId(clipId);
+    setActiveTab('overlays');
+  }, []);
+
+  // Handle overlay edit from timeline (wrapper for single arg)
+  const handleOverlayEdit = useCallback((clipId: string) => {
+    setSelectedClipId(clipId);
+    setActiveTab('overlays');
+  }, []);
+
   // Keyboard shortcuts for In/Out points and Delete
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -742,6 +922,18 @@ export function EditorApp(props: EditorAppProps) {
                 containerWidth={previewWidth}
                 containerHeight={previewHeight}
               />
+              {/* HTML overlay for preview */}
+              <HtmlOverlay
+                currentTimeUs={currentTimeUs}
+                tracks={tracks}
+                compositionWidth={composition.config.width}
+                compositionHeight={composition.config.height}
+                containerWidth={previewWidth}
+                containerHeight={previewHeight}
+                selectedClipId={selectedClipId}
+                onPositionChange={handleOverlayPositionChange}
+                isInteractive={!isPlaying}
+              />
             </div>
           </div>
 
@@ -760,38 +952,33 @@ export function EditorApp(props: EditorAppProps) {
           </div>
         </div>
 
-        {/* Media Library Sidebar */}
-        <aside
-          style={{
-            width: MEDIA_LIBRARY.WIDTH,
-            borderLeft: '1px solid #333',
-            display: 'flex',
-            flexDirection: 'column',
-          }}
-        >
-          <MediaLibrary
-            sources={composition.sources}
-            onLoadHls={handleLoadHls}
-            onLoadFile={handleLoadFile}
-            isLoading={isLoading}
-            loadingProgress={loadingProgressPercent}
-          />
-        </aside>
-
-        {/* Subtitle Panel - only show when subtitle clip is selected */}
-        {selectedSubtitleClip && (
-          <SubtitlePanel
-            tracks={tracks}
-            selectedClipId={selectedClipId}
-            currentTimeUs={currentTimeUs}
-            onSeek={seek}
-            onClipUpdate={handleSubtitleClipUpdate}
-            onCreateTrack={handleCreateSubtitleTrack}
-            onAddClip={handleAddSubtitleClip}
-            onClipSelect={handleClipSelect}
-            onRefresh={refresh}
-          />
-        )}
+        {/* Tabbed Sidebar - Media, Subtitles, Overlays */}
+        <TabbedSidebar
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          // Media tab props
+          sources={composition.sources}
+          onLoadHls={handleLoadHls}
+          onLoadFile={handleLoadFile}
+          isLoading={isLoading}
+          loadingProgress={loadingProgressPercent}
+          // Subtitles tab props
+          tracks={tracks}
+          selectedClipId={selectedClipId}
+          currentTimeUs={currentTimeUs}
+          onSeek={seek}
+          onSubtitleClipUpdate={handleSubtitleClipUpdate}
+          onCreateSubtitleTrack={handleCreateSubtitleTrack}
+          onAddSubtitleClip={handleAddSubtitleClip}
+          onSubtitleClipSelect={handleClipSelect}
+          // Overlays tab props
+          onOverlayClipUpdate={handleOverlayClipUpdate}
+          onCreateOverlayTrack={handleCreateOverlayTrack}
+          onAddOverlayClip={handleAddOverlayClip}
+          onOverlayClipSelect={handleOverlayClipSelect}
+          // Common
+          onRefresh={refresh}
+        />
       </main>
 
       {/* Timeline */}
@@ -842,6 +1029,14 @@ export function EditorApp(props: EditorAppProps) {
           onSubtitleDuplicate={handleSubtitleDuplicate}
           onSubtitleSplit={handleSubtitleSplit}
           onSubtitleAddCue={handleSubtitleAddCue}
+          onAddOverlayClip={handleAddOverlayClipAtPosition}
+          onOverlayEdit={handleOverlayEdit}
+          onOverlayTrimStart={handleOverlayTrimStart}
+          onOverlayTrimEnd={handleOverlayTrimEnd}
+          onOverlayMoveToTrack={handleOverlayMoveToTrack}
+          onOverlayMove={handleOverlayMove}
+          onOverlayDuplicate={handleOverlayDuplicate}
+          onOverlaySplit={handleOverlaySplit}
           style={{ height: '100%' }}
         />
       </footer>

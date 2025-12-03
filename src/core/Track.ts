@@ -9,17 +9,24 @@ import type {
   TrackJSON,
   ClipConfig,
   SubtitleClipConfig,
+  OverlayClipConfig,
 } from './types';
 import { Clip } from './Clip';
 import { SubtitleClip } from './SubtitleClip';
+import { OverlayClip } from './OverlayClip';
 import { createTrackId } from '../utils/id';
 
 /** Union type for all clip types */
-export type AnyClip = Clip | SubtitleClip;
+export type AnyClip = Clip | SubtitleClip | OverlayClip;
 
 /** Type guard for SubtitleClip */
 export function isSubtitleClip(clip: AnyClip): clip is SubtitleClip {
   return clip instanceof SubtitleClip;
+}
+
+/** Type guard for OverlayClip */
+export function isOverlayClip(clip: AnyClip): clip is OverlayClip {
+  return clip instanceof OverlayClip;
 }
 
 /** Type guard for regular Clip */
@@ -45,6 +52,13 @@ export class Track {
    */
   isSubtitleTrack(): boolean {
     return this.type === 'subtitle';
+  }
+
+  /**
+   * Check if this is an overlay track
+   */
+  isOverlayTrack(): boolean {
+    return this.type === 'overlay';
   }
 
   /**
@@ -91,6 +105,15 @@ export class Track {
    */
   createSubtitleClip(config: SubtitleClipConfig): SubtitleClip {
     const clip = new SubtitleClip(config);
+    this.addClip(clip);
+    return clip;
+  }
+
+  /**
+   * Create and add an overlay clip from config (for overlay tracks)
+   */
+  createOverlayClip(config: OverlayClipConfig): OverlayClip {
+    const clip = new OverlayClip(config);
     this.addClip(clip);
     return clip;
   }
@@ -195,6 +218,7 @@ export class Track {
   toJSON(): TrackJSON {
     const mediaClips = this._clips.filter(isMediaClip);
     const subtitleClips = this._clips.filter(isSubtitleClip);
+    const overlayClips = this._clips.filter(isOverlayClip);
 
     return {
       id: this.id,
@@ -204,6 +228,10 @@ export class Track {
       subtitleClips:
         subtitleClips.length > 0
           ? subtitleClips.map((c) => c.toJSON())
+          : undefined,
+      overlayClips:
+        overlayClips.length > 0
+          ? overlayClips.map((c) => c.toJSON())
           : undefined,
     };
   }
@@ -223,6 +251,13 @@ export class Track {
     if (json.subtitleClips) {
       for (const subClipJson of json.subtitleClips) {
         track.addClip(SubtitleClip.fromJSON(subClipJson));
+      }
+    }
+
+    // Load overlay clips
+    if (json.overlayClips) {
+      for (const overlayClipJson of json.overlayClips) {
+        track.addClip(OverlayClip.fromJSON(overlayClipJson));
       }
     }
 

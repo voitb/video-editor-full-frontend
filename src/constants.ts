@@ -53,9 +53,11 @@ export const TIMELINE_COLORS = {
   trackVideoBg: '#1e293b',
   trackAudioBg: '#1e3b2e',
   trackSubtitleBg: '#3b2e1e',
+  trackOverlayBg: '#2e1e3b',
   trackVideoDropBg: '#2a4a6a',
   trackAudioDropBg: '#2a6a4a',
   trackSubtitleDropBg: '#6a4a2a',
+  trackOverlayDropBg: '#4a2a6a',
   rulerBg: '#1a1a1a',
   minimapBg: '#0d0d0d',
   scrollbarBg: '#1a1a1a',
@@ -72,6 +74,9 @@ export const TIMELINE_COLORS = {
   clipSubtitle: '#cc6633',
   clipSubtitleSelected: '#ff8844',
   clipSubtitleHover: '#e07740',
+  clipOverlay: '#9933cc',
+  clipOverlaySelected: '#bb55ee',
+  clipOverlayHover: '#aa44dd',
 
   // UI Elements
   playhead: '#ff4444',
@@ -229,4 +234,31 @@ export const SUBTITLE = {
   DEFAULT_CUE_DURATION_US: 2_000_000,
   /** Panel width in pixels */
   PANEL_WIDTH: 320,
+} as const;
+
+/** Overlay constants */
+export const OVERLAY = {
+  /** Default style settings */
+  DEFAULT_STYLE: {
+    fontFamily: 'Arial, sans-serif',
+    fontSize: 36,
+    color: '#ffffff',
+    backgroundColor: 'rgba(0, 0, 0, 0)',
+    padding: 16,
+    borderRadius: 8,
+    opacity: 1,
+    textAlign: 'center' as const,
+    fontWeight: 'normal' as const,
+  },
+  /** Default position (centered) */
+  DEFAULT_POSITION: {
+    xPercent: 50,
+    yPercent: 50,
+    widthPercent: null,
+    heightPercent: null,
+  },
+  /** Default duration in microseconds (5 seconds) */
+  DEFAULT_DURATION_US: 5_000_000,
+  /** Minimum duration in microseconds (500ms) */
+  MIN_DURATION_US: 500_000,
 } as const;
