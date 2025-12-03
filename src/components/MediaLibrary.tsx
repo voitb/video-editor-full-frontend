@@ -151,7 +151,7 @@ export function MediaLibrary(props: MediaLibraryProps) {
         <input
           ref={fileInputRef}
           type="file"
-          accept="video/mp4,video/quicktime,.mp4,.mov,.m4v"
+          accept="video/mp4,video/quicktime,.mp4,.mov,.m4v,audio/mpeg,audio/wav,.mp3,.wav"
           multiple
           onChange={handleFileSelect}
           style={{ display: 'none' }}
@@ -173,7 +173,7 @@ export function MediaLibrary(props: MediaLibraryProps) {
             opacity: onLoadFile ? 1 : 0.5,
           }}
         >
-          Upload Files (MP4/MOV)
+          Upload Files (MP4/MOV/MP3/WAV)
         </button>
       </div>
 
@@ -234,10 +234,15 @@ function MediaLibraryItem({ source }: MediaLibraryItemProps) {
     ? source.fileName
     : `${source.type.toUpperCase()} Video`;
 
-  // Format resolution
-  const resolution = source.width && source.height
-    ? `${source.width}x${source.height}`
-    : 'Unknown';
+  // Check if this is an audio-only source
+  const isAudioOnly = source.isAudioOnly;
+
+  // Format resolution or show "Audio Only" for audio files
+  const resolution = isAudioOnly
+    ? 'Audio Only'
+    : source.width && source.height
+      ? `${source.width}x${source.height}`
+      : 'Unknown';
 
   // Determine status indicator
   const getStatusIndicator = () => {
@@ -300,9 +305,9 @@ function MediaLibraryItem({ source }: MediaLibraryItemProps) {
       {/* Row 2: Duration and Resolution */}
       <div style={{ display: 'flex', gap: 12, fontSize: 11, color: '#888' }}>
         <span>{formatTimecode(source.durationUs)}</span>
-        <span>{resolution}</span>
-        {source.hasAudio && (
-          <span style={{ color: '#3b9858' }}>Audio</span>
+        <span style={isAudioOnly ? { color: '#3b9858' } : undefined}>{resolution}</span>
+        {!isAudioOnly && source.hasAudio && (
+          <span style={{ color: '#3b9858' }}>+Audio</span>
         )}
       </div>
 

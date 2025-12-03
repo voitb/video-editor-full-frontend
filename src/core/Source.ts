@@ -84,6 +84,11 @@ export abstract class Source {
     return this._hasAudio;
   }
 
+  /** Whether this source is audio-only (no video dimensions) */
+  get isAudioOnly(): boolean {
+    return this._width === 0 && this._height === 0;
+  }
+
   /**
    * Set whether this source has audio
    * (called by Engine when audio data is detected)

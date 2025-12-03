@@ -1,6 +1,6 @@
 /**
  * Video Editor V2 - File Source
- * Loads local video files from the user's device.
+ * Loads local video and audio files from the user's device.
  */
 
 import { Source } from './Source';
@@ -11,15 +11,31 @@ import * as MP4Box from 'mp4box';
 
 const logger = createLogger('FileSource');
 
-/** Supported file extensions */
-const SUPPORTED_EXTENSIONS = ['.mp4', '.mov', '.m4v'];
+/** Supported video file extensions */
+const SUPPORTED_VIDEO_EXTENSIONS = ['.mp4', '.mov', '.m4v'];
 
-/** Supported MIME types */
-const SUPPORTED_MIME_TYPES = [
+/** Supported audio file extensions */
+const SUPPORTED_AUDIO_EXTENSIONS = ['.mp3', '.wav'];
+
+/** All supported file extensions */
+const SUPPORTED_EXTENSIONS = [...SUPPORTED_VIDEO_EXTENSIONS, ...SUPPORTED_AUDIO_EXTENSIONS];
+
+/** Supported video MIME types */
+const SUPPORTED_VIDEO_MIME_TYPES = [
   'video/mp4',
   'video/quicktime',
   'video/x-m4v',
 ];
+
+/** Supported audio MIME types */
+const SUPPORTED_AUDIO_MIME_TYPES = [
+  'audio/mpeg',
+  'audio/wav',
+  'audio/x-wav',
+];
+
+/** All supported MIME types */
+const SUPPORTED_MIME_TYPES = [...SUPPORTED_VIDEO_MIME_TYPES, ...SUPPORTED_AUDIO_MIME_TYPES];
 
 export interface FileSourceOptions {
   /** Skip metadata extraction (use file size estimate for duration) */
@@ -41,8 +57,16 @@ export class FileSource extends Source {
     this.options = {
       skipMetadata: options.skipMetadata ?? false,
     };
-    // Most video files contain audio
-    this._hasAudio = true;
+    // Audio files always have audio; video files will be determined by metadata
+    this._hasAudio = this.isAudioFile();
+  }
+
+  /**
+   * Check if this is an audio-only file (MP3, WAV)
+   */
+  private isAudioFile(): boolean {
+    const ext = this.fileName.toLowerCase().slice(this.fileName.lastIndexOf('.'));
+    return SUPPORTED_AUDIO_EXTENSIONS.includes(ext);
   }
 
   /**
@@ -86,9 +110,13 @@ export class FileSource extends Source {
       this.buffer = await this.readFileAsArrayBuffer();
       logger.info('File loaded into buffer', { size: this.buffer.byteLength });
 
-      // Extract metadata using MP4Box
+      // Extract metadata
       if (!this.options.skipMetadata) {
-        await this.extractMetadata();
+        if (this.isAudioFile()) {
+          await this.extractAudioMetadata();
+        } else {
+          await this.extractMetadata();
+        }
       } else {
         // Estimate duration based on typical bitrate (rough estimate)
         const estimatedBitrate = 8_000_000; // 8 Mbps
@@ -220,6 +248,43 @@ export class FileSource extends Source {
         }
       }
     });
+  }
+
+  /**
+   * Extract metadata from audio files using Web Audio API
+   */
+  private async extractAudioMetadata(): Promise<void> {
+    if (!this.buffer) {
+      throw new Error('Buffer not loaded');
+    }
+
+    logger.info('Extracting audio metadata using Web Audio API');
+
+    // Use Web Audio API to decode and get metadata
+    const audioContext = new (window.AudioContext || (window as typeof window & { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+
+    try {
+      // decodeAudioData needs a copy of the buffer as it may detach it
+      const audioBuffer = await audioContext.decodeAudioData(this.buffer.slice(0));
+
+      // Set properties for audio-only source
+      this._durationUs = Math.round(audioBuffer.duration * TIME.US_PER_SECOND);
+      this._width = 0;  // Audio-only has no dimensions
+      this._height = 0;
+      this._hasAudio = true;
+
+      logger.info('Extracted audio metadata', {
+        duration: this._durationUs,
+        sampleRate: audioBuffer.sampleRate,
+        channels: audioBuffer.numberOfChannels,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to decode audio';
+      logger.error('Failed to extract audio metadata', { error: message });
+      throw new Error(`Failed to parse audio file: ${message}`);
+    } finally {
+      audioContext.close();
+    }
   }
 
   /**

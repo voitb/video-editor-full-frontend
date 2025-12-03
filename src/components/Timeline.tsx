@@ -1537,10 +1537,10 @@ function ClipBlock(props: ClipBlockProps) {
     // Only trigger on left mouse button
     if (e.button !== 0) return;
 
-    // Check if clicking on trim handles (first/last 6px)
+    // Check if clicking on trim handles (first/last 16px)
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left;
-    if (x < 6 || x > rect.width - 6) return;
+    if (x < 16 || x > rect.width - 16) return;
 
     e.stopPropagation();
     e.preventDefault();
@@ -1789,7 +1789,7 @@ function ClipBlock(props: ClipBlockProps) {
           left: 0,
           top: 0,
           bottom: 0,
-          width: 6,
+          width: 16,
           cursor: 'ew-resize',
           backgroundColor: dragState?.type === 'trim-start' ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.1)',
         }}
@@ -1802,7 +1802,7 @@ function ClipBlock(props: ClipBlockProps) {
           right: 0,
           top: 0,
           bottom: 0,
-          width: 6,
+          width: 16,
           cursor: 'ew-resize',
           backgroundColor: dragState?.type === 'trim-end' ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.1)',
         }}

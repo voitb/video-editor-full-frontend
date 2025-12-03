@@ -303,10 +303,15 @@ export class Engine {
 
         case 'stateChange':
           if (event.state === 'ready') {
-            // Send buffer to worker
             const buffer = source.getBuffer();
             if (buffer) {
-              this.loadSourceBuffer(source.id, buffer, source.durationUs);
+              if (source.isAudioOnly) {
+                // Audio-only source: decode on main thread using Web Audio API
+                this.loadAudioOnlySource(source.id, buffer, source.durationUs);
+              } else {
+                // Video source: send buffer to worker for MP4 demuxing
+                this.loadSourceBuffer(source.id, buffer, source.durationUs);
+              }
             }
             this.emit({ type: 'sourceReady', sourceId: source.id });
           } else if (event.state === 'error') {
@@ -321,6 +326,39 @@ export class Engine {
     await source.load();
 
     return source;
+  }
+
+  /**
+   * Load an audio-only source (MP3, WAV) using Web Audio API
+   * This handles non-MP4 audio formats that can't be demuxed by the worker
+   */
+  private async loadAudioOnlySource(sourceId: string, buffer: ArrayBuffer, _durationUs: number): Promise<void> {
+    try {
+      // Ensure audio context exists
+      if (!this.audioContext) {
+        this.audioContext = new (window.AudioContext || (window as typeof window & { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+        this.masterGainNode = this.audioContext.createGain();
+        this.masterGainNode.connect(this.audioContext.destination);
+      }
+
+      // Decode audio data using Web Audio API
+      const audioBuffer = await this.audioContext.decodeAudioData(buffer.slice(0));
+
+      // Store the entire decoded audio as a single buffer at timestamp 0
+      this.audioBuffers.set(sourceId, [{ buffer: audioBuffer, timestampUs: 0 }]);
+      this.audioReady.set(sourceId, true);
+
+      logger.info('Loaded audio-only source', {
+        sourceId,
+        duration: audioBuffer.duration,
+        sampleRate: audioBuffer.sampleRate,
+        channels: audioBuffer.numberOfChannels,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to decode audio';
+      logger.error('Failed to load audio-only source', { sourceId, error: message });
+      this.emit({ type: 'sourceError', sourceId, message });
+    }
   }
 
   /**

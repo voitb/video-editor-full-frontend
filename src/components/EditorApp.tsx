@@ -181,20 +181,53 @@ export function EditorApp(props: EditorAppProps) {
     const track = tracks.find(t => t.id === targetTrackId);
     if (!source || !track) return;
 
-    if (track.type === 'video') {
-      // Video track: create linked video + audio clips
+    const isAudioOnlySource = source.isAudioOnly;
+    const fileName = 'fileName' in source && typeof source.fileName === 'string'
+      ? source.fileName
+      : undefined;
+
+    if (isAudioOnlySource) {
+      // Audio-only source
+      if (track.type === 'audio') {
+        // Drop on audio track: create audio clip
+        composition.addClipToTrack(targetTrackId, {
+          sourceId,
+          startUs: startTimeUs,
+          trimIn: 0,
+          trimOut: source.durationUs,
+          label: fileName || 'Audio',
+          volume: 1,
+        });
+        refresh();
+      } else {
+        // Cannot drop audio-only source on video track
+        console.warn('Cannot drop audio-only source on video track');
+        return;
+      }
+    } else if (track.type === 'video') {
+      // Video source on video track: create linked video + audio clips
       addVideoClipWithAudio(targetTrackId, {
         sourceId,
         startUs: startTimeUs,
         trimIn: 0,
         trimOut: source.durationUs,
-        label: 'HLS Video',
+        label: fileName || 'Video',
       });
+    } else {
+      // Video source on audio track: create audio-only clip
+      composition.addClipToTrack(targetTrackId, {
+        sourceId,
+        startUs: startTimeUs,
+        trimIn: 0,
+        trimOut: source.durationUs,
+        label: fileName ? `Audio from ${fileName}` : 'Audio',
+        volume: 1,
+      });
+      refresh();
     }
-    // Note: For audio-only drops, you could add audio clip creation here
 
     notifyCompositionChanged();
-  }, [composition, tracks, addVideoClipWithAudio, notifyCompositionChanged]);
+  }, [composition, tracks, addVideoClipWithAudio, refresh, notifyCompositionChanged]);
 
   // Handle clip selection
   const handleClipSelect = useCallback((clipId: string) => {
