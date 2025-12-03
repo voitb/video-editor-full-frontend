@@ -94,6 +94,8 @@ export interface TimelineProps {
   onSubtitleTrimEnd?: (clipId: string, newEndUs: number) => void;
   /** Callback when a subtitle clip is moved to a different track */
   onSubtitleMoveToTrack?: (clipId: string, targetTrackId: string, newStartUs: number) => void;
+  /** Callback when a subtitle clip is moved (within same track) */
+  onSubtitleMove?: (clipId: string, newStartUs: number) => void;
   /** Callback when a subtitle clip is duplicated */
   onSubtitleDuplicate?: (clipId: string) => void;
   /** Callback when a subtitle clip is split */
@@ -205,6 +207,7 @@ export function Timeline(props: TimelineProps) {
     onSubtitleTrimStart,
     onSubtitleTrimEnd,
     onSubtitleMoveToTrack,
+    onSubtitleMove,
     onSubtitleDuplicate,
     onSubtitleSplit,
     onSubtitleAddCue,
@@ -877,6 +880,7 @@ export function Timeline(props: TimelineProps) {
                 onSubtitleTrimStart={onSubtitleTrimStart}
                 onSubtitleTrimEnd={onSubtitleTrimEnd}
                 onSubtitleMoveToTrack={onSubtitleMoveToTrack}
+                onSubtitleMove={onSubtitleMove}
                 onSubtitleDuplicate={onSubtitleDuplicate}
                 onSubtitleSplit={onSubtitleSplit}
                 onSubtitleAddCue={onSubtitleAddCue}
@@ -1356,6 +1360,8 @@ interface TrackLaneProps {
   onSubtitleTrimEnd?: (clipId: string, newEndUs: number) => void;
   /** Callback when a subtitle clip is moved to a different track */
   onSubtitleMoveToTrack?: (clipId: string, targetTrackId: string, newStartUs: number) => void;
+  /** Callback when a subtitle clip is moved (within same track) */
+  onSubtitleMove?: (clipId: string, newStartUs: number) => void;
   /** Callback when a subtitle clip is duplicated */
   onSubtitleDuplicate?: (clipId: string) => void;
   /** Callback when a subtitle clip is split */
@@ -1404,6 +1410,7 @@ function TrackLane(props: TrackLaneProps) {
     onSubtitleTrimStart,
     onSubtitleTrimEnd,
     onSubtitleMoveToTrack,
+    onSubtitleMove,
     onSubtitleDuplicate,
     onSubtitleSplit,
     onSubtitleAddCue,
@@ -1513,7 +1520,7 @@ function TrackLane(props: TrackLaneProps) {
             pixelToTime={pixelToTime}
             isSelected={clip.id === selectedClipId}
             onSelect={onClipSelect}
-            onMove={onClipMove}
+            onMove={onSubtitleMove}
             onMoveToTrack={onSubtitleMoveToTrack}
             onTrimStart={onSubtitleTrimStart}
             onTrimEnd={onSubtitleTrimEnd}
@@ -1673,6 +1680,9 @@ function SubtitleClipBlock(props: SubtitleClipBlockProps) {
     targetTrackId?: string;
   } | null>(null);
 
+  // Track if a drag actually happened (to prevent seek after drag)
+  const didDragRef = useRef(false);
+
   const left = timeToPixel(clip.startUs);
   const width = Math.max(timeToPixel(clip.endUs) - left, 20);
 
@@ -1740,6 +1750,9 @@ function SubtitleClipBlock(props: SubtitleClipBlockProps) {
     e.stopPropagation();
     e.preventDefault();
 
+    // Reset drag tracking ref
+    didDragRef.current = false;
+
     // Select if not already selected
     if (!isSelected) {
       onSelect?.(clip.id, trackId);
@@ -1754,6 +1767,17 @@ function SubtitleClipBlock(props: SubtitleClipBlockProps) {
       targetTrackId: trackId,
     });
   }, [clip.startUs, clip.id, trackId, isSelected, onSelect]);
+
+  // Handle click (to prevent seek after drag)
+  const handleClick = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+
+    // Skip if a drag just happened (click fires after mouseup from drag)
+    if (didDragRef.current) {
+      didDragRef.current = false;
+      return;
+    }
+  }, []);
 
   // Global mouse move/up handlers during drag
   useEffect(() => {
@@ -1770,6 +1794,9 @@ function SubtitleClipBlock(props: SubtitleClipBlockProps) {
         const newEndUs = Math.max(clip.startUs + 100000, dragState.initialTimeUs + deltaTimeUs); // Min 100ms
         onTrimEnd?.(clip.id, newEndUs);
       } else if (dragState.type === 'move') {
+        // Mark that a drag movement occurred (to prevent seek after drag)
+        didDragRef.current = true;
+
         // Calculate new start position
         let newStartUs = Math.max(0, dragState.initialTimeUs + deltaTimeUs);
 
@@ -1933,6 +1960,7 @@ function SubtitleClipBlock(props: SubtitleClipBlockProps) {
     <div
       tabIndex={0}
       onKeyDown={handleKeyDown}
+      onClick={handleClick}
       onMouseDown={handleBodyMouseDown}
       onContextMenu={handleContextMenu}
       onDoubleClick={handleDoubleClick}

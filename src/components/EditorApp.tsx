@@ -414,6 +414,21 @@ export function EditorApp(props: EditorAppProps) {
     }
   }, [composition, refresh, notifyCompositionChanged]);
 
+  // Handle subtitle clip move (within same track)
+  const handleSubtitleMove = useCallback((clipId: string, newStartUs: number) => {
+    for (const track of composition.tracks) {
+      if (track.type !== 'subtitle') continue;
+      for (const clip of track.clips) {
+        if (clip.id === clipId && 'moveTo' in clip) {
+          (clip as import('../core/SubtitleClip').SubtitleClip).moveTo(newStartUs);
+          refresh();
+          notifyCompositionChanged();
+          return;
+        }
+      }
+    }
+  }, [composition, refresh, notifyCompositionChanged]);
+
   // Handle subtitle clip move to different track
   const handleSubtitleMoveToTrack = useCallback((clipId: string, targetTrackId: string, newStartUs: number) => {
     // Find the clip in the current track
@@ -823,6 +838,7 @@ export function EditorApp(props: EditorAppProps) {
           onSubtitleTrimStart={handleSubtitleTrimStart}
           onSubtitleTrimEnd={handleSubtitleTrimEnd}
           onSubtitleMoveToTrack={handleSubtitleMoveToTrack}
+          onSubtitleMove={handleSubtitleMove}
           onSubtitleDuplicate={handleSubtitleDuplicate}
           onSubtitleSplit={handleSubtitleSplit}
           onSubtitleAddCue={handleSubtitleAddCue}
