@@ -91,9 +91,9 @@ describe('Track', () => {
       track.createClip({ sourceId: 'src-2', startUs: 0, trimIn: 0, trimOut: 500_000 });
       track.createClip({ sourceId: 'src-3', startUs: 1_000_000, trimIn: 0, trimOut: 500_000 });
 
-      expect(track.clips[0].startUs).toBe(0);
-      expect(track.clips[1].startUs).toBe(1_000_000);
-      expect(track.clips[2].startUs).toBe(2_000_000);
+      expect(track.clips[0]!.startUs).toBe(0);
+      expect(track.clips[1]!.startUs).toBe(1_000_000);
+      expect(track.clips[2]!.startUs).toBe(2_000_000);
     });
   });
 
@@ -122,8 +122,8 @@ describe('Track', () => {
       const clips = track.getClipsInRange(400_000, 1_200_000);
 
       expect(clips).toHaveLength(2);
-      expect(clips[0].sourceId).toBe('src-1');
-      expect(clips[1].sourceId).toBe('src-2');
+      expect(clips[0]!.sourceId).toBe('src-1');
+      expect(clips[1]!.sourceId).toBe('src-2');
     });
   });
 
@@ -216,7 +216,7 @@ describe('Track', () => {
 
       expect(cloned.id).not.toBe(track.id);
       expect(cloned.clips).toHaveLength(1);
-      expect(cloned.clips[0].id).not.toBe(track.clips[0].id);
+      expect(cloned.clips[0]!.id).not.toBe(track.clips[0]!.id);
     });
   });
 

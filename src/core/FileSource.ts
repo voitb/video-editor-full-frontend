@@ -104,7 +104,7 @@ export class FileSource extends Source {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to load file';
-      logger.error('Failed to load file', error);
+      logger.error('Failed to load file', { error: message });
       this.setError(message);
     }
   }
@@ -164,9 +164,7 @@ export class FileSource extends Source {
 
         // Extract video dimensions
         if (videoTrack) {
-          // @ts-expect-error - MP4Box types are incomplete
           this._width = videoTrack.video?.width ?? videoTrack.track_width ?? 0;
-          // @ts-expect-error - MP4Box types are incomplete
           this._height = videoTrack.video?.height ?? videoTrack.track_height ?? 0;
         }
 
@@ -200,7 +198,7 @@ export class FileSource extends Source {
       // Feed buffer to MP4Box
       try {
         // MP4Box expects the buffer to have a fileStart property
-        const bufferWithPosition = this.buffer.slice(0) as ArrayBuffer & { fileStart: number };
+        const bufferWithPosition = this.buffer!.slice(0) as ArrayBuffer & { fileStart: number };
         bufferWithPosition.fileStart = 0;
         mp4boxfile.appendBuffer(bufferWithPosition);
         mp4boxfile.flush();

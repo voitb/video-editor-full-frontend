@@ -129,7 +129,7 @@ export function Timeline(props: TimelineProps) {
     onFitToView,
     onExternalDropToTrack,
     onClipDelete,
-    linkedSelection = true,
+    linkedSelection: _linkedSelection = true,
     inPointUs,
     outPointUs,
     hasInPoint,
@@ -1638,7 +1638,7 @@ function ClipBlock(props: ClipBlockProps) {
       }
     };
 
-    const handleMouseUp = (e: MouseEvent) => {
+    const handleMouseUp = (_e: MouseEvent) => {
       if (dragState.type === 'move') {
         setActiveSnapLine(null);
         setDropTargetTrackId(null);
@@ -1886,7 +1886,7 @@ function ClipBlock(props: ClipBlockProps) {
 /**
  * Calculate appropriate time step for markers based on visible duration
  */
-function getTimeStep(visibleDurationUs: number): number {
+export function getTimeStep(visibleDurationUs: number): number {
   const targetMarkers = 10;
   const roughStep = visibleDurationUs / targetMarkers;
 
@@ -2061,18 +2061,19 @@ interface TimelineMinimapProps {
   getTrackHeight: (trackId: string) => number;
 }
 
-function TimelineMinimap({
+export function TimelineMinimap({
   tracks,
   durationUs,
   currentTimeUs,
   viewport,
   containerWidth,
-  totalTimelineWidth,
+  totalTimelineWidth: _totalTimelineWidth,
   onViewportChange,
   onSeek,
   trackStates,
   getTrackHeight,
 }: TimelineMinimapProps) {
+  void _totalTimelineWidth; // Reserved for future use
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -2096,7 +2097,6 @@ function TimelineMinimap({
 
     const width = canvas.width;
     const height = canvas.height;
-    const dpr = window.devicePixelRatio || 1;
 
     // Clear canvas
     ctx.clearRect(0, 0, width, height);
@@ -2280,7 +2280,7 @@ interface TimelineScrollbarProps {
   onScroll: (scrollLeft: number) => void;
 }
 
-function TimelineScrollbar({ containerWidth, totalWidth, scrollLeft, onScroll }: TimelineScrollbarProps) {
+export function TimelineScrollbar({ containerWidth, totalWidth, scrollLeft, onScroll }: TimelineScrollbarProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
   const trackRef = useRef<HTMLDivElement>(null);

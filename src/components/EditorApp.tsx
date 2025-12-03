@@ -59,7 +59,6 @@ export function EditorApp(props: EditorAppProps) {
     createTrack,
     removeTrack,
     addVideoClipWithAudio,
-    getClip,
     moveClipWithLinked,
     moveClipToTrack,
     unlinkClip,

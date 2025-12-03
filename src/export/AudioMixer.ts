@@ -3,7 +3,7 @@
  * Uses OfflineAudioContext to mix multiple audio clips for export.
  */
 
-import type { ClipJSON, TrackJSON } from '../core/types';
+import type { TrackJSON } from '../core/types';
 import { EXPORT } from '../constants';
 
 /** Audio clip data with decoded buffer */

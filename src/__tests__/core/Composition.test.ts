@@ -69,10 +69,10 @@ describe('Composition', () => {
       comp.createTrack({ type: 'audio', label: 'A2' });
       comp.createTrack({ type: 'video', label: 'V2' });
 
-      expect(comp.tracks[0].type).toBe('video');
-      expect(comp.tracks[1].type).toBe('video');
-      expect(comp.tracks[2].type).toBe('audio');
-      expect(comp.tracks[3].type).toBe('audio');
+      expect(comp.tracks[0]!.type).toBe('video');
+      expect(comp.tracks[1]!.type).toBe('video');
+      expect(comp.tracks[2]!.type).toBe('audio');
+      expect(comp.tracks[3]!.type).toBe('audio');
     });
 
     it('should filter video and audio tracks', () => {
@@ -184,8 +184,8 @@ describe('Composition', () => {
       const active = comp.getActiveClipsAt(750_000);
 
       expect(active).toHaveLength(2);
-      expect(active[0].trackIndex).toBe(0);
-      expect(active[1].trackIndex).toBe(1);
+      expect(active[0]!.trackIndex).toBe(0);
+      expect(active[1]!.trackIndex).toBe(1);
     });
 
     it('should return empty for times with no clips', () => {
@@ -207,7 +207,8 @@ describe('Composition', () => {
         opacity: 0.8,
       });
 
-      const [clip] = comp.getActiveClipsAt(1_250_000);
+      const clips = comp.getActiveClipsAt(1_250_000);
+      const clip = clips[0]!;
 
       expect(clip.clipId).toBeDefined();
       expect(clip.sourceId).toBe('src-1');
@@ -233,7 +234,7 @@ describe('Composition', () => {
       expect(restored.config.height).toBe(720);
       expect(restored.config.frameRate).toBe(24);
       expect(restored.tracks).toHaveLength(1);
-      expect(restored.tracks[0].clips).toHaveLength(1);
+      expect(restored.tracks[0]!.clips).toHaveLength(1);
     });
   });
 

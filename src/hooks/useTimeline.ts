@@ -3,7 +3,7 @@
  * React hook for timeline viewport and interactions.
  */
 
-import { useState, useCallback, useMemo, useRef } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import type { TimelineViewport, TrackUIState } from '../core/types';
 import { TIMELINE } from '../constants';
 
@@ -300,7 +300,6 @@ export function useTimeline(options: UseTimelineOptions): UseTimelineReturn {
   // Get total timeline width for current zoom level
   const getTotalWidth = useCallback((containerWidth: number): number => {
     if (containerWidth <= 0) return containerWidth;
-    const effectiveDuration = Math.max(durationUs, TIMELINE.MIN_VISIBLE_DURATION_US);
     // At zoom=1, totalWidth = containerWidth (fits exactly)
     // At zoom>1, totalWidth > containerWidth (enables scrolling)
     return containerWidth * viewport.zoomLevel;

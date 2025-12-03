@@ -449,8 +449,9 @@ function loadSource(sourceData: ExportSourceData): Promise<void> {
       }
     };
 
-    mp4File.onError = (error: string) => {
-      reject(new Error(`MP4Box error: ${error}`));
+    mp4File.onError = (error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      reject(new Error(`MP4Box error: ${message}`));
     };
 
     // Append buffer
@@ -483,8 +484,8 @@ function getCodecDescription(mp4File: MP4File, trackId: number): Uint8Array | un
   const track = mp4File.getTrackById(trackId);
   if (!track) return undefined;
 
-  // @ts-expect-error - MP4Box internal structure
-  const entry = track.mdia?.minf?.stbl?.stsd?.entries?.[0];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const entry = (track as any).mdia?.minf?.stbl?.stsd?.entries?.[0];
   if (!entry) return undefined;
 
   // For video: look for avcC (H.264) or hvcC (H.265)
@@ -504,8 +505,9 @@ function getAudioCodecDescription(mp4File: MP4File, trackId: number): Uint8Array
   const track = mp4File.getTrackById(trackId);
   if (!track) return null;
 
-  // @ts-expect-error - MP4Box internal structure
-  for (const entry of track.mdia.minf.stbl.stsd.entries) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const trackAny = track as any;
+  for (const entry of trackAny.mdia.minf.stbl.stsd.entries) {
     // AAC codec specific data (esds box)
     const esds = entry.esds;
     if (esds && esds.esd && esds.esd.descs) {
