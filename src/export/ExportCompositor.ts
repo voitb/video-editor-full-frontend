@@ -66,6 +66,24 @@ export interface SubtitleLayer {
   canvas: OffscreenCanvas;
 }
 
+/** Position as percentages of composition dimensions */
+interface OverlayPosition {
+  xPercent: number;
+  yPercent: number;
+  widthPercent: number | null;
+  heightPercent: number | null;
+}
+
+/** Overlay info for compositing */
+export interface OverlayInfo {
+  /** Pre-rendered overlay bitmap */
+  bitmap: ImageBitmap;
+  /** Position on composition (percentages) */
+  position: OverlayPosition;
+  /** Opacity (0-1) */
+  opacity: number;
+}
+
 /**
  * WebGL2-based compositor for export.
  * Designed to work in Worker context with OffscreenCanvas.
@@ -83,6 +101,7 @@ export class ExportCompositor {
   private baseTexture: WebGLTexture | null = null;
   private overlayTexture: WebGLTexture | null = null;
   private subtitleTexture: WebGLTexture | null = null;
+  private overlayBitmapTexture: WebGLTexture | null = null;
   private framebuffer: WebGLFramebuffer | null = null;
   private framebufferTexture: WebGLTexture | null = null;
 
@@ -139,6 +158,7 @@ export class ExportCompositor {
     this.baseTexture = this.createTexture();
     this.overlayTexture = this.createTexture();
     this.subtitleTexture = this.createTexture();
+    this.overlayBitmapTexture = this.createTexture();
     this.createFramebuffer();
 
     gl.enable(gl.BLEND);
@@ -271,26 +291,34 @@ export class ExportCompositor {
    * @param layers - Array of layers to composite (sorted by z-index)
    * @param timestampUs - Timestamp for the output VideoFrame
    * @param subtitleLayer - Optional subtitle overlay to burn in
+   * @param overlays - Optional array of overlay infos to composite on top
    * @returns Composited VideoFrame
    */
   composite(
     layers: ExportLayer[],
     timestampUs: number,
-    subtitleLayer?: SubtitleLayer
+    subtitleLayer?: SubtitleLayer,
+    overlays?: OverlayInfo[]
   ): VideoFrame {
     const { gl } = this;
     gl.viewport(0, 0, this.width, this.height);
     gl.bindVertexArray(this.vao);
+
+    const hasOverlays = overlays && overlays.length > 0;
 
     if (layers.length === 0) {
       // Return black frame
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       gl.clearColor(0, 0, 0, 1);
       gl.clear(gl.COLOR_BUFFER_BIT);
-    } else if (layers.length === 1 && !subtitleLayer) {
+      // Still need to composite overlays on black background
+      if (hasOverlays) {
+        this.drawOverlaysOnly(overlays!);
+      }
+    } else if (layers.length === 1 && !subtitleLayer && !hasOverlays) {
       this.drawSingleLayer(layers[0]!);
     } else {
-      this.drawMultipleLayers(layers, subtitleLayer);
+      this.drawMultipleLayers(layers, subtitleLayer, overlays);
     }
 
     gl.bindVertexArray(null);
@@ -318,9 +346,14 @@ export class ExportCompositor {
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
 
-  private drawMultipleLayers(layers: ExportLayer[], subtitleLayer?: SubtitleLayer): void {
+  private drawMultipleLayers(
+    layers: ExportLayer[],
+    subtitleLayer?: SubtitleLayer,
+    overlays?: OverlayInfo[]
+  ): void {
     const { gl } = this;
     const hasSubtitles = subtitleLayer !== undefined;
+    const hasOverlays = overlays && overlays.length > 0;
 
     // First layer to framebuffer
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
@@ -342,8 +375,8 @@ export class ExportCompositor {
       const opacity = layer.opacity;
       const isLastVideoLayer = i === layers.length - 1;
 
-      // Only output to screen if this is the last layer AND there are no subtitles
-      if (isLastVideoLayer && !hasSubtitles) {
+      // Only output to screen if this is the last layer AND there are no subtitles or overlays
+      if (isLastVideoLayer && !hasSubtitles && !hasOverlays) {
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       }
 
@@ -361,7 +394,7 @@ export class ExportCompositor {
 
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
-      if (!isLastVideoLayer || hasSubtitles) {
+      if (!isLastVideoLayer || hasSubtitles || hasOverlays) {
         gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
         gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this.framebuffer);
         gl.blitFramebuffer(
@@ -380,10 +413,14 @@ export class ExportCompositor {
       }
     }
 
-    // Draw subtitle overlay as final layer
+    // Draw subtitle overlay
     if (hasSubtitles) {
-      // Output to screen for final composite
-      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      // Determine if this is the final layer
+      const isLastLayer = !hasOverlays;
+
+      if (isLastLayer) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      }
 
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, this.framebufferTexture);
@@ -405,7 +442,162 @@ export class ExportCompositor {
       gl.uniform1i(this.blendUniforms.hasOverlay, 1);
 
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+      if (!isLastLayer) {
+        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+        gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this.framebuffer);
+        gl.blitFramebuffer(
+          0,
+          0,
+          this.width,
+          this.height,
+          0,
+          0,
+          this.width,
+          this.height,
+          gl.COLOR_BUFFER_BIT,
+          gl.NEAREST
+        );
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
+      }
     }
+
+    // Draw HTML overlays on top of everything
+    if (hasOverlays) {
+      for (let i = 0; i < overlays!.length; i++) {
+        const overlay = overlays![i]!;
+        const isLastOverlay = i === overlays!.length - 1;
+
+        if (isLastOverlay) {
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        }
+
+        // Render overlay bitmap to positioned canvas
+        const overlayCanvas = this.renderOverlayToCanvas(overlay.bitmap, overlay.position);
+
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, this.framebufferTexture);
+        gl.uniform1i(this.blendUniforms.baseTexture, 0);
+
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, this.overlayBitmapTexture);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, overlayCanvas);
+        gl.uniform1i(this.blendUniforms.overlayTexture, 1);
+
+        gl.uniform1f(this.blendUniforms.opacity, overlay.opacity);
+        gl.uniform1i(this.blendUniforms.hasOverlay, 1);
+
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+        if (!isLastOverlay) {
+          gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+          gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this.framebuffer);
+          gl.blitFramebuffer(
+            0,
+            0,
+            this.width,
+            this.height,
+            0,
+            0,
+            this.width,
+            this.height,
+            gl.COLOR_BUFFER_BIT,
+            gl.NEAREST
+          );
+          gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
+        }
+      }
+    }
+  }
+
+  /**
+   * Draw overlays only (for export with no video layers).
+   * Assumes the canvas has already been cleared to black.
+   */
+  private drawOverlaysOnly(overlays: OverlayInfo[]): void {
+    const { gl } = this;
+
+    gl.useProgram(this.blendProgram);
+
+    for (let i = 0; i < overlays.length; i++) {
+      const overlay = overlays[i]!;
+
+      // Render overlay bitmap to positioned canvas
+      const overlayCanvas = this.renderOverlayToCanvas(overlay.bitmap, overlay.position);
+
+      // For first overlay, we blend onto the black canvas
+      // For subsequent overlays, we blend onto the previous result
+      if (i === 0) {
+        // First overlay - blend directly onto screen
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, this.baseTexture);
+        // Create a black base texture
+        const blackCanvas = new OffscreenCanvas(this.width, this.height);
+        const blackCtx = blackCanvas.getContext('2d')!;
+        blackCtx.fillStyle = 'black';
+        blackCtx.fillRect(0, 0, this.width, this.height);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, blackCanvas);
+        gl.uniform1i(this.blendUniforms.baseTexture, 0);
+      } else {
+        // Subsequent overlays - read back from screen
+        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+        gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this.framebuffer);
+        gl.blitFramebuffer(
+          0,
+          0,
+          this.width,
+          this.height,
+          0,
+          0,
+          this.width,
+          this.height,
+          gl.COLOR_BUFFER_BIT,
+          gl.NEAREST
+        );
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, this.framebufferTexture);
+        gl.uniform1i(this.blendUniforms.baseTexture, 0);
+      }
+
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, this.overlayBitmapTexture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, overlayCanvas);
+      gl.uniform1i(this.blendUniforms.overlayTexture, 1);
+
+      gl.uniform1f(this.blendUniforms.opacity, overlay.opacity);
+      gl.uniform1i(this.blendUniforms.hasOverlay, 1);
+
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    }
+  }
+
+  /**
+   * Render an overlay bitmap to a positioned canvas.
+   * The bitmap is drawn at the correct position based on percentage coordinates.
+   */
+  private renderOverlayToCanvas(
+    bitmap: ImageBitmap,
+    position: OverlayPosition
+  ): OffscreenCanvas {
+    const canvas = new OffscreenCanvas(this.width, this.height);
+    const ctx = canvas.getContext('2d')!;
+
+    // Clear canvas (transparent)
+    ctx.clearRect(0, 0, this.width, this.height);
+
+    // Calculate center position (percentages to pixels)
+    const centerX = (position.xPercent / 100) * this.width;
+    const centerY = (position.yPercent / 100) * this.height;
+
+    // Draw centered (matching HtmlOverlay.tsx transform: translate(-50%, -50%))
+    const drawX = centerX - bitmap.width / 2;
+    const drawY = centerY - bitmap.height / 2;
+
+    ctx.drawImage(bitmap, drawX, drawY);
+
+    return canvas;
   }
 
   /**
@@ -429,6 +621,7 @@ export class ExportCompositor {
     if (this.baseTexture) gl.deleteTexture(this.baseTexture);
     if (this.overlayTexture) gl.deleteTexture(this.overlayTexture);
     if (this.subtitleTexture) gl.deleteTexture(this.subtitleTexture);
+    if (this.overlayBitmapTexture) gl.deleteTexture(this.overlayBitmapTexture);
     if (this.framebuffer) gl.deleteFramebuffer(this.framebuffer);
     if (this.framebufferTexture) gl.deleteTexture(this.framebufferTexture);
   }

@@ -8,6 +8,7 @@ import type {
   TrackJSON,
   ExportPresetKey,
   ExportPhase,
+  OverlayPosition,
 } from '../../core/types';
 
 // ============================================================================
@@ -33,6 +34,28 @@ export interface ExportSourceData {
 }
 
 // ============================================================================
+// OVERLAY DATA FOR EXPORT
+// ============================================================================
+
+/** Pre-rendered overlay data for export */
+export interface ExportOverlayData {
+  /** Overlay clip identifier */
+  clipId: string;
+  /** Start time on timeline in microseconds */
+  startUs: number;
+  /** Duration in microseconds */
+  durationUs: number;
+  /** Pre-rendered overlay as ImageBitmap (transferable) */
+  bitmap: ImageBitmap;
+  /** Position on composition (percentages) */
+  position: OverlayPosition;
+  /** Overlay opacity (0-1) */
+  opacity: number;
+  /** Track index for z-ordering (0 = top track = renders last = on top) */
+  trackIndex: number;
+}
+
+// ============================================================================
 // COMMANDS (Main Thread -> Worker)
 // ============================================================================
 
@@ -45,6 +68,8 @@ export interface StartExportCommand {
   tracks: TrackJSON[];
   /** Source data for all sources used in composition */
   sources: ExportSourceData[];
+  /** Pre-rendered overlay data (optional, for overlay burn-in) */
+  overlays?: ExportOverlayData[];
   /** Export configuration */
   exportConfig: {
     /** Quality preset */

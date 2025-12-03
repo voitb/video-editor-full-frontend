@@ -13,7 +13,7 @@ import type {
   StartExportCommand,
   ExportSourceData,
 } from './messages/exportMessages';
-import type { ClipJSON, TrackJSON, ExportPhase, SubtitleClipJSON } from '../core/types';
+import type { ClipJSON, TrackJSON, ExportPhase, SubtitleClipJSON, OverlayPosition } from '../core/types';
 import { ExportCompositor, type ExportLayer, type SubtitleLayer } from '../export/ExportCompositor';
 import { SubtitleRenderer, getActiveSubtitleCuesAt } from '../renderer/SubtitleRenderer';
 import { EXPORT, TIME } from '../constants';
@@ -56,6 +56,17 @@ interface ActiveClipInfo {
   volume: number;
 }
 
+/** Pre-rendered overlay info for compositing */
+interface ActiveOverlayInfo {
+  clipId: string;
+  trackIndex: number;
+  startUs: number;
+  endUs: number;
+  bitmap: ImageBitmap;
+  position: OverlayPosition;
+  opacity: number;
+}
+
 // ============================================================================
 // STATE
 // ============================================================================
@@ -66,6 +77,8 @@ let subtitleRenderer: SubtitleRenderer | null = null;
 const sources = new Map<string, SourceDecodeState>();
 let tracks: TrackJSON[] = [];
 let exportStartTime = 0;
+/** Pre-rendered overlay data for compositing */
+let overlayData: ActiveOverlayInfo[] = [];
 
 // ============================================================================
 // POST RESPONSE
@@ -153,6 +166,21 @@ async function startExport(cmd: StartExportCommand): Promise<void> {
 
   // Load all sources
   await loadSources(cmd.sources);
+
+  // Load pre-rendered overlays
+  if (cmd.overlays && cmd.overlays.length > 0) {
+    overlayData = cmd.overlays.map((overlay) => ({
+      clipId: overlay.clipId,
+      trackIndex: overlay.trackIndex,
+      startUs: overlay.startUs,
+      endUs: overlay.startUs + overlay.durationUs,
+      bitmap: overlay.bitmap,
+      position: overlay.position,
+      opacity: overlay.opacity,
+    }));
+  } else {
+    overlayData = [];
+  }
 
   if (cancelled) {
     cleanup();
@@ -271,8 +299,16 @@ async function startExport(cmd: StartExportCommand): Promise<void> {
       }
     }
 
-    // Composite layers with optional subtitle overlay
-    const compositedFrame = compositor!.composite(layers, frameTimeUs, subtitleLayer);
+    // Get active overlays at this time
+    const activeOverlays = getActiveOverlaysAt(frameTimeUs);
+
+    // Composite layers with optional subtitle and overlay layers
+    const compositedFrame = compositor!.composite(
+      layers,
+      frameTimeUs,
+      subtitleLayer,
+      activeOverlays.length > 0 ? activeOverlays : undefined
+    );
 
     // Close input frames
     for (const layer of layers) {
@@ -622,6 +658,16 @@ function getSubtitleTracks(): Array<{
   return subtitleTracks;
 }
 
+/**
+ * Get active overlays at a specific timeline time.
+ * Returns overlays sorted by trackIndex so that top tracks (lower index) render last (on top).
+ */
+function getActiveOverlaysAt(timelineTimeUs: number): ActiveOverlayInfo[] {
+  return overlayData
+    .filter((overlay) => timelineTimeUs >= overlay.startUs && timelineTimeUs < overlay.endUs)
+    .sort((a, b) => b.trackIndex - a.trackIndex); // Higher trackIndex first, so lower (top) tracks render last = on top
+}
+
 // ============================================================================
 // FRAME DECODING
 // ============================================================================
@@ -881,6 +927,12 @@ function cleanup(): void {
 
   // Clear subtitle renderer
   subtitleRenderer = null;
+
+  // Close overlay ImageBitmaps
+  for (const overlay of overlayData) {
+    overlay.bitmap.close();
+  }
+  overlayData = [];
 }
 
 // Type augmentation for MP4Box

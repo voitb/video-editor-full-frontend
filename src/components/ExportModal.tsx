@@ -9,9 +9,11 @@ import type {
   ExportWorkerEvent,
   StartExportCommand,
   ExportSourceData,
+  ExportOverlayData,
 } from '../workers/messages/exportMessages';
 import { EXPORT_PRESETS, TIME } from '../constants';
 import { formatTimecode } from '../utils/time';
+import { preRenderOverlays } from '../renderer/OverlayRenderer';
 
 export interface ExportModalProps {
   /** Whether the modal is open */
@@ -99,6 +101,27 @@ export function ExportModal(props: ExportModalProps) {
       const outputWidth = Math.round(compositionConfig.width * presetConfig.scale);
       const outputHeight = Math.round(compositionConfig.height * presetConfig.scale);
 
+      // Get tracks JSON before pre-rendering
+      const tracks = getTracksJSON();
+
+      // Pre-render overlay clips (must be done in main thread for DOM access)
+      let overlays: ExportOverlayData[] = [];
+      try {
+        const rendered = await preRenderOverlays(tracks, outputWidth, outputHeight);
+        overlays = rendered.map((r) => ({
+          clipId: r.clipId,
+          startUs: r.startUs,
+          durationUs: r.durationUs,
+          bitmap: r.bitmap,
+          position: r.position,
+          opacity: r.opacity,
+          trackIndex: r.trackIndex,
+        }));
+      } catch (overlayError) {
+        console.warn('Failed to pre-render some overlays:', overlayError);
+        // Continue with export even if overlay rendering fails
+      }
+
       // Create worker
       const worker = new Worker(
         new URL('../workers/ExportWorker.ts', import.meta.url),
@@ -115,8 +138,9 @@ export function ExportModal(props: ExportModalProps) {
             const command: StartExportCommand = {
               type: 'START_EXPORT',
               compositionConfig,
-              tracks: getTracksJSON(),
+              tracks,
               sources,
+              overlays: overlays.length > 0 ? overlays : undefined,
               exportConfig: {
                 preset,
                 inPointUs,
@@ -128,8 +152,11 @@ export function ExportModal(props: ExportModalProps) {
               },
             };
 
-            // Transfer source buffers
-            const transfers = sources.map((s) => s.buffer);
+            // Transfer source buffers and overlay bitmaps
+            const transfers: Transferable[] = [
+              ...sources.map((s) => s.buffer),
+              ...overlays.map((o) => o.bitmap),
+            ];
             worker.postMessage(command, transfers);
             break;
 
