@@ -28,12 +28,20 @@ export class SubtitleClip {
   /** Display label */
   label: string;
 
+  /** Trim offset from original cue start (microseconds) - used for left-edge trimming */
+  private _trimStartUs: number = 0;
+
+  /** Explicit duration override (microseconds) - used for right-edge trimming */
+  private _explicitDurationUs?: number;
+
   constructor(config: SubtitleClipConfig, id?: string) {
     this.id = id ?? createSubtitleClipId();
     this.startUs = config.startUs;
     this._cues = [...config.cues];
     this.style = { ...config.style };
     this.label = config.label ?? 'Subtitles';
+    this._trimStartUs = config.trimStartUs ?? 0;
+    this._explicitDurationUs = config.explicitDurationUs;
 
     this.sortCues();
   }
@@ -53,11 +61,17 @@ export class SubtitleClip {
   }
 
   /**
-   * Duration on timeline (computed from last cue end)
+   * Duration on timeline (respects explicit duration if set, otherwise computed from cues)
    */
   get durationUs(): number {
-    if (this._cues.length === 0) return SUBTITLE.DEFAULT_CUE_DURATION_US;
-    return Math.max(...this._cues.map((c) => c.endUs));
+    if (this._explicitDurationUs !== undefined) {
+      return this._explicitDurationUs;
+    }
+    // Computed from cues minus trim offset
+    const cueEnd = this._cues.length === 0
+      ? SUBTITLE.DEFAULT_CUE_DURATION_US
+      : Math.max(...this._cues.map((c) => c.endUs));
+    return Math.max(0, cueEnd - this._trimStartUs);
   }
 
   /**
@@ -65,6 +79,34 @@ export class SubtitleClip {
    */
   get endUs(): number {
     return this.startUs + this.durationUs;
+  }
+
+  /**
+   * Visible start offset within cue data (for filtering which cues to render)
+   */
+  get visibleStartUs(): number {
+    return this._trimStartUs;
+  }
+
+  /**
+   * Visible end offset within cue data (for filtering which cues to render)
+   */
+  get visibleEndUs(): number {
+    return this._trimStartUs + this.durationUs;
+  }
+
+  /**
+   * Get trim start offset (read-only access)
+   */
+  get trimStartUs(): number {
+    return this._trimStartUs;
+  }
+
+  /**
+   * Get explicit duration (read-only access)
+   */
+  get explicitDurationUs(): number | undefined {
+    return this._explicitDurationUs;
   }
 
   /**
@@ -83,17 +125,33 @@ export class SubtitleClip {
 
   /**
    * Get active cues at a specific timeline time
-   * Returns cues that should be displayed at the given time
+   * Returns cues that should be displayed at the given time.
+   * Filters cues based on the visible range (respects trimming).
    */
   getActiveCuesAt(timelineTimeUs: number): SubtitleCue[] {
     if (!this.isActiveAt(timelineTimeUs)) return [];
 
-    // Convert timeline time to clip-relative time
-    const clipRelativeTimeUs = timelineTimeUs - this.startUs;
+    // Convert timeline time to cue-relative time (accounting for trim offset)
+    const cueRelativeTimeUs = timelineTimeUs - this.startUs + this._trimStartUs;
 
+    return this._cues.filter((cue) => {
+      // Cue must be within the visible range
+      const cueIsInVisibleRange =
+        cue.endUs > this._trimStartUs && cue.startUs < this.visibleEndUs;
+      // And the current time must be within the cue's range
+      const timeIsInCue =
+        cueRelativeTimeUs >= cue.startUs && cueRelativeTimeUs < cue.endUs;
+      return cueIsInVisibleRange && timeIsInCue;
+    });
+  }
+
+  /**
+   * Get all cues within the visible range (for display in SubtitlePanel)
+   */
+  getVisibleCues(): SubtitleCue[] {
     return this._cues.filter(
       (cue) =>
-        clipRelativeTimeUs >= cue.startUs && clipRelativeTimeUs < cue.endUs
+        cue.endUs > this._trimStartUs && cue.startUs < this.visibleEndUs
     );
   }
 
@@ -150,6 +208,66 @@ export class SubtitleClip {
   }
 
   /**
+   * Trim the start of the clip (left edge drag)
+   * Adjusts both the timeline position and the visible cue offset
+   */
+  trimStart(newStartUs: number): void {
+    const delta = newStartUs - this.startUs;
+    this.startUs = Math.max(0, newStartUs);
+    this._trimStartUs = Math.max(0, this._trimStartUs + delta);
+
+    // If we have an explicit duration, reduce it by the trim amount
+    if (this._explicitDurationUs !== undefined) {
+      this._explicitDurationUs = Math.max(0, this._explicitDurationUs - delta);
+    }
+  }
+
+  /**
+   * Trim the end of the clip (right edge drag)
+   * Sets an explicit duration
+   */
+  trimEnd(newEndUs: number): void {
+    const newDuration = newEndUs - this.startUs;
+    this._explicitDurationUs = Math.max(0, newDuration);
+  }
+
+  /**
+   * Set explicit duration (for manual resizing)
+   */
+  setDuration(durationUs: number): void {
+    this._explicitDurationUs = Math.max(0, durationUs);
+  }
+
+  /**
+   * Split the clip at a specific timeline time
+   * Returns the second half as a new clip, or null if split point is invalid
+   */
+  splitAt(timelineTimeUs: number): SubtitleClip | null {
+    // Validate split point is within the clip
+    if (timelineTimeUs <= this.startUs || timelineTimeUs >= this.endUs) {
+      return null;
+    }
+
+    // Calculate the split point in cue-relative time
+    const splitPointInCues = timelineTimeUs - this.startUs + this._trimStartUs;
+
+    // Create the second clip (after the split)
+    const secondClip = new SubtitleClip({
+      startUs: timelineTimeUs,
+      cues: this._cues.map((c) => ({ ...c, id: createCueId() })),
+      style: { ...this.style },
+      label: this.label,
+      trimStartUs: splitPointInCues,
+      explicitDurationUs: this.endUs - timelineTimeUs,
+    });
+
+    // Adjust this clip's duration to end at the split point
+    this._explicitDurationUs = timelineTimeUs - this.startUs;
+
+    return secondClip;
+  }
+
+  /**
    * Sort cues by start time
    */
   private sortCues(): void {
@@ -165,6 +283,8 @@ export class SubtitleClip {
       cues: this._cues.map((c) => ({ ...c, id: createCueId() })),
       style: { ...this.style },
       label: this.label,
+      trimStartUs: this._trimStartUs,
+      explicitDurationUs: this._explicitDurationUs,
     });
   }
 
@@ -178,6 +298,8 @@ export class SubtitleClip {
       cues: this._cues.map((c) => ({ ...c })),
       style: { ...this.style },
       label: this.label,
+      trimStartUs: this._trimStartUs || undefined,
+      explicitDurationUs: this._explicitDurationUs,
     };
   }
 
@@ -191,6 +313,8 @@ export class SubtitleClip {
         cues: json.cues,
         style: json.style,
         label: json.label,
+        trimStartUs: json.trimStartUs,
+        explicitDurationUs: json.explicitDurationUs,
       },
       json.id
     );

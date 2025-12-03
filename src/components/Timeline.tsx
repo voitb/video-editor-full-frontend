@@ -88,6 +88,18 @@ export interface TimelineProps {
   onAddSubtitleClip?: (trackId: string, startUs: number) => void;
   /** Callback when edit is requested on a subtitle clip */
   onSubtitleEdit?: (clipId: string) => void;
+  /** Callback when a subtitle clip is trimmed from start */
+  onSubtitleTrimStart?: (clipId: string, newStartUs: number) => void;
+  /** Callback when a subtitle clip is trimmed from end */
+  onSubtitleTrimEnd?: (clipId: string, newEndUs: number) => void;
+  /** Callback when a subtitle clip is moved to a different track */
+  onSubtitleMoveToTrack?: (clipId: string, targetTrackId: string, newStartUs: number) => void;
+  /** Callback when a subtitle clip is duplicated */
+  onSubtitleDuplicate?: (clipId: string) => void;
+  /** Callback when a subtitle clip is split */
+  onSubtitleSplit?: (clipId: string, timeUs: number) => void;
+  /** Callback when a cue is added to a subtitle clip */
+  onSubtitleAddCue?: (clipId: string, timeUs: number) => void;
 }
 
 interface SnapTarget {
@@ -190,6 +202,12 @@ export function Timeline(props: TimelineProps) {
     hasOutPoint,
     onAddSubtitleClip,
     onSubtitleEdit,
+    onSubtitleTrimStart,
+    onSubtitleTrimEnd,
+    onSubtitleMoveToTrack,
+    onSubtitleDuplicate,
+    onSubtitleSplit,
+    onSubtitleAddCue,
   } = props;
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -856,6 +874,14 @@ export function Timeline(props: TimelineProps) {
                 dragPreviewMap={dragPreviewMap}
                 onAddSubtitleClip={onAddSubtitleClip}
                 onSubtitleEdit={onSubtitleEdit}
+                onSubtitleTrimStart={onSubtitleTrimStart}
+                onSubtitleTrimEnd={onSubtitleTrimEnd}
+                onSubtitleMoveToTrack={onSubtitleMoveToTrack}
+                onSubtitleDuplicate={onSubtitleDuplicate}
+                onSubtitleSplit={onSubtitleSplit}
+                onSubtitleAddCue={onSubtitleAddCue}
+                currentTimeUs={currentTimeUs}
+                tracks={tracks}
               />
             ))}
 
@@ -1324,6 +1350,22 @@ interface TrackLaneProps {
   onAddSubtitleClip?: (trackId: string, startUs: number) => void;
   /** Callback when edit is requested on a subtitle clip */
   onSubtitleEdit?: (clipId: string) => void;
+  /** Callback when a subtitle clip is trimmed from start */
+  onSubtitleTrimStart?: (clipId: string, newStartUs: number) => void;
+  /** Callback when a subtitle clip is trimmed from end */
+  onSubtitleTrimEnd?: (clipId: string, newEndUs: number) => void;
+  /** Callback when a subtitle clip is moved to a different track */
+  onSubtitleMoveToTrack?: (clipId: string, targetTrackId: string, newStartUs: number) => void;
+  /** Callback when a subtitle clip is duplicated */
+  onSubtitleDuplicate?: (clipId: string) => void;
+  /** Callback when a subtitle clip is split */
+  onSubtitleSplit?: (clipId: string, timeUs: number) => void;
+  /** Callback when a cue is added to a subtitle clip */
+  onSubtitleAddCue?: (clipId: string, timeUs: number) => void;
+  /** Current playhead time for split operations */
+  currentTimeUs: number;
+  /** All tracks for cross-track drag */
+  tracks: readonly Track[];
 }
 
 /** Data type for external drag-and-drop from media library */
@@ -1359,6 +1401,14 @@ function TrackLane(props: TrackLaneProps) {
     dragPreviewMap,
     onAddSubtitleClip,
     onSubtitleEdit,
+    onSubtitleTrimStart,
+    onSubtitleTrimEnd,
+    onSubtitleMoveToTrack,
+    onSubtitleDuplicate,
+    onSubtitleSplit,
+    onSubtitleAddCue,
+    currentTimeUs,
+    tracks,
   } = props;
 
   // Context menu state for subtitle track
@@ -1464,10 +1514,19 @@ function TrackLane(props: TrackLaneProps) {
             isSelected={clip.id === selectedClipId}
             onSelect={onClipSelect}
             onMove={onClipMove}
+            onMoveToTrack={onSubtitleMoveToTrack}
+            onTrimStart={onSubtitleTrimStart}
+            onTrimEnd={onSubtitleTrimEnd}
             onDelete={onClipDelete}
             onEdit={onSubtitleEdit}
+            onDuplicate={onSubtitleDuplicate}
+            onSplit={onSubtitleSplit}
+            onAddCue={onSubtitleAddCue}
+            currentTimeUs={currentTimeUs}
+            allTracks={tracks}
             applySnap={applySnap}
             setActiveSnapLine={setActiveSnapLine}
+            setDropTargetTrackId={setDropTargetTrackId}
           />
         ) : (
           <ClipBlock
@@ -1558,14 +1617,23 @@ interface SubtitleClipBlockProps {
   isSelected: boolean;
   onSelect?: (clipId: string, trackId: string) => void;
   onMove?: (clipId: string, newStartUs: number) => boolean;
+  onMoveToTrack?: (clipId: string, targetTrackId: string, newStartUs: number) => boolean | void;
+  onTrimStart?: (clipId: string, newStartUs: number) => void;
+  onTrimEnd?: (clipId: string, newEndUs: number) => void;
   onDelete?: (clipId: string) => void;
   onEdit?: (clipId: string) => void;
+  onDuplicate?: (clipId: string) => void;
+  onSplit?: (clipId: string, timeUs: number) => void;
+  onAddCue?: (clipId: string, timeUs: number) => void;
+  currentTimeUs: number;
+  allTracks: readonly Track[];
   applySnap: (
     proposedStartUs: number,
     clipDurationUs: number,
     excludeClipId?: string
   ) => SnapResult;
   setActiveSnapLine: (timeUs: number | null) => void;
+  setDropTargetTrackId: (trackId: string | null) => void;
 }
 
 function SubtitleClipBlock(props: SubtitleClipBlockProps) {
@@ -1577,19 +1645,41 @@ function SubtitleClipBlock(props: SubtitleClipBlockProps) {
     isSelected,
     onSelect,
     onMove,
+    onMoveToTrack,
+    onTrimStart,
+    onTrimEnd,
     onDelete,
     onEdit,
+    onDuplicate,
+    onSplit,
+    onAddCue,
+    currentTimeUs,
+    allTracks: _allTracks,
     applySnap,
     setActiveSnapLine,
+    setDropTargetTrackId,
   } = props;
 
   const [isHovered, setIsHovered] = useState(false);
-  const [isDragging, setIsDragging] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
-  const dragStartRef = useRef({ x: 0, startUs: 0 });
+
+  // Drag state for trim handles and move
+  const [dragState, setDragState] = useState<{
+    type: 'trim-start' | 'trim-end' | 'move';
+    initialTimeUs: number;
+    initialMouseX: number;
+    initialMouseY: number;
+    previewStartUs?: number;
+    targetTrackId?: string;
+  } | null>(null);
 
   const left = timeToPixel(clip.startUs);
   const width = Math.max(timeToPixel(clip.endUs) - left, 20);
+
+  // Use preview position during move drag
+  const displayLeft = dragState?.type === 'move' && dragState.previewStartUs !== undefined
+    ? timeToPixel(dragState.previewStartUs)
+    : left;
 
   // Get preview text based on clip width
   const previewText = useMemo(() => {
@@ -1598,63 +1688,181 @@ function SubtitleClipBlock(props: SubtitleClipBlockProps) {
     // For very narrow clips, just show cue count
     if (width < 80) return `${clip.cueCount}`;
 
-    // Show first cue text, truncated based on width
-    const firstCue = clip.cues[0]!.text;
+    // Show first visible cue text, truncated based on width
+    const visibleCues = clip.getVisibleCues();
+    if (visibleCues.length === 0) return '(trimmed)';
+    const firstCue = visibleCues[0]!.text;
     const maxLen = Math.max(10, Math.floor(width / 7));
     return firstCue.length > maxLen
       ? firstCue.substring(0, maxLen) + '...'
       : firstCue;
-  }, [clip.cues, clip.cueCount, width]);
+  }, [clip, width]);
 
-  const handleMouseDown = useCallback(
-    (e: React.MouseEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
+  // Check if playhead is within this clip (for split action)
+  const canSplit = currentTimeUs > clip.startUs && currentTimeUs < clip.endUs;
 
-      if (e.button !== 0) return;
+  // Left trim handle mouse down
+  const handleTrimStartMouseDown = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
 
-      // Select on click
+    setDragState({
+      type: 'trim-start',
+      initialTimeUs: clip.startUs,
+      initialMouseX: e.clientX,
+      initialMouseY: e.clientY,
+    });
+  }, [clip.startUs]);
+
+  // Right trim handle mouse down
+  const handleTrimEndMouseDown = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+
+    setDragState({
+      type: 'trim-end',
+      initialTimeUs: clip.endUs,
+      initialMouseX: e.clientX,
+      initialMouseY: e.clientY,
+    });
+  }, [clip.endUs]);
+
+  // Body drag (move) mouse down
+  const handleBodyMouseDown = useCallback((e: React.MouseEvent) => {
+    // Only trigger on left mouse button
+    if (e.button !== 0) return;
+
+    // Check if clicking on trim handles (first/last 16px)
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    if (x < 16 || x > rect.width - 16) return;
+
+    e.stopPropagation();
+    e.preventDefault();
+
+    // Select if not already selected
+    if (!isSelected) {
       onSelect?.(clip.id, trackId);
+    }
 
-      // Start drag
-      setIsDragging(true);
-      dragStartRef.current = {
-        x: e.clientX,
-        startUs: clip.startUs,
-      };
+    setDragState({
+      type: 'move',
+      initialTimeUs: clip.startUs,
+      initialMouseX: e.clientX,
+      initialMouseY: e.clientY,
+      previewStartUs: clip.startUs,
+      targetTrackId: trackId,
+    });
+  }, [clip.startUs, clip.id, trackId, isSelected, onSelect]);
 
-      const handleMouseMove = (moveEvent: MouseEvent) => {
-        const deltaX = moveEvent.clientX - dragStartRef.current.x;
-        const deltaTime = pixelToTime(deltaX) - pixelToTime(0);
-        const proposedStart = Math.max(0, dragStartRef.current.startUs + deltaTime);
+  // Global mouse move/up handlers during drag
+  useEffect(() => {
+    if (!dragState) return;
 
-        const { snappedTimeUs, snappedTo } = applySnap(
-          proposedStart,
-          clip.durationUs,
-          clip.id
-        );
+    const handleMouseMove = (e: MouseEvent) => {
+      const deltaX = e.clientX - dragState.initialMouseX;
+      const deltaTimeUs = pixelToTime(deltaX) - pixelToTime(0);
 
-        if (snappedTo) {
-          setActiveSnapLine(snappedTo.timeUs);
+      if (dragState.type === 'trim-start') {
+        const newStartUs = Math.max(0, dragState.initialTimeUs + deltaTimeUs);
+        onTrimStart?.(clip.id, newStartUs);
+      } else if (dragState.type === 'trim-end') {
+        const newEndUs = Math.max(clip.startUs + 100000, dragState.initialTimeUs + deltaTimeUs); // Min 100ms
+        onTrimEnd?.(clip.id, newEndUs);
+      } else if (dragState.type === 'move') {
+        // Calculate new start position
+        let newStartUs = Math.max(0, dragState.initialTimeUs + deltaTimeUs);
+
+        // Apply snapping only if Shift is NOT held
+        if (!e.shiftKey) {
+          const snapResult = applySnap(newStartUs, clip.durationUs, clip.id);
+          newStartUs = snapResult.snappedTimeUs;
+
+          if (snapResult.snappedTo) {
+            setActiveSnapLine(snapResult.snappedTo.timeUs);
+          } else {
+            setActiveSnapLine(null);
+          }
         } else {
           setActiveSnapLine(null);
         }
 
-        onMove?.(clip.id, snappedTimeUs);
-      };
+        // Detect target track from vertical position (only subtitle tracks)
+        const trackElements = document.querySelectorAll('[data-track-id]');
+        let targetTrackId = trackId;
+        let targetTrackType: string | null = null;
 
-      const handleMouseUp = () => {
-        setIsDragging(false);
+        for (const el of trackElements) {
+          const rect = el.getBoundingClientRect();
+          if (e.clientY >= rect.top && e.clientY <= rect.bottom) {
+            targetTrackId = el.getAttribute('data-track-id') || trackId;
+            targetTrackType = el.getAttribute('data-track-type');
+            break;
+          }
+        }
+
+        // Only allow drop on subtitle tracks
+        const isCompatibleTrack = targetTrackType === 'subtitle';
+
+        // Update drop target highlight
+        if (targetTrackId !== trackId && isCompatibleTrack) {
+          setDropTargetTrackId(targetTrackId);
+        } else {
+          setDropTargetTrackId(null);
+        }
+
+        // Update preview state
+        setDragState(prev => prev ? {
+          ...prev,
+          previewStartUs: newStartUs,
+          targetTrackId: isCompatibleTrack ? targetTrackId : trackId,
+        } : null);
+      }
+    };
+
+    const handleMouseUp = () => {
+      if (dragState.type === 'move') {
         setActiveSnapLine(null);
-        document.removeEventListener('mousemove', handleMouseMove);
-        document.removeEventListener('mouseup', handleMouseUp);
-      };
+        setDropTargetTrackId(null);
 
-      document.addEventListener('mousemove', handleMouseMove);
-      document.addEventListener('mouseup', handleMouseUp);
-    },
-    [clip.id, clip.startUs, clip.durationUs, trackId, onSelect, onMove, pixelToTime, applySnap, setActiveSnapLine]
-  );
+        if (dragState.previewStartUs !== undefined) {
+          const targetTrack = dragState.targetTrackId || trackId;
+
+          if (targetTrack !== trackId && onMoveToTrack) {
+            // Moving to different track
+            onMoveToTrack(clip.id, targetTrack, dragState.previewStartUs);
+          } else if (onMove) {
+            // Moving within same track
+            onMove(clip.id, dragState.previewStartUs);
+          }
+        }
+      }
+
+      setDragState(null);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [
+    dragState,
+    clip.id,
+    clip.durationUs,
+    clip.startUs,
+    trackId,
+    pixelToTime,
+    onTrimStart,
+    onTrimEnd,
+    onMove,
+    onMoveToTrack,
+    applySnap,
+    setActiveSnapLine,
+    setDropTargetTrackId,
+  ]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -1662,8 +1870,22 @@ function SubtitleClipBlock(props: SubtitleClipBlockProps) {
         e.preventDefault();
         onDelete?.(clip.id);
       }
+      // Split at playhead with 'S' key
+      if (e.key === 's' || e.key === 'S') {
+        if (isSelected && canSplit) {
+          e.preventDefault();
+          onSplit?.(clip.id, currentTimeUs);
+        }
+      }
+      // Duplicate with Cmd/Ctrl+D
+      if ((e.key === 'd' || e.key === 'D') && (e.metaKey || e.ctrlKey)) {
+        if (isSelected) {
+          e.preventDefault();
+          onDuplicate?.(clip.id);
+        }
+      }
     },
-    [clip.id, isSelected, onDelete]
+    [clip.id, isSelected, onDelete, onSplit, onDuplicate, canSplit, currentTimeUs]
   );
 
   // Handle right-click for context menu
@@ -1688,39 +1910,102 @@ function SubtitleClipBlock(props: SubtitleClipBlockProps) {
     return () => window.removeEventListener('click', handleClickOutside);
   }, [contextMenu]);
 
+  const isMoving = dragState?.type === 'move';
+  const isTrimming = dragState?.type === 'trim-start' || dragState?.type === 'trim-end';
+
+  // Context menu button style
+  const menuButtonStyle: React.CSSProperties = {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    width: '100%',
+    padding: '6px 10px',
+    backgroundColor: 'transparent',
+    border: 'none',
+    borderRadius: 3,
+    color: TIMELINE_COLORS.textPrimary,
+    fontSize: 12,
+    cursor: 'pointer',
+    textAlign: 'left',
+  };
+
   return (
     <div
       tabIndex={0}
       onKeyDown={handleKeyDown}
-      onMouseDown={handleMouseDown}
+      onMouseDown={handleBodyMouseDown}
       onContextMenu={handleContextMenu}
       onDoubleClick={handleDoubleClick}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       style={{
         position: 'absolute',
-        left,
+        left: displayLeft,
         top: 2,
         bottom: 2,
         width,
-        backgroundColor: getClipColor('subtitle', isSelected, isHovered),
+        backgroundColor: isMoving
+          ? '#dd9955' // Lighter during drag
+          : getClipColor('subtitle', isSelected, isHovered),
         borderRadius: 4,
-        cursor: isDragging ? 'grabbing' : 'grab',
+        cursor: isMoving ? 'grabbing' : isTrimming ? 'ew-resize' : 'grab',
         overflow: 'hidden',
         display: 'flex',
         alignItems: 'center',
-        padding: '0 8px',
+        padding: '0 20px', // Room for trim handles
         boxSizing: 'border-box',
         boxShadow: isSelected ? '0 0 0 2px rgba(255,255,255,0.5)' : 'none',
         outline: 'none',
+        opacity: isMoving ? 0.9 : 1,
+        transition: isMoving ? 'none' : 'background-color 0.15s',
+        zIndex: isMoving ? 50 : 'auto',
       }}
     >
+      {/* Left trim handle */}
+      <div
+        onMouseDown={handleTrimStartMouseDown}
+        style={{
+          position: 'absolute',
+          left: 0,
+          top: 0,
+          bottom: 0,
+          width: 16,
+          cursor: 'ew-resize',
+          backgroundColor: dragState?.type === 'trim-start'
+            ? 'rgba(255,255,255,0.3)'
+            : isHovered
+              ? 'rgba(255,255,255,0.15)'
+              : 'rgba(255,255,255,0.1)',
+          borderRadius: '4px 0 0 4px',
+        }}
+      />
+
+      {/* Right trim handle */}
+      <div
+        onMouseDown={handleTrimEndMouseDown}
+        style={{
+          position: 'absolute',
+          right: 0,
+          top: 0,
+          bottom: 0,
+          width: 16,
+          cursor: 'ew-resize',
+          backgroundColor: dragState?.type === 'trim-end'
+            ? 'rgba(255,255,255,0.3)'
+            : isHovered
+              ? 'rgba(255,255,255,0.15)'
+              : 'rgba(255,255,255,0.1)',
+          borderRadius: '0 4px 4px 0',
+        }}
+      />
+
       {/* Subtitle icon */}
       <span
         style={{
           marginRight: 6,
           fontSize: 12,
           opacity: 0.8,
+          pointerEvents: 'none',
         }}
       >
         CC
@@ -1735,6 +2020,7 @@ function SubtitleClipBlock(props: SubtitleClipBlockProps) {
           whiteSpace: 'nowrap',
           overflow: 'hidden',
           textOverflow: 'ellipsis',
+          pointerEvents: 'none',
         }}
       >
         {previewText}
@@ -1750,6 +2036,7 @@ function SubtitleClipBlock(props: SubtitleClipBlockProps) {
             backgroundColor: 'rgba(0,0,0,0.3)',
             borderRadius: 3,
             color: TIMELINE_COLORS.textSecondary,
+            pointerEvents: 'none',
           }}
         >
           {clip.cueCount}
@@ -1768,60 +2055,102 @@ function SubtitleClipBlock(props: SubtitleClipBlockProps) {
             borderRadius: 4,
             padding: 4,
             zIndex: 1000,
-            minWidth: 140,
+            minWidth: 180,
             boxShadow: '0 2px 8px rgba(0,0,0,0.5)',
           }}
           onClick={(e) => e.stopPropagation()}
         >
+          {/* Edit Subtitles */}
           <button
             onClick={() => {
               onEdit?.(clip.id);
               setContextMenu(null);
             }}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              width: '100%',
-              padding: '6px 10px',
-              backgroundColor: 'transparent',
-              border: 'none',
-              borderRadius: 3,
-              color: TIMELINE_COLORS.textPrimary,
-              fontSize: 12,
-              cursor: 'pointer',
-              textAlign: 'left',
-            }}
+            style={menuButtonStyle}
             onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#333')}
             onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
           >
             <span>✏️</span>
             <span>Edit Subtitles</span>
           </button>
+
+          {/* Duplicate */}
+          <button
+            onClick={() => {
+              onDuplicate?.(clip.id);
+              setContextMenu(null);
+            }}
+            style={menuButtonStyle}
+            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#333')}
+            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+          >
+            <span>📋</span>
+            <span>Duplicate</span>
+            <span style={{ marginLeft: 'auto', opacity: 0.5, fontSize: 10 }}>⌘D</span>
+          </button>
+
+          {/* Split at Playhead */}
+          <button
+            onClick={() => {
+              if (canSplit) {
+                onSplit?.(clip.id, currentTimeUs);
+              }
+              setContextMenu(null);
+            }}
+            disabled={!canSplit}
+            style={{
+              ...menuButtonStyle,
+              opacity: canSplit ? 1 : 0.4,
+              cursor: canSplit ? 'pointer' : 'not-allowed',
+            }}
+            onMouseEnter={(e) => canSplit && (e.currentTarget.style.backgroundColor = '#333')}
+            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+          >
+            <span>✂️</span>
+            <span>Split at Playhead</span>
+            <span style={{ marginLeft: 'auto', opacity: 0.5, fontSize: 10 }}>S</span>
+          </button>
+
+          {/* Add Cue at Playhead */}
+          <button
+            onClick={() => {
+              if (canSplit) {
+                onAddCue?.(clip.id, currentTimeUs);
+              }
+              setContextMenu(null);
+            }}
+            disabled={!canSplit}
+            style={{
+              ...menuButtonStyle,
+              opacity: canSplit ? 1 : 0.4,
+              cursor: canSplit ? 'pointer' : 'not-allowed',
+            }}
+            onMouseEnter={(e) => canSplit && (e.currentTarget.style.backgroundColor = '#333')}
+            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+          >
+            <span>➕</span>
+            <span>Add Cue at Playhead</span>
+          </button>
+
+          {/* Separator */}
+          <div style={{ height: 1, backgroundColor: '#444', margin: '4px 0' }} />
+
+          {/* Delete */}
           <button
             onClick={() => {
               onDelete?.(clip.id);
               setContextMenu(null);
             }}
             style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              width: '100%',
-              padding: '6px 10px',
-              backgroundColor: 'transparent',
-              border: 'none',
-              borderRadius: 3,
+              ...menuButtonStyle,
               color: TIMELINE_COLORS.playhead,
-              fontSize: 12,
-              cursor: 'pointer',
-              textAlign: 'left',
             }}
             onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#333')}
             onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
           >
             <span>🗑️</span>
             <span>Delete</span>
+            <span style={{ marginLeft: 'auto', opacity: 0.5, fontSize: 10 }}>⌫</span>
           </button>
         </div>
       )}

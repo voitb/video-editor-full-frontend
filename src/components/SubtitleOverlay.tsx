@@ -36,7 +36,7 @@ export function SubtitleOverlay({
   compositionWidth,
   compositionHeight: _compositionHeight,
   containerWidth,
-  containerHeight,
+  containerHeight: _containerHeight,
 }: SubtitleOverlayProps) {
   // Get all active cues at current time
   const activeCues = useMemo(() => {
@@ -62,19 +62,17 @@ export function SubtitleOverlay({
   // Don't render if no active cues
   if (activeCues.length === 0) return null;
 
-  // Calculate scale factor for font size
+  // Calculate scale factor for font size based on container width
   const scale = containerWidth / compositionWidth;
 
   return (
     <div
       style={{
         position: 'absolute',
-        top: 0,
-        left: 0,
-        width: containerWidth,
-        height: containerHeight,
+        inset: 0, // Fill parent container completely
         pointerEvents: 'none',
         overflow: 'hidden',
+        zIndex: 10, // Ensure above video canvas
       }}
     >
       {activeCues.map(({ cue, style }, index) => (
@@ -83,7 +81,6 @@ export function SubtitleOverlay({
           text={cue.text}
           style={style}
           scale={scale}
-          containerHeight={containerHeight}
         />
       ))}
     </div>
@@ -94,20 +91,16 @@ interface SubtitleTextProps {
   text: string;
   style: SubtitleStyle;
   scale: number;
-  containerHeight: number;
 }
 
-function SubtitleText({ text, style, scale, containerHeight }: SubtitleTextProps) {
+function SubtitleText({ text, style, scale }: SubtitleTextProps) {
   const scaledFontSize = style.fontSize * scale;
-
-  // Position at bottom (85% down)
-  const bottom = containerHeight * 0.05;
 
   const textStyle: CSSProperties = {
     position: 'absolute',
     left: '50%',
     transform: 'translateX(-50%)',
-    bottom,
+    bottom: '5%', // Position at bottom (5% from bottom edge)
     maxWidth: '90%',
     textAlign: 'center',
     fontFamily: style.fontFamily,
@@ -115,7 +108,7 @@ function SubtitleText({ text, style, scale, containerHeight }: SubtitleTextProps
     color: style.color,
     lineHeight: 1.3,
     whiteSpace: 'pre-wrap',
-    // Text outline using text-shadow
+    // Text outline using text-shadow for readability
     textShadow: `
       -1px -1px 0 #000,
       1px -1px 0 #000,

@@ -384,6 +384,136 @@ export function EditorApp(props: EditorAppProps) {
     setSelectedClipId(clipId);
   }, []);
 
+  // Handle subtitle clip trim start (left edge drag)
+  const handleSubtitleTrimStart = useCallback((clipId: string, newStartUs: number) => {
+    for (const track of composition.tracks) {
+      if (track.type !== 'subtitle') continue;
+      for (const clip of track.clips) {
+        if (clip.id === clipId && 'trimStart' in clip) {
+          (clip as import('../core/SubtitleClip').SubtitleClip).trimStart(newStartUs);
+          refresh();
+          notifyCompositionChanged();
+          return;
+        }
+      }
+    }
+  }, [composition, refresh, notifyCompositionChanged]);
+
+  // Handle subtitle clip trim end (right edge drag)
+  const handleSubtitleTrimEnd = useCallback((clipId: string, newEndUs: number) => {
+    for (const track of composition.tracks) {
+      if (track.type !== 'subtitle') continue;
+      for (const clip of track.clips) {
+        if (clip.id === clipId && 'trimEnd' in clip) {
+          (clip as import('../core/SubtitleClip').SubtitleClip).trimEnd(newEndUs);
+          refresh();
+          notifyCompositionChanged();
+          return;
+        }
+      }
+    }
+  }, [composition, refresh, notifyCompositionChanged]);
+
+  // Handle subtitle clip move to different track
+  const handleSubtitleMoveToTrack = useCallback((clipId: string, targetTrackId: string, newStartUs: number) => {
+    // Find the clip in the current track
+    let sourceTrack: import('../core/Track').Track | null = null;
+    let clipToMove: import('../core/SubtitleClip').SubtitleClip | null = null;
+
+    for (const track of composition.tracks) {
+      if (track.type !== 'subtitle') continue;
+      for (const clip of track.clips) {
+        if (clip.id === clipId && 'moveTo' in clip) {
+          sourceTrack = track;
+          clipToMove = clip as import('../core/SubtitleClip').SubtitleClip;
+          break;
+        }
+      }
+      if (clipToMove) break;
+    }
+
+    if (!sourceTrack || !clipToMove) return false;
+
+    const targetTrack = composition.getTrack(targetTrackId);
+    if (!targetTrack || targetTrack.type !== 'subtitle') return false;
+
+    // Remove from source track
+    sourceTrack.removeClip(clipId);
+
+    // Update position and add to target track
+    clipToMove.moveTo(newStartUs);
+    targetTrack.addClip(clipToMove);
+
+    refresh();
+    notifyCompositionChanged();
+    return true;
+  }, [composition, refresh, notifyCompositionChanged]);
+
+  // Handle subtitle clip duplicate
+  const handleSubtitleDuplicate = useCallback((clipId: string) => {
+    for (const track of composition.tracks) {
+      if (track.type !== 'subtitle') continue;
+      for (const clip of track.clips) {
+        if (clip.id === clipId && 'clone' in clip) {
+          const originalClip = clip as import('../core/SubtitleClip').SubtitleClip;
+          const clonedClip = originalClip.clone();
+          // Place the duplicate right after the original
+          clonedClip.moveTo(originalClip.endUs);
+          track.addClip(clonedClip);
+          refresh();
+          notifyCompositionChanged();
+          // Select the new clip
+          setSelectedClipId(clonedClip.id);
+          return;
+        }
+      }
+    }
+  }, [composition, refresh, notifyCompositionChanged]);
+
+  // Handle subtitle clip split at playhead
+  const handleSubtitleSplit = useCallback((clipId: string, timeUs: number) => {
+    for (const track of composition.tracks) {
+      if (track.type !== 'subtitle') continue;
+      for (const clip of track.clips) {
+        if (clip.id === clipId && 'splitAt' in clip) {
+          const originalClip = clip as import('../core/SubtitleClip').SubtitleClip;
+          const secondClip = originalClip.splitAt(timeUs);
+          if (secondClip) {
+            track.addClip(secondClip);
+            refresh();
+            notifyCompositionChanged();
+            // Select the second clip
+            setSelectedClipId(secondClip.id);
+          }
+          return;
+        }
+      }
+    }
+  }, [composition, refresh, notifyCompositionChanged]);
+
+  // Handle adding a cue at playhead position
+  const handleSubtitleAddCue = useCallback((clipId: string, timeUs: number) => {
+    for (const track of composition.tracks) {
+      if (track.type !== 'subtitle') continue;
+      for (const clip of track.clips) {
+        if (clip.id === clipId && 'addCue' in clip) {
+          const subtitleClip = clip as import('../core/SubtitleClip').SubtitleClip;
+          // Convert timeline time to clip-relative time
+          const clipRelativeTime = timeUs - subtitleClip.startUs + subtitleClip.trimStartUs;
+          // Add a new cue with default 3 second duration
+          subtitleClip.addCue({
+            startUs: clipRelativeTime,
+            endUs: clipRelativeTime + 3_000_000, // 3 seconds
+            text: 'New subtitle',
+          });
+          refresh();
+          notifyCompositionChanged();
+          return;
+        }
+      }
+    }
+  }, [composition, refresh, notifyCompositionChanged]);
+
   // Keyboard shortcuts for In/Out points and Delete
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -690,6 +820,12 @@ export function EditorApp(props: EditorAppProps) {
           hasOutPoint={hasOutPoint}
           onAddSubtitleClip={handleAddSubtitleClipAtPosition}
           onSubtitleEdit={handleSubtitleEdit}
+          onSubtitleTrimStart={handleSubtitleTrimStart}
+          onSubtitleTrimEnd={handleSubtitleTrimEnd}
+          onSubtitleMoveToTrack={handleSubtitleMoveToTrack}
+          onSubtitleDuplicate={handleSubtitleDuplicate}
+          onSubtitleSplit={handleSubtitleSplit}
+          onSubtitleAddCue={handleSubtitleAddCue}
           style={{ height: '100%' }}
         />
       </footer>

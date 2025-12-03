@@ -298,6 +298,10 @@ export interface SubtitleClipConfig {
   style: SubtitleStyle;
   /** Optional label */
   label?: string;
+  /** Trim offset from original start (microseconds) - for left-edge trimming */
+  trimStartUs?: number;
+  /** Explicit duration override (microseconds) - for right-edge trimming */
+  explicitDurationUs?: number;
 }
 
 /** Serialized subtitle clip for persistence */
@@ -307,4 +311,8 @@ export interface SubtitleClipJSON {
   cues: SubtitleCue[];
   style: SubtitleStyle;
   label: string;
+  /** Trim offset from original start (microseconds) */
+  trimStartUs?: number;
+  /** Explicit duration override (microseconds) */
+  explicitDurationUs?: number;
 }
