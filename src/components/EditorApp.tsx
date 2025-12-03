@@ -46,6 +46,7 @@ export function EditorApp(props: EditorAppProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [volume, setVolume] = useState(1);
   const [showExportModal, setShowExportModal] = useState(false);
+  const [linkedSelection, setLinkedSelection] = useState(true);
 
   // Refs
   const previewRef = useRef<VideoPreviewHandle>(null);
@@ -189,33 +190,25 @@ export function EditorApp(props: EditorAppProps) {
     seek(timeUs);
   }, [seek]);
 
-  // Handle trim from start (left edge drag)
+  // Helper to get source duration for trimming
+  const getSourceDuration = useCallback((sourceId: string): number => {
+    const source = composition.getSource(sourceId);
+    return source?.durationUs ?? Infinity;
+  }, [composition]);
+
+  // Handle trim from start (left edge drag) - trims linked clips together
   const handleClipTrimStart = useCallback((clipId: string, newStartUs: number) => {
-    const found = getClip(clipId);
-    if (!found) return;
-
-    const { clip } = found;
-    const source = composition.getSource(clip.sourceId);
-    const sourceDuration = source?.durationUs ?? Infinity;
-
-    clip.trimStart(newStartUs, sourceDuration);
+    composition.trimStartWithLinked(clipId, newStartUs, getSourceDuration);
     refresh();
     notifyCompositionChanged();
-  }, [getClip, composition, refresh, notifyCompositionChanged]);
+  }, [composition, getSourceDuration, refresh, notifyCompositionChanged]);
 
-  // Handle trim from end (right edge drag)
+  // Handle trim from end (right edge drag) - trims linked clips together
   const handleClipTrimEnd = useCallback((clipId: string, newEndUs: number) => {
-    const found = getClip(clipId);
-    if (!found) return;
-
-    const { clip } = found;
-    const source = composition.getSource(clip.sourceId);
-    const sourceDuration = source?.durationUs ?? Infinity;
-
-    clip.trimEnd(newEndUs, sourceDuration);
+    composition.trimEndWithLinked(clipId, newEndUs, getSourceDuration);
     refresh();
     notifyCompositionChanged();
-  }, [getClip, composition, refresh, notifyCompositionChanged]);
+  }, [composition, getSourceDuration, refresh, notifyCompositionChanged]);
 
   // Handle clip move (horizontal) - moves linked clips together
   const handleClipMove = useCallback((clipId: string, newStartUs: number): boolean => {
@@ -253,7 +246,22 @@ export function EditorApp(props: EditorAppProps) {
     unlinkClip(clipId);
   }, [unlinkClip]);
 
-  // Keyboard shortcuts for In/Out points
+  // Handle deleting a clip (respects linkedSelection)
+  const handleClipDelete = useCallback((clipId: string) => {
+    if (linkedSelection) {
+      composition.removeClipWithLinked(clipId);
+    } else {
+      composition.removeClip(clipId);
+    }
+    // Clear selection if deleted clip was selected
+    if (selectedClipId === clipId) {
+      setSelectedClipId(undefined);
+    }
+    refresh();
+    notifyCompositionChanged();
+  }, [composition, linkedSelection, selectedClipId, refresh, notifyCompositionChanged]);
+
+  // Keyboard shortcuts for In/Out points and Delete
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // Ignore if typing in an input field
@@ -282,12 +290,19 @@ export function EditorApp(props: EditorAppProps) {
           }
           e.preventDefault();
           break;
+        case 'delete':
+        case 'backspace':
+          if (selectedClipId) {
+            handleClipDelete(selectedClipId);
+            e.preventDefault();
+          }
+          break;
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentTimeUs, setInPoint, setOutPoint, clearInPoint, clearOutPoint]);
+  }, [currentTimeUs, selectedClipId, setInPoint, setOutPoint, clearInPoint, clearOutPoint, handleClipDelete]);
 
   // Get tracks JSON for export
   const getTracksJSON = useCallback(() => {
@@ -354,7 +369,30 @@ export function EditorApp(props: EditorAppProps) {
             Error: {error}
           </span>
         )}
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
+          {/* Linked Selection Toggle */}
+          <button
+            onClick={() => setLinkedSelection(!linkedSelection)}
+            title={linkedSelection ? 'Linked Selection ON - Click to disable' : 'Linked Selection OFF - Click to enable'}
+            style={{
+              padding: '4px 8px',
+              backgroundColor: linkedSelection ? '#4a90d9' : '#333',
+              border: linkedSelection ? '1px solid #5aa0e9' : '1px solid #555',
+              borderRadius: 4,
+              color: '#fff',
+              fontSize: 12,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 4,
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+              <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+            </svg>
+            Link
+          </button>
           <span style={{ fontSize: 11, color: '#666', alignSelf: 'center' }}>
             I/O: Set In/Out
           </span>
@@ -495,7 +533,9 @@ export function EditorApp(props: EditorAppProps) {
           onTrackResize={setTrackHeight}
           onFitToView={() => resetViewport(durationUs)}
           onExternalDropToTrack={handleExternalDropToTrack}
+          onClipDelete={handleClipDelete}
           selectedClipId={selectedClipId}
+          linkedSelection={linkedSelection}
           inPointUs={inPointUs}
           outPointUs={outPointUs}
           hasInPoint={hasInPoint}

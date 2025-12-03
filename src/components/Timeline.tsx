@@ -78,6 +78,10 @@ export interface TimelineProps {
   hasInPoint?: boolean;
   /** Whether out-point has been explicitly set */
   hasOutPoint?: boolean;
+  /** Callback when a clip is deleted */
+  onClipDelete?: (clipId: string) => void;
+  /** Whether linked selection mode is enabled (affects linked clip operations) */
+  linkedSelection?: boolean;
 }
 
 interface SnapTarget {
@@ -124,6 +128,8 @@ export function Timeline(props: TimelineProps) {
     onClipUnlink,
     onFitToView,
     onExternalDropToTrack,
+    onClipDelete,
+    linkedSelection = true,
     inPointUs,
     outPointUs,
     hasInPoint,
@@ -140,6 +146,7 @@ export function Timeline(props: TimelineProps) {
   const [containerWidth, setContainerWidth] = useState(0);
   const [isRulerDragging, setIsRulerDragging] = useState(false);
   const [scrollLeft, setScrollLeft] = useState(0);
+  const [hoveredLinkedClipId, setHoveredLinkedClipId] = useState<string | null>(null);
 
   // Track container width for responsive timeline
   useEffect(() => {
@@ -734,6 +741,7 @@ export function Timeline(props: TimelineProps) {
                 onClipTrimEnd={onClipTrimEnd}
                 onSeek={onSeek}
                 onClipUnlink={onClipUnlink}
+                onClipDelete={onClipDelete}
                 onExternalDropToTrack={onExternalDropToTrack}
                 applySnap={applySnap}
                 setActiveSnapLine={setActiveSnapLine}
@@ -741,6 +749,8 @@ export function Timeline(props: TimelineProps) {
                 allTracks={tracks}
                 pixelsPerSecond={pixelsPerSecond}
                 scrollLeft={scrollLeft}
+                hoveredLinkedClipId={hoveredLinkedClipId}
+                setHoveredLinkedClipId={setHoveredLinkedClipId}
               />
             ))}
 
@@ -1191,6 +1201,7 @@ interface TrackLaneProps {
   onClipTrimEnd?: (clipId: string, newEndUs: number) => void;
   onSeek?: (timeUs: number) => void;
   onClipUnlink?: (clipId: string) => void;
+  onClipDelete?: (clipId: string) => void;
   onExternalDropToTrack?: (sourceId: string, trackId: string, startTimeUs: number) => void;
   applySnap: (proposedStartUs: number, clipDurationUs: number, excludeClipId?: string) => SnapResult;
   setActiveSnapLine: (timeUs: number | null) => void;
@@ -1198,6 +1209,8 @@ interface TrackLaneProps {
   allTracks: readonly Track[];
   pixelsPerSecond: number;
   scrollLeft: number;
+  hoveredLinkedClipId: string | null;
+  setHoveredLinkedClipId: (clipId: string | null) => void;
 }
 
 /** Data type for external drag-and-drop from media library */
@@ -1219,12 +1232,15 @@ function TrackLane(props: TrackLaneProps) {
     onClipTrimEnd,
     onSeek,
     onClipUnlink,
+    onClipDelete,
     onExternalDropToTrack,
     applySnap,
     setActiveSnapLine,
     setDropTargetTrackId,
     allTracks,
     pixelsPerSecond,
+    hoveredLinkedClipId,
+    setHoveredLinkedClipId,
     scrollLeft,
   } = props;
 
@@ -1300,10 +1316,13 @@ function TrackLane(props: TrackLaneProps) {
           onTrimEnd={onClipTrimEnd}
           onSeek={onSeek}
           onUnlink={onClipUnlink}
+          onDelete={onClipDelete}
           applySnap={applySnap}
           setActiveSnapLine={setActiveSnapLine}
           setDropTargetTrackId={setDropTargetTrackId}
           allTracks={allTracks}
+          isLinkedHighlighted={clip.id === hoveredLinkedClipId}
+          onHoverLinked={setHoveredLinkedClipId}
         />
       ))}
     </div>
@@ -1328,10 +1347,15 @@ interface ClipBlockProps {
   onTrimEnd?: (clipId: string, newEndUs: number) => void;
   onSeek?: (timeUs: number) => void;
   onUnlink?: (clipId: string) => void;
+  onDelete?: (clipId: string) => void;
   applySnap: (proposedStartUs: number, clipDurationUs: number, excludeClipId?: string) => SnapResult;
   setActiveSnapLine: (timeUs: number | null) => void;
   setDropTargetTrackId: (trackId: string | null) => void;
   allTracks: readonly Track[];
+  /** Whether this clip's linked partner is being hovered */
+  isLinkedHighlighted?: boolean;
+  /** Callback when hovering over a linked clip */
+  onHoverLinked?: (linkedClipId: string | null) => void;
 }
 
 function ClipBlock(props: ClipBlockProps) {
@@ -1349,10 +1373,13 @@ function ClipBlock(props: ClipBlockProps) {
     onTrimEnd,
     onSeek,
     onUnlink,
+    onDelete,
     applySnap,
     setActiveSnapLine,
     setDropTargetTrackId,
     allTracks,
+    isLinkedHighlighted,
+    onHoverLinked,
   } = props;
 
   // Drag state for trim handles and move
@@ -1423,6 +1450,12 @@ function ClipBlock(props: ClipBlockProps) {
     onUnlink?.(clip.id);
     setContextMenu(null);
   }, [clip.id, onUnlink]);
+
+  // Handle delete from context menu
+  const handleDelete = useCallback(() => {
+    onDelete?.(clip.id);
+    setContextMenu(null);
+  }, [clip.id, onDelete]);
 
   // Left trim handle mouse down
   const handleTrimStartMouseDown = useCallback((e: React.MouseEvent) => {
@@ -1597,19 +1630,36 @@ function ClipBlock(props: ClipBlockProps) {
     allTracks,
   ]);
 
-  // Clip colors based on type, selection, and drag state
+  // Clip colors based on type, selection, drag state, and linked highlight
   const isMoving = dragState?.type === 'move';
-  const backgroundColor = isMoving
-    ? '#5593dd' // Blue during drag (overlaps allowed)
-    : isSelected
-      ? (trackType === 'video' ? '#4f83cc' : '#4fcc83')
-      : (trackType === 'video' ? '#3b5998' : '#3b9858');
+  const getBackgroundColor = () => {
+    if (isMoving) return '#5593dd'; // Blue during drag
+    if (isLinkedHighlighted) return trackType === 'video' ? '#6a9fd4' : '#6ad49f'; // Highlight linked
+    if (isSelected) return trackType === 'video' ? '#4f83cc' : '#4fcc83';
+    return trackType === 'video' ? '#3b5998' : '#3b9858';
+  };
+  const backgroundColor = getBackgroundColor();
+
+  // Handle mouse enter/leave for linked clip highlighting
+  const handleMouseEnter = useCallback(() => {
+    if (clip.linkedClipId) {
+      onHoverLinked?.(clip.linkedClipId);
+    }
+  }, [clip.linkedClipId, onHoverLinked]);
+
+  const handleMouseLeave = useCallback(() => {
+    if (clip.linkedClipId) {
+      onHoverLinked?.(null);
+    }
+  }, [clip.linkedClipId, onHoverLinked]);
 
   return (
     <div
       onClick={handleClick}
       onContextMenu={handleContextMenu}
       onMouseDown={handleBodyMouseDown}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
       style={{
         position: 'absolute',
         left: displayLeft,
@@ -1618,7 +1668,11 @@ function ClipBlock(props: ClipBlockProps) {
         width: Math.max(width, 1),
         backgroundColor,
         borderRadius: 4,
-        border: isSelected ? '2px solid #fff' : '1px solid rgba(255,255,255,0.2)',
+        border: isSelected
+          ? '2px solid #fff'
+          : isLinkedHighlighted
+            ? '2px solid rgba(255,255,255,0.5)'
+            : '1px solid rgba(255,255,255,0.2)',
         cursor: isMoving ? 'grabbing' : 'grab',
         overflow: 'hidden',
         display: 'flex',
@@ -1626,7 +1680,7 @@ function ClipBlock(props: ClipBlockProps) {
         paddingLeft: 8,
         boxSizing: 'border-box',
         opacity: isMoving ? 0.9 : 1,
-        transition: isMoving ? 'none' : 'background-color 0.15s',
+        transition: isMoving ? 'none' : 'background-color 0.15s, border 0.15s',
         zIndex: isMoving ? 50 : 'auto',
       }}
     >
@@ -1634,14 +1688,24 @@ function ClipBlock(props: ClipBlockProps) {
       {clip.linkedClipId && (
         <span
           style={{
-            fontSize: 10,
-            color: 'rgba(255,255,255,0.7)',
+            display: 'flex',
+            alignItems: 'center',
             marginRight: 4,
             pointerEvents: 'none',
           }}
           title="Linked to another clip"
         >
-          🔗
+          <svg
+            width="10"
+            height="10"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="rgba(255,255,255,0.8)"
+            strokeWidth="2.5"
+          >
+            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+          </svg>
         </span>
       )}
 
@@ -1702,7 +1766,7 @@ function ClipBlock(props: ClipBlockProps) {
           }}
           onClick={(e) => e.stopPropagation()}
         >
-          {clip.linkedClipId ? (
+          {clip.linkedClipId && (
             <button
               onClick={handleUnlink}
               style={{
@@ -1720,19 +1784,36 @@ function ClipBlock(props: ClipBlockProps) {
               onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#333')}
               onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
             >
-              🔗 Unlink Clip
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginRight: 6, verticalAlign: 'middle' }}>
+                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+              </svg>
+              Unlink
             </button>
-          ) : (
-            <div
-              style={{
-                padding: '6px 12px',
-                color: '#666',
-                fontSize: 12,
-              }}
-            >
-              No linked clip
-            </div>
           )}
+          <button
+            onClick={handleDelete}
+            style={{
+              display: 'block',
+              width: '100%',
+              padding: '6px 12px',
+              backgroundColor: 'transparent',
+              border: 'none',
+              color: '#ff6b6b',
+              fontSize: 12,
+              textAlign: 'left',
+              cursor: 'pointer',
+              borderRadius: 2,
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#333')}
+            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginRight: 6, verticalAlign: 'middle' }}>
+              <polyline points="3 6 5 6 21 6" />
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+            </svg>
+            Delete
+          </button>
         </div>
       )}
     </div>

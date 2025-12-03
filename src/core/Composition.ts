@@ -213,6 +213,26 @@ export class Composition {
     return false;
   }
 
+  /**
+   * Remove a clip and its linked clip
+   */
+  removeClipWithLinked(clipId: string): boolean {
+    const result = this.getClip(clipId);
+    if (!result) return false;
+
+    const linkedClipId = result.clip.linkedClipId;
+
+    // Remove the primary clip
+    this.removeClip(clipId);
+
+    // Remove the linked clip if it exists
+    if (linkedClipId) {
+      this.removeClip(linkedClipId);
+    }
+
+    return true;
+  }
+
   // ============================================================================
   // CLIP LINKING
   // ============================================================================
@@ -272,6 +292,72 @@ export class Composition {
       const linkedResult = this.getClip(result.clip.linkedClipId);
       if (linkedResult) {
         linkedResult.clip.moveTo(linkedResult.clip.startUs + delta);
+      }
+    }
+
+    return true;
+  }
+
+  /**
+   * Trim clip start (left edge) along with its linked clip
+   */
+  trimStartWithLinked(
+    clipId: string,
+    newStartUs: number,
+    getSourceDuration: (sourceId: string) => number
+  ): boolean {
+    const result = this.getClip(clipId);
+    if (!result) return false;
+
+    const sourceDuration = getSourceDuration(result.clip.sourceId);
+
+    // Calculate the delta before trimming
+    const oldStartUs = result.clip.startUs;
+    const delta = newStartUs - oldStartUs;
+
+    // Trim the primary clip
+    result.clip.trimStart(newStartUs, sourceDuration);
+
+    // Trim the linked clip by the same amount
+    if (result.clip.linkedClipId) {
+      const linkedResult = this.getClip(result.clip.linkedClipId);
+      if (linkedResult) {
+        const linkedSourceDuration = getSourceDuration(linkedResult.clip.sourceId);
+        const linkedNewStart = linkedResult.clip.startUs + delta;
+        linkedResult.clip.trimStart(linkedNewStart, linkedSourceDuration);
+      }
+    }
+
+    return true;
+  }
+
+  /**
+   * Trim clip end (right edge) along with its linked clip
+   */
+  trimEndWithLinked(
+    clipId: string,
+    newEndUs: number,
+    getSourceDuration: (sourceId: string) => number
+  ): boolean {
+    const result = this.getClip(clipId);
+    if (!result) return false;
+
+    const sourceDuration = getSourceDuration(result.clip.sourceId);
+
+    // Calculate the delta before trimming
+    const oldEndUs = result.clip.endUs;
+    const delta = newEndUs - oldEndUs;
+
+    // Trim the primary clip
+    result.clip.trimEnd(newEndUs, sourceDuration);
+
+    // Trim the linked clip by the same amount
+    if (result.clip.linkedClipId) {
+      const linkedResult = this.getClip(result.clip.linkedClipId);
+      if (linkedResult) {
+        const linkedSourceDuration = getSourceDuration(linkedResult.clip.sourceId);
+        const linkedNewEnd = linkedResult.clip.endUs + delta;
+        linkedResult.clip.trimEnd(linkedNewEnd, linkedSourceDuration);
       }
     }
 
