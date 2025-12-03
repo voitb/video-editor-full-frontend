@@ -152,6 +152,36 @@ export const EXPORT = {
   DEFAULT_AUDIO_BITRATE: 128_000,
   /** Default audio sample rate */
   DEFAULT_AUDIO_SAMPLE_RATE: 48_000,
+  /** Audio channels for export (stereo) */
+  AUDIO_CHANNELS: 2,
+} as const;
+
+/** Export quality presets */
+export const EXPORT_PRESETS = {
+  low: {
+    name: 'Low (720p)',
+    videoBitrate: 2_000_000,
+    audioBitrate: 96_000,
+    scale: 0.5,
+  },
+  medium: {
+    name: 'Medium (1080p)',
+    videoBitrate: 5_000_000,
+    audioBitrate: 128_000,
+    scale: 0.75,
+  },
+  high: {
+    name: 'High (1080p)',
+    videoBitrate: 8_000_000,
+    audioBitrate: 192_000,
+    scale: 1.0,
+  },
+  original: {
+    name: 'Original',
+    videoBitrate: 15_000_000,
+    audioBitrate: 256_000,
+    scale: 1.0,
+  },
 } as const;
 
 /** WebGL renderer constants */

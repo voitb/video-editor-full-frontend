@@ -70,6 +70,14 @@ export interface TimelineProps {
   onFitToView?: () => void;
   /** Callback when an external source is dropped onto a track */
   onExternalDropToTrack?: (sourceId: string, trackId: string, startTimeUs: number) => void;
+  /** Export in-point marker (microseconds) */
+  inPointUs?: number;
+  /** Export out-point marker (microseconds) */
+  outPointUs?: number;
+  /** Whether in-point has been explicitly set */
+  hasInPoint?: boolean;
+  /** Whether out-point has been explicitly set */
+  hasOutPoint?: boolean;
 }
 
 interface SnapTarget {
@@ -116,6 +124,10 @@ export function Timeline(props: TimelineProps) {
     onClipUnlink,
     onFitToView,
     onExternalDropToTrack,
+    inPointUs,
+    outPointUs,
+    hasInPoint,
+    hasOutPoint,
   } = props;
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -397,6 +409,10 @@ export function Timeline(props: TimelineProps) {
 
   // Playhead position
   const playheadPosition = timeToPixel(currentTimeUs);
+
+  // In/Out marker positions
+  const inPointPosition = hasInPoint && inPointUs !== undefined ? timeToPixel(inPointUs) : null;
+  const outPointPosition = hasOutPoint && outPointUs !== undefined ? timeToPixel(outPointUs) : null;
 
   // Check if scrollbar should be visible
   const showScrollbar = totalTimelineWidth > containerWidth;
@@ -742,6 +758,92 @@ export function Timeline(props: TimelineProps) {
                   zIndex: 90,
                 }}
               />
+            )}
+
+            {/* In-point marker */}
+            {inPointPosition !== null && (
+              <div
+                style={{
+                  position: 'absolute',
+                  left: inPointPosition,
+                  top: 0,
+                  bottom: 0,
+                  width: 2,
+                  backgroundColor: '#00ffff',
+                  pointerEvents: 'none',
+                  zIndex: 95,
+                }}
+              >
+                {/* In-point head */}
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: -5,
+                    width: 12,
+                    height: 10,
+                    backgroundColor: '#00ffff',
+                    clipPath: 'polygon(50% 100%, 0 0, 100% 0)',
+                  }}
+                />
+                {/* "I" label */}
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: 12,
+                    left: -4,
+                    fontSize: 9,
+                    fontWeight: 'bold',
+                    color: '#00ffff',
+                    userSelect: 'none',
+                  }}
+                >
+                  I
+                </div>
+              </div>
+            )}
+
+            {/* Out-point marker */}
+            {outPointPosition !== null && (
+              <div
+                style={{
+                  position: 'absolute',
+                  left: outPointPosition,
+                  top: 0,
+                  bottom: 0,
+                  width: 2,
+                  backgroundColor: '#ff00ff',
+                  pointerEvents: 'none',
+                  zIndex: 95,
+                }}
+              >
+                {/* Out-point head */}
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: -5,
+                    width: 12,
+                    height: 10,
+                    backgroundColor: '#ff00ff',
+                    clipPath: 'polygon(50% 100%, 0 0, 100% 0)',
+                  }}
+                />
+                {/* "O" label */}
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: 12,
+                    left: -4,
+                    fontSize: 9,
+                    fontWeight: 'bold',
+                    color: '#ff00ff',
+                    userSelect: 'none',
+                  }}
+                >
+                  O
+                </div>
+              </div>
             )}
 
             {/* Playhead */}

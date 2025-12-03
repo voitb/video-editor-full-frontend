@@ -7,11 +7,14 @@ import { useRef, useEffect, useCallback, useState, useMemo } from 'react';
 import { useComposition } from '../hooks/useComposition';
 import { useEngine } from '../hooks/useEngine';
 import { useTimeline } from '../hooks/useTimeline';
+import { useExportRange } from '../hooks/useExportRange';
 import { VideoPreview, type VideoPreviewHandle } from './VideoPreview';
 import { Timeline } from './Timeline';
 import { PlaybackControls } from './PlaybackControls';
 import { MediaLibrary } from './MediaLibrary';
+import { ExportModal } from './ExportModal';
 import { MEDIA_LIBRARY } from '../constants';
+import type { ExportSourceData } from '../workers/messages/exportMessages';
 
 export interface EditorAppProps {
   /** Width of the preview canvas */
@@ -42,6 +45,7 @@ export function EditorApp(props: EditorAppProps) {
   const [selectedClipId, setSelectedClipId] = useState<string>();
   const [isLoading, setIsLoading] = useState(false);
   const [volume, setVolume] = useState(1);
+  const [showExportModal, setShowExportModal] = useState(false);
 
   // Refs
   const previewRef = useRef<VideoPreviewHandle>(null);
@@ -75,6 +79,7 @@ export function EditorApp(props: EditorAppProps) {
     seek,
     setMasterVolume,
     notifyCompositionChanged,
+    getSourceBuffer,
   } = useEngine({ composition });
 
   const {
@@ -90,6 +95,17 @@ export function EditorApp(props: EditorAppProps) {
     setTrackLocked,
     setTrackHeight,
   } = useTimeline({ durationUs });
+
+  const {
+    inPointUs,
+    outPointUs,
+    hasInPoint,
+    hasOutPoint,
+    setInPoint,
+    setOutPoint,
+    clearInPoint,
+    clearOutPoint,
+  } = useExportRange({ durationUs });
 
   // Sort tracks: video tracks first, then audio tracks (professional NLE layout)
   // Use tracks.length as dependency to ensure re-computation when tracks are added/removed
@@ -237,6 +253,70 @@ export function EditorApp(props: EditorAppProps) {
     unlinkClip(clipId);
   }, [unlinkClip]);
 
+  // Keyboard shortcuts for In/Out points
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ignore if typing in an input field
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement ||
+        e.target instanceof HTMLSelectElement
+      ) {
+        return;
+      }
+
+      switch (e.key.toLowerCase()) {
+        case 'i':
+          if (e.altKey || e.metaKey) {
+            clearInPoint();
+          } else {
+            setInPoint(currentTimeUs);
+          }
+          e.preventDefault();
+          break;
+        case 'o':
+          if (e.altKey || e.metaKey) {
+            clearOutPoint();
+          } else {
+            setOutPoint(currentTimeUs);
+          }
+          e.preventDefault();
+          break;
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [currentTimeUs, setInPoint, setOutPoint, clearInPoint, clearOutPoint]);
+
+  // Get tracks JSON for export
+  const getTracksJSON = useCallback(() => {
+    return composition.tracks.map(track => track.toJSON());
+  }, [composition]);
+
+  // Get source data for export
+  const getSourceData = useCallback(async (): Promise<ExportSourceData[]> => {
+    const sourcesData: ExportSourceData[] = [];
+
+    for (const source of composition.sources.values()) {
+      // Get the source buffer from engine
+      const buffer = getSourceBuffer(source.id);
+      if (!buffer) continue;
+
+      sourcesData.push({
+        sourceId: source.id,
+        buffer: buffer.slice(0), // Clone buffer
+        durationUs: source.durationUs,
+        width: source.width,
+        height: source.height,
+        hasVideo: true,
+        hasAudio: source.hasAudio,
+      });
+    }
+
+    return sourcesData;
+  }, [composition, getSourceBuffer]);
+
   // Get loading progress for display
   const loadingProgressPercent = Array.from(loadingProgress.values()).reduce(
     (acc, val) => acc + val,
@@ -274,6 +354,28 @@ export function EditorApp(props: EditorAppProps) {
             Error: {error}
           </span>
         )}
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+          <span style={{ fontSize: 11, color: '#666', alignSelf: 'center' }}>
+            I/O: Set In/Out
+          </span>
+          <button
+            onClick={() => setShowExportModal(true)}
+            disabled={durationUs === 0}
+            style={{
+              padding: '6px 16px',
+              backgroundColor: durationUs === 0 ? '#333' : '#4a90d9',
+              border: 'none',
+              borderRadius: 4,
+              color: '#fff',
+              fontSize: 13,
+              fontWeight: 500,
+              cursor: durationUs === 0 ? 'not-allowed' : 'pointer',
+              opacity: durationUs === 0 ? 0.5 : 1,
+            }}
+          >
+            Export
+          </button>
+        </div>
       </header>
 
       {/* Main content */}
@@ -394,9 +496,28 @@ export function EditorApp(props: EditorAppProps) {
           onFitToView={() => resetViewport(durationUs)}
           onExternalDropToTrack={handleExternalDropToTrack}
           selectedClipId={selectedClipId}
+          inPointUs={inPointUs}
+          outPointUs={outPointUs}
+          hasInPoint={hasInPoint}
+          hasOutPoint={hasOutPoint}
           style={{ height: '100%' }}
         />
       </footer>
+
+      {/* Export Modal */}
+      <ExportModal
+        isOpen={showExportModal}
+        onClose={() => setShowExportModal(false)}
+        inPointUs={inPointUs}
+        outPointUs={outPointUs}
+        compositionConfig={{
+          width: 1920,
+          height: 1080,
+          frameRate: 30,
+        }}
+        getTracksJSON={getTracksJSON}
+        getSourceData={getSourceData}
+      />
     </div>
   );
 }

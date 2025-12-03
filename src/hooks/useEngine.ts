@@ -55,6 +55,8 @@ export interface UseEngineReturn {
   dispose: () => void;
   /** Notify engine that composition changed (e.g., after trim) */
   notifyCompositionChanged: () => void;
+  /** Get source buffer for export */
+  getSourceBuffer: (sourceId: string) => ArrayBuffer | null;
 }
 
 /**
@@ -216,6 +218,17 @@ export function useEngine(options: UseEngineOptions): UseEngineReturn {
     setDurationUs(composition.durationUs);
   }, [composition]);
 
+  // Get source buffer for export
+  const getSourceBuffer = useCallback((sourceId: string): ArrayBuffer | null => {
+    const source = composition.getSource(sourceId);
+    if (!source) return null;
+    // HlsSource has getBuffer() method
+    if ('getBuffer' in source && typeof source.getBuffer === 'function') {
+      return source.getBuffer();
+    }
+    return null;
+  }, [composition]);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -243,5 +256,6 @@ export function useEngine(options: UseEngineOptions): UseEngineReturn {
     setMasterVolume,
     dispose,
     notifyCompositionChanged,
+    getSourceBuffer,
   };
 }
