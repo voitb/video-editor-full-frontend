@@ -39,7 +39,7 @@ export interface TimelineProps {
   /** Callback when a clip is trimmed from end */
   onClipTrimEnd?: (clipId: string, newEndUs: number) => void;
   /** Callback when adding a track */
-  onTrackAdd?: (type: 'video' | 'audio') => void;
+  onTrackAdd?: (type: 'video' | 'audio' | 'subtitle') => void;
   /** Callback when removing a track */
   onTrackRemove?: (trackId: string) => void;
   /** Currently selected clip ID */
@@ -84,6 +84,10 @@ export interface TimelineProps {
   onClipDelete?: (clipId: string) => void;
   /** Whether linked selection mode is enabled (affects linked clip operations) */
   linkedSelection?: boolean;
+  /** Callback when adding a subtitle clip at position */
+  onAddSubtitleClip?: (trackId: string, startUs: number) => void;
+  /** Callback when edit is requested on a subtitle clip */
+  onSubtitleEdit?: (clipId: string) => void;
 }
 
 interface SnapTarget {
@@ -184,6 +188,8 @@ export function Timeline(props: TimelineProps) {
     outPointUs,
     hasInPoint,
     hasOutPoint,
+    onAddSubtitleClip,
+    onSubtitleEdit,
   } = props;
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -638,6 +644,20 @@ export function Timeline(props: TimelineProps) {
               >
                 + Audio Track
               </button>
+              <button
+                onClick={() => onTrackAdd('subtitle')}
+                style={{
+                  padding: '4px 8px',
+                  fontSize: 11,
+                  backgroundColor: TIMELINE_COLORS.clipSubtitle,
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: 3,
+                  cursor: 'pointer',
+                }}
+              >
+                + Subtitle Track
+              </button>
             </div>
           )}
         </div>
@@ -834,6 +854,8 @@ export function Timeline(props: TimelineProps) {
                 setHoveredLinkedClipId={setHoveredLinkedClipId}
                 onDragPreview={handleDragPreview}
                 dragPreviewMap={dragPreviewMap}
+                onAddSubtitleClip={onAddSubtitleClip}
+                onSubtitleEdit={onSubtitleEdit}
               />
             ))}
 
@@ -1298,6 +1320,10 @@ interface TrackLaneProps {
   onDragPreview?: (clipId: string, previewStartUs: number | null, linkedClipId?: string, delta?: number) => void;
   /** Map of clip IDs to their preview positions during drag */
   dragPreviewMap: Map<string, number>;
+  /** Callback when adding a subtitle clip at position */
+  onAddSubtitleClip?: (trackId: string, startUs: number) => void;
+  /** Callback when edit is requested on a subtitle clip */
+  onSubtitleEdit?: (clipId: string) => void;
 }
 
 /** Data type for external drag-and-drop from media library */
@@ -1331,7 +1357,46 @@ function TrackLane(props: TrackLaneProps) {
     scrollLeft,
     onDragPreview,
     dragPreviewMap,
+    onAddSubtitleClip,
+    onSubtitleEdit,
   } = props;
+
+  // Context menu state for subtitle track
+  const [trackContextMenu, setTrackContextMenu] = useState<{
+    x: number;
+    y: number;
+    timeUs: number;
+  } | null>(null);
+
+  // Handle right-click on empty subtitle track area
+  const handleTrackContextMenu = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      // Only show context menu for subtitle tracks
+      if (track.type !== 'subtitle') return;
+
+      e.preventDefault();
+
+      // Calculate click position in time
+      const rect = e.currentTarget.getBoundingClientRect();
+      const clickX = e.clientX - rect.left + scrollLeft;
+      const clickTimeUs = (clickX / pixelsPerSecond) * 1_000_000;
+
+      setTrackContextMenu({
+        x: e.clientX,
+        y: e.clientY,
+        timeUs: Math.max(0, clickTimeUs),
+      });
+    },
+    [track.type, scrollLeft, pixelsPerSecond]
+  );
+
+  // Close track context menu when clicking elsewhere
+  useEffect(() => {
+    if (!trackContextMenu) return;
+    const handleClickOutside = () => setTrackContextMenu(null);
+    window.addEventListener('click', handleClickOutside);
+    return () => window.removeEventListener('click', handleClickOutside);
+  }, [trackContextMenu]);
 
   // Handle external drag over (from media library)
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -1376,6 +1441,7 @@ function TrackLane(props: TrackLaneProps) {
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
+      onContextMenu={handleTrackContextMenu}
       style={{
         height,
         backgroundColor: getTrackBgColor(track.type, isDropTarget),
@@ -1399,6 +1465,7 @@ function TrackLane(props: TrackLaneProps) {
             onSelect={onClipSelect}
             onMove={onClipMove}
             onDelete={onClipDelete}
+            onEdit={onSubtitleEdit}
             applySnap={applySnap}
             setActiveSnapLine={setActiveSnapLine}
           />
@@ -1430,6 +1497,51 @@ function TrackLane(props: TrackLaneProps) {
           />
         )
       )}
+
+      {/* Track context menu (for adding subtitle clips) */}
+      {trackContextMenu && (
+        <div
+          style={{
+            position: 'fixed',
+            left: trackContextMenu.x,
+            top: trackContextMenu.y,
+            backgroundColor: '#1a1a1a',
+            border: '1px solid #444',
+            borderRadius: 4,
+            padding: 4,
+            zIndex: 1000,
+            minWidth: 140,
+            boxShadow: '0 2px 8px rgba(0,0,0,0.5)',
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            onClick={() => {
+              onAddSubtitleClip?.(track.id, trackContextMenu.timeUs);
+              setTrackContextMenu(null);
+            }}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              width: '100%',
+              padding: '6px 10px',
+              backgroundColor: 'transparent',
+              border: 'none',
+              borderRadius: 3,
+              color: TIMELINE_COLORS.textPrimary,
+              fontSize: 12,
+              cursor: 'pointer',
+              textAlign: 'left',
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#333')}
+            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+          >
+            <span>➕</span>
+            <span>Add Subtitle</span>
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -1447,6 +1559,7 @@ interface SubtitleClipBlockProps {
   onSelect?: (clipId: string, trackId: string) => void;
   onMove?: (clipId: string, newStartUs: number) => boolean;
   onDelete?: (clipId: string) => void;
+  onEdit?: (clipId: string) => void;
   applySnap: (
     proposedStartUs: number,
     clipDurationUs: number,
@@ -1465,22 +1578,33 @@ function SubtitleClipBlock(props: SubtitleClipBlockProps) {
     onSelect,
     onMove,
     onDelete,
+    onEdit,
     applySnap,
     setActiveSnapLine,
   } = props;
 
   const [isHovered, setIsHovered] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const dragStartRef = useRef({ x: 0, startUs: 0 });
 
   const left = timeToPixel(clip.startUs);
   const width = Math.max(timeToPixel(clip.endUs) - left, 20);
 
-  // Get first cue text for preview
-  const previewText =
-    clip.cues.length > 0
-      ? clip.cues[0]!.text.substring(0, 30) + (clip.cues[0]!.text.length > 30 ? '...' : '')
-      : 'Empty';
+  // Get preview text based on clip width
+  const previewText = useMemo(() => {
+    if (clip.cues.length === 0) return '(empty)';
+
+    // For very narrow clips, just show cue count
+    if (width < 80) return `${clip.cueCount}`;
+
+    // Show first cue text, truncated based on width
+    const firstCue = clip.cues[0]!.text;
+    const maxLen = Math.max(10, Math.floor(width / 7));
+    return firstCue.length > maxLen
+      ? firstCue.substring(0, maxLen) + '...'
+      : firstCue;
+  }, [clip.cues, clip.cueCount, width]);
 
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
@@ -1542,11 +1666,35 @@ function SubtitleClipBlock(props: SubtitleClipBlockProps) {
     [clip.id, isSelected, onDelete]
   );
 
+  // Handle right-click for context menu
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({ x: e.clientX, y: e.clientY });
+  }, []);
+
+  // Handle double-click to edit
+  const handleDoubleClick = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onEdit?.(clip.id);
+  }, [clip.id, onEdit]);
+
+  // Close context menu when clicking elsewhere
+  useEffect(() => {
+    if (!contextMenu) return;
+    const handleClickOutside = () => setContextMenu(null);
+    window.addEventListener('click', handleClickOutside);
+    return () => window.removeEventListener('click', handleClickOutside);
+  }, [contextMenu]);
+
   return (
     <div
       tabIndex={0}
       onKeyDown={handleKeyDown}
       onMouseDown={handleMouseDown}
+      onContextMenu={handleContextMenu}
+      onDoubleClick={handleDoubleClick}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       style={{
@@ -1606,6 +1754,76 @@ function SubtitleClipBlock(props: SubtitleClipBlockProps) {
         >
           {clip.cueCount}
         </span>
+      )}
+
+      {/* Context menu */}
+      {contextMenu && (
+        <div
+          style={{
+            position: 'fixed',
+            left: contextMenu.x,
+            top: contextMenu.y,
+            backgroundColor: '#1a1a1a',
+            border: '1px solid #444',
+            borderRadius: 4,
+            padding: 4,
+            zIndex: 1000,
+            minWidth: 140,
+            boxShadow: '0 2px 8px rgba(0,0,0,0.5)',
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            onClick={() => {
+              onEdit?.(clip.id);
+              setContextMenu(null);
+            }}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              width: '100%',
+              padding: '6px 10px',
+              backgroundColor: 'transparent',
+              border: 'none',
+              borderRadius: 3,
+              color: TIMELINE_COLORS.textPrimary,
+              fontSize: 12,
+              cursor: 'pointer',
+              textAlign: 'left',
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#333')}
+            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+          >
+            <span>✏️</span>
+            <span>Edit Subtitles</span>
+          </button>
+          <button
+            onClick={() => {
+              onDelete?.(clip.id);
+              setContextMenu(null);
+            }}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              width: '100%',
+              padding: '6px 10px',
+              backgroundColor: 'transparent',
+              border: 'none',
+              borderRadius: 3,
+              color: TIMELINE_COLORS.playhead,
+              fontSize: 12,
+              cursor: 'pointer',
+              textAlign: 'left',
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#333')}
+            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+          >
+            <span>🗑️</span>
+            <span>Delete</span>
+          </button>
+        </div>
       )}
     </div>
   );

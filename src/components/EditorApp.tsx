@@ -110,13 +110,28 @@ export function EditorApp(props: EditorAppProps) {
     clearOutPoint,
   } = useExportRange({ durationUs });
 
-  // Sort tracks: video tracks first, then audio tracks (professional NLE layout)
+  // Sort tracks: video tracks first, then audio tracks, then subtitle tracks (professional NLE layout)
   // Use tracks.length as dependency to ensure re-computation when tracks are added/removed
   const sortedTracks = useMemo(() => {
     const videoTracks = tracks.filter(t => t.type === 'video');
     const audioTracks = tracks.filter(t => t.type === 'audio');
-    return [...videoTracks, ...audioTracks];
+    const subtitleTracks = tracks.filter(t => t.type === 'subtitle');
+    return [...videoTracks, ...audioTracks, ...subtitleTracks];
   }, [tracks, tracks.length]);
+
+  // Check if the selected clip is a subtitle clip (for conditional panel rendering)
+  const selectedSubtitleClip = useMemo(() => {
+    if (!selectedClipId) return null;
+    for (const track of tracks) {
+      if (track.type !== 'subtitle') continue;
+      for (const clip of track.clips) {
+        if (clip.id === selectedClipId) {
+          return clip;
+        }
+      }
+    }
+    return null;
+  }, [selectedClipId, tracks]);
 
   // Initialize engine when canvas is ready
   useEffect(() => {
@@ -280,9 +295,13 @@ export function EditorApp(props: EditorAppProps) {
   }, [moveClipToTrack, notifyCompositionChanged]);
 
   // Handle adding a new track
-  const handleTrackAdd = useCallback((type: 'video' | 'audio') => {
+  const handleTrackAdd = useCallback((type: 'video' | 'audio' | 'subtitle') => {
     const trackCount = tracks.filter(t => t.type === type).length + 1;
-    const label = type === 'video' ? `Video ${trackCount}` : `Audio ${trackCount}`;
+    const label = type === 'video'
+      ? `Video ${trackCount}`
+      : type === 'audio'
+      ? `Audio ${trackCount}`
+      : `Subtitles ${trackCount}`;
     createTrack({ type, label });
   }, [createTrack, tracks]);
 
@@ -340,6 +359,30 @@ export function EditorApp(props: EditorAppProps) {
     },
     [refresh, notifyCompositionChanged]
   );
+
+  // Handle adding a new empty subtitle clip at a specific position (from timeline right-click)
+  const handleAddSubtitleClipAtPosition = useCallback(
+    async (trackId: string, startUs: number) => {
+      const track = composition.getTrack(trackId);
+      if (!track || track.type !== 'subtitle') return;
+
+      // Dynamically import SubtitleClip to create an empty one
+      const { SubtitleClip } = await import('../core/SubtitleClip');
+      const newClip = SubtitleClip.createEmpty(startUs);
+      track.addClip(newClip);
+      refresh();
+      notifyCompositionChanged();
+      // Select the new clip for immediate editing
+      setSelectedClipId(newClip.id);
+    },
+    [composition, refresh, notifyCompositionChanged]
+  );
+
+  // Handle subtitle edit request (from timeline double-click or context menu)
+  const handleSubtitleEdit = useCallback((clipId: string) => {
+    // Just select the clip - SubtitlePanel will show automatically when a subtitle clip is selected
+    setSelectedClipId(clipId);
+  }, []);
 
   // Keyboard shortcuts for In/Out points and Delete
   useEffect(() => {
@@ -590,18 +633,20 @@ export function EditorApp(props: EditorAppProps) {
           />
         </aside>
 
-        {/* Subtitle Panel */}
-        <SubtitlePanel
-          tracks={tracks}
-          selectedClipId={selectedClipId}
-          currentTimeUs={currentTimeUs}
-          onSeek={seek}
-          onClipUpdate={handleSubtitleClipUpdate}
-          onCreateTrack={handleCreateSubtitleTrack}
-          onAddClip={handleAddSubtitleClip}
-          onClipSelect={handleClipSelect}
-          onRefresh={refresh}
-        />
+        {/* Subtitle Panel - only show when subtitle clip is selected */}
+        {selectedSubtitleClip && (
+          <SubtitlePanel
+            tracks={tracks}
+            selectedClipId={selectedClipId}
+            currentTimeUs={currentTimeUs}
+            onSeek={seek}
+            onClipUpdate={handleSubtitleClipUpdate}
+            onCreateTrack={handleCreateSubtitleTrack}
+            onAddClip={handleAddSubtitleClip}
+            onClipSelect={handleClipSelect}
+            onRefresh={refresh}
+          />
+        )}
       </main>
 
       {/* Timeline */}
@@ -643,6 +688,8 @@ export function EditorApp(props: EditorAppProps) {
           outPointUs={outPointUs}
           hasInPoint={hasInPoint}
           hasOutPoint={hasOutPoint}
+          onAddSubtitleClip={handleAddSubtitleClipAtPosition}
+          onSubtitleEdit={handleSubtitleEdit}
           style={{ height: '100%' }}
         />
       </footer>
