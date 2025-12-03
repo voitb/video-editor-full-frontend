@@ -393,9 +393,23 @@ function loadSource(sourceData: ExportSourceData): Promise<void> {
 
           sourceState.audioDecoder = new AudioDecoder({
             output: (audioData) => {
-              // Convert AudioData to Float32Array
-              const pcm = new Float32Array(audioData.numberOfFrames * audioData.numberOfChannels);
-              audioData.copyTo(pcm, { planeIndex: 0, format: 'f32-planar' });
+              const numFrames = audioData.numberOfFrames;
+              const numChannels = audioData.numberOfChannels;
+
+              // Create interleaved buffer for all channels
+              const pcm = new Float32Array(numFrames * numChannels);
+
+              // Copy each channel and interleave
+              for (let ch = 0; ch < numChannels; ch++) {
+                const channelData = new Float32Array(numFrames);
+                audioData.copyTo(channelData, { planeIndex: ch, format: 'f32-planar' });
+
+                // Interleave: place channel samples at correct positions
+                for (let i = 0; i < numFrames; i++) {
+                  pcm[i * numChannels + ch] = channelData[i]!;
+                }
+              }
+
               sourceState.decodedAudio.push(pcm);
               audioData.close();
             },
@@ -761,10 +775,16 @@ async function processAudio(
     if (cancelled) return;
 
     const chunkSamples = Math.min(samplesPerChunk, totalSamples - i);
-    const chunkData = new Float32Array(chunkSamples * channels);
 
-    for (let j = 0; j < chunkSamples * channels; j++) {
-      chunkData[j] = outputBuffer[i * channels + j] ?? 0;
+    // Create PLANAR format data (all left samples, then all right samples)
+    const planarData = new Float32Array(chunkSamples * channels);
+
+    for (let j = 0; j < chunkSamples; j++) {
+      const interleavedIdx = (i + j) * channels;
+      // Left channel: first half of planar buffer
+      planarData[j] = outputBuffer[interleavedIdx] ?? 0;
+      // Right channel: second half of planar buffer
+      planarData[chunkSamples + j] = outputBuffer[interleavedIdx + 1] ?? 0;
     }
 
     const audioData = new AudioData({
@@ -773,7 +793,7 @@ async function processAudio(
       numberOfFrames: chunkSamples,
       numberOfChannels: channels,
       timestamp: Math.round(((i / sampleRate) * TIME.US_PER_SECOND) + inPointUs),
-      data: chunkData,
+      data: planarData,
     });
 
     audioEncoder.encode(audioData);
