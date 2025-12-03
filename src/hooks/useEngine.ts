@@ -7,6 +7,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { Engine, type EngineState, type EngineEvent } from '../engine/Engine';
 import type { Composition } from '../core/Composition';
 import { HlsSource } from '../core/HlsSource';
+import { FileSource } from '../core/FileSource';
 import { TIME } from '../constants';
 
 export interface UseEngineOptions {
@@ -39,6 +40,8 @@ export interface UseEngineReturn {
   initialize: (canvas: HTMLCanvasElement) => void;
   /** Load an HLS source */
   loadHlsSource: (url: string) => Promise<HlsSource>;
+  /** Load a local file source */
+  loadFileSource: (file: File) => Promise<FileSource>;
   /** Play */
   play: () => void;
   /** Pause */
@@ -175,6 +178,14 @@ export function useEngine(options: UseEngineOptions): UseEngineReturn {
     return engineRef.current.loadHlsSource(url);
   }, []);
 
+  // Load local file source
+  const loadFileSource = useCallback(async (file: File): Promise<FileSource> => {
+    if (!engineRef.current) {
+      throw new Error('Engine not initialized');
+    }
+    return engineRef.current.loadFileSource(file);
+  }, []);
+
   // Playback controls
   const play = useCallback(() => {
     engineRef.current?.play();
@@ -248,6 +259,7 @@ export function useEngine(options: UseEngineOptions): UseEngineReturn {
     error,
     initialize,
     loadHlsSource,
+    loadFileSource,
     play,
     pause,
     togglePlayPause,

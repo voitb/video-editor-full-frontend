@@ -147,6 +147,7 @@ export function Timeline(props: TimelineProps) {
   const [isRulerDragging, setIsRulerDragging] = useState(false);
   const [scrollLeft, setScrollLeft] = useState(0);
   const [hoveredLinkedClipId, setHoveredLinkedClipId] = useState<string | null>(null);
+  const [dragPreviewMap, setDragPreviewMap] = useState<Map<string, number>>(new Map());
 
   // Track container width for responsive timeline
   useEffect(() => {
@@ -297,6 +298,36 @@ export function Timeline(props: TimelineProps) {
   const getTrackHeight = useCallback((trackId: string): number => {
     return trackStates?.[trackId]?.height ?? TIMELINE.DEFAULT_TRACK_HEIGHT;
   }, [trackStates]);
+
+  // Handle drag preview updates from ClipBlock - updates both dragged and linked clip positions
+  const handleDragPreview = useCallback((
+    clipId: string,
+    previewStartUs: number | null,
+    linkedClipId?: string,
+    delta?: number
+  ) => {
+    if (previewStartUs === null) {
+      // Clear preview (drag ended)
+      setDragPreviewMap(new Map());
+    } else {
+      const newMap = new Map<string, number>();
+      newMap.set(clipId, previewStartUs);
+
+      // If there's a linked clip and we have the delta, calculate its preview position
+      if (linkedClipId && delta !== undefined) {
+        // Find the linked clip's current position
+        for (const track of tracks) {
+          const linkedClip = track.clips.find(c => c.id === linkedClipId);
+          if (linkedClip) {
+            newMap.set(linkedClipId, linkedClip.startUs + delta);
+            break;
+          }
+        }
+      }
+
+      setDragPreviewMap(newMap);
+    }
+  }, [tracks]);
 
   // Handle wheel events for zooming (Ctrl/Cmd + scroll)
   // Using native event listener with { passive: false } to allow preventDefault()
@@ -751,6 +782,8 @@ export function Timeline(props: TimelineProps) {
                 scrollLeft={scrollLeft}
                 hoveredLinkedClipId={hoveredLinkedClipId}
                 setHoveredLinkedClipId={setHoveredLinkedClipId}
+                onDragPreview={handleDragPreview}
+                dragPreviewMap={dragPreviewMap}
               />
             ))}
 
@@ -1211,6 +1244,10 @@ interface TrackLaneProps {
   scrollLeft: number;
   hoveredLinkedClipId: string | null;
   setHoveredLinkedClipId: (clipId: string | null) => void;
+  /** Callback when a clip's drag preview position changes */
+  onDragPreview?: (clipId: string, previewStartUs: number | null, linkedClipId?: string, delta?: number) => void;
+  /** Map of clip IDs to their preview positions during drag */
+  dragPreviewMap: Map<string, number>;
 }
 
 /** Data type for external drag-and-drop from media library */
@@ -1242,6 +1279,8 @@ function TrackLane(props: TrackLaneProps) {
     hoveredLinkedClipId,
     setHoveredLinkedClipId,
     scrollLeft,
+    onDragPreview,
+    dragPreviewMap,
   } = props;
 
   // Handle external drag over (from media library)
@@ -1323,6 +1362,8 @@ function TrackLane(props: TrackLaneProps) {
           allTracks={allTracks}
           isLinkedHighlighted={clip.id === hoveredLinkedClipId}
           onHoverLinked={setHoveredLinkedClipId}
+          onDragPreview={onDragPreview}
+          previewStartUs={dragPreviewMap.get(clip.id)}
         />
       ))}
     </div>
@@ -1356,6 +1397,10 @@ interface ClipBlockProps {
   isLinkedHighlighted?: boolean;
   /** Callback when hovering over a linked clip */
   onHoverLinked?: (linkedClipId: string | null) => void;
+  /** Callback when drag preview position changes */
+  onDragPreview?: (clipId: string, previewStartUs: number | null, linkedClipId?: string, delta?: number) => void;
+  /** Preview position from parent (when linked clip is being dragged) */
+  previewStartUs?: number;
 }
 
 function ClipBlock(props: ClipBlockProps) {
@@ -1380,6 +1425,8 @@ function ClipBlock(props: ClipBlockProps) {
     allTracks,
     isLinkedHighlighted,
     onHoverLinked,
+    onDragPreview,
+    previewStartUs: externalPreviewStartUs,
   } = props;
 
   // Drag state for trim handles and move
@@ -1401,9 +1448,11 @@ function ClipBlock(props: ClipBlockProps) {
   const left = timeToPixel(clip.startUs);
   const width = timeToPixel(clip.startUs + clip.durationUs) - left;
 
-  // Use preview position during drag
+  // Use preview position during drag (either from local drag state or from parent when linked clip is being dragged)
   const displayLeft = dragState?.type === 'move' && dragState.previewStartUs !== undefined
     ? timeToPixel(dragState.previewStartUs)
+    : externalPreviewStartUs !== undefined
+    ? timeToPixel(externalPreviewStartUs)
     : left;
 
   // Handle click on clip: first click selects, click on selected seeks
@@ -1582,6 +1631,10 @@ function ClipBlock(props: ClipBlockProps) {
           previewStartUs: newStartUs,
           targetTrackId: isCompatibleTrack ? targetTrackId : trackId,
         } : null);
+
+        // Notify parent of drag preview (for linked clip synchronization)
+        const delta = newStartUs - clip.startUs;
+        onDragPreview?.(clip.id, newStartUs, clip.linkedClipId || undefined, delta);
       }
     };
 
@@ -1589,6 +1642,9 @@ function ClipBlock(props: ClipBlockProps) {
       if (dragState.type === 'move') {
         setActiveSnapLine(null);
         setDropTargetTrackId(null);
+
+        // Clear drag preview for linked clips
+        onDragPreview?.(clip.id, null);
 
         if (dragState.previewStartUs !== undefined) {
           const targetTrack = dragState.targetTrackId || trackId;
@@ -1617,6 +1673,8 @@ function ClipBlock(props: ClipBlockProps) {
     dragState,
     clip.id,
     clip.durationUs,
+    clip.startUs,
+    clip.linkedClipId,
     trackId,
     trackType,
     pixelToTime,
@@ -1628,6 +1686,7 @@ function ClipBlock(props: ClipBlockProps) {
     setActiveSnapLine,
     setDropTargetTrackId,
     allTracks,
+    onDragPreview,
   ]);
 
   // Clip colors based on type, selection, drag state, and linked highlight

@@ -3,7 +3,7 @@
  * List view of loaded sources with drag-and-drop to timeline.
  */
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import type { Source } from '../core/Source';
 import { formatTimecode } from '../utils/time';
 
@@ -12,6 +12,8 @@ export interface MediaLibraryProps {
   sources: ReadonlyMap<string, Source>;
   /** Callback to load an HLS source */
   onLoadHls: (url: string) => Promise<void>;
+  /** Callback to load a local file source */
+  onLoadFile?: (file: File) => Promise<void>;
   /** Whether a source is currently loading */
   isLoading: boolean;
   /** Loading progress percentage (0-100) */
@@ -26,9 +28,10 @@ export const DRAG_DATA_TYPE = 'application/x-video-editor-source';
  * Sources can be dragged to the timeline to create clips.
  */
 export function MediaLibrary(props: MediaLibraryProps) {
-  const { sources, onLoadHls, isLoading, loadingProgress } = props;
+  const { sources, onLoadHls, onLoadFile, isLoading, loadingProgress } = props;
 
   const [hlsUrl, setHlsUrl] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleLoadClick = useCallback(async () => {
     if (!hlsUrl || isLoading) return;
@@ -41,6 +44,25 @@ export function MediaLibrary(props: MediaLibraryProps) {
       handleLoadClick();
     }
   }, [handleLoadClick]);
+
+  const handleFileSelect = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0 || !onLoadFile) return;
+
+    // Load files sequentially
+    for (const file of Array.from(files)) {
+      await onLoadFile(file);
+    }
+
+    // Reset input so the same file can be selected again
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  }, [onLoadFile]);
+
+  const handleBrowseClick = useCallback(() => {
+    fileInputRef.current?.click();
+  }, []);
 
   // Convert sources map to array for rendering
   const sourceList = Array.from(sources.values());
@@ -80,7 +102,7 @@ export function MediaLibrary(props: MediaLibraryProps) {
           }}
         />
 
-        {/* Load Button */}
+        {/* Load HLS Button */}
         <button
           onClick={handleLoadClick}
           disabled={isLoading || !hlsUrl}
@@ -97,6 +119,61 @@ export function MediaLibrary(props: MediaLibraryProps) {
           }}
         >
           {isLoading ? `Loading... ${loadingProgress.toFixed(0)}%` : 'Load HLS'}
+        </button>
+
+        {/* Divider */}
+        <div style={{
+          margin: '12px 0',
+          textAlign: 'center',
+          color: '#666',
+          fontSize: 12,
+          position: 'relative',
+        }}>
+          <span style={{
+            backgroundColor: '#333',
+            padding: '0 8px',
+            position: 'relative',
+            zIndex: 1,
+          }}>
+            or
+          </span>
+          <div style={{
+            position: 'absolute',
+            top: '50%',
+            left: 0,
+            right: 0,
+            height: 1,
+            backgroundColor: '#444',
+          }} />
+        </div>
+
+        {/* Hidden File Input */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="video/mp4,video/quicktime,.mp4,.mov,.m4v"
+          multiple
+          onChange={handleFileSelect}
+          style={{ display: 'none' }}
+        />
+
+        {/* Browse Files Button */}
+        <button
+          onClick={handleBrowseClick}
+          disabled={isLoading || !onLoadFile}
+          style={{
+            width: '100%',
+            padding: '8px 16px',
+            fontSize: 13,
+            backgroundColor: isLoading ? '#333' : '#3b82f6',
+            color: '#fff',
+            border: 'none',
+            borderRadius: 4,
+            cursor: isLoading || !onLoadFile ? 'not-allowed' : 'pointer',
+            opacity: onLoadFile ? 1 : 0.5,
+          }}
+        >
+          Upload Files (MP4/MOV)
         </button>
       </div>
 
@@ -119,7 +196,7 @@ export function MediaLibrary(props: MediaLibraryProps) {
           >
             No media loaded.
             <br />
-            Enter an HLS URL above to get started.
+            Upload local files or enter an HLS URL to get started.
           </div>
         ) : (
           sourceList.map((source) => (
@@ -152,8 +229,10 @@ function MediaLibraryItem({ source }: MediaLibraryItemProps) {
     setIsDragging(false);
   }, []);
 
-  // Derive display name from source type
-  const displayName = `${source.type.toUpperCase()} Video`;
+  // Derive display name from source type or file name
+  const displayName = 'fileName' in source && typeof source.fileName === 'string'
+    ? source.fileName
+    : `${source.type.toUpperCase()} Video`;
 
   // Format resolution
   const resolution = source.width && source.height

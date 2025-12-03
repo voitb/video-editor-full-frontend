@@ -76,6 +76,7 @@ export function EditorApp(props: EditorAppProps) {
     error,
     initialize,
     loadHlsSource,
+    loadFileSource,
     togglePlayPause,
     seek,
     setMasterVolume,
@@ -154,6 +155,22 @@ export function EditorApp(props: EditorAppProps) {
       setIsLoading(false);
     }
   }, [loadHlsSource, resetViewport]);
+
+  // Load local file source (does NOT auto-add to timeline - user drags from library)
+  const handleLoadFile = useCallback(async (file: File) => {
+    if (!file) return;
+
+    setIsLoading(true);
+    try {
+      const source = await loadFileSource(file);
+      // Reset viewport to fit the new source duration
+      resetViewport(source.durationUs);
+    } catch (err) {
+      console.error('Failed to load file source:', err);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [loadFileSource, resetViewport]);
 
   // Handle external drop from media library to timeline
   const handleExternalDropToTrack = useCallback((
@@ -495,6 +512,7 @@ export function EditorApp(props: EditorAppProps) {
           <MediaLibrary
             sources={composition.sources}
             onLoadHls={handleLoadHls}
+            onLoadFile={handleLoadFile}
             isLoading={isLoading}
             loadingProgress={loadingProgressPercent}
           />

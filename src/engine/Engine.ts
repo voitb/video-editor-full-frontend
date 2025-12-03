@@ -6,6 +6,7 @@
 import type { Composition } from '../core/Composition';
 import type { ActiveClip } from '../core/types';
 import { HlsSource } from '../core/HlsSource';
+import { FileSource } from '../core/FileSource';
 import type {
   RenderWorkerCommand,
   RenderWorkerEvent,
@@ -271,6 +272,46 @@ export class Engine {
         case 'chunk':
           // Append chunk to worker
           this.appendSourceChunk(source.id, event.chunk, event.isLast);
+          break;
+      }
+    });
+
+    // Start loading
+    this.setState('loading');
+    await source.load();
+
+    return source;
+  }
+
+  /**
+   * Load a local file source
+   */
+  async loadFileSource(file: File): Promise<FileSource> {
+    const source = new FileSource(file);
+    this.composition.registerSource(source);
+
+    // Listen to source events
+    source.on((event) => {
+      switch (event.type) {
+        case 'progress':
+          this.emit({
+            type: 'sourceLoading',
+            sourceId: source.id,
+            progress: event.total > 0 ? event.loaded / event.total : 0,
+          });
+          break;
+
+        case 'stateChange':
+          if (event.state === 'ready') {
+            // Send buffer to worker
+            const buffer = source.getBuffer();
+            if (buffer) {
+              this.loadSourceBuffer(source.id, buffer, source.durationUs);
+            }
+            this.emit({ type: 'sourceReady', sourceId: source.id });
+          } else if (event.state === 'error') {
+            this.emit({ type: 'sourceError', sourceId: source.id, message: source.errorMessage ?? 'Unknown error' });
+          }
           break;
       }
     });
