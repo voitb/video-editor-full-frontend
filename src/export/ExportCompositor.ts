@@ -182,8 +182,8 @@ export class ExportCompositor {
     gl.enableVertexAttribArray(posLoc);
     gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
 
-    // Texture coordinates (flip Y)
-    const texCoords = new Float32Array([0, 1, 1, 1, 0, 0, 1, 0]);
+    // Texture coordinates (normal - Y-flip happens at upload time via UNPACK_FLIP_Y_WEBGL)
+    const texCoords = new Float32Array([0, 0, 1, 0, 0, 1, 1, 1]);
 
     const texBuffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, texBuffer);
@@ -284,6 +284,22 @@ export class ExportCompositor {
   }
 
   /**
+   * Upload a texture source with Y-axis flip.
+   * Used for VideoFrame, Canvas, and ImageBitmap sources which have
+   * top-left origin and need flipping for WebGL's bottom-left coordinate system.
+   */
+  private uploadTextureWithFlip(
+    texture: WebGLTexture | null,
+    source: TexImageSource
+  ): void {
+    const { gl } = this;
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  }
+
+  /**
    * Composite multiple layers and return a VideoFrame.
    * Layers should be sorted by track index (lowest = bottom).
    * Does NOT close input frames - caller is responsible.
@@ -339,8 +355,7 @@ export class ExportCompositor {
     gl.useProgram(this.copyProgram);
 
     gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this.baseTexture);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, layer.frame);
+    this.uploadTextureWithFlip(this.baseTexture, layer.frame);
 
     gl.uniform1i(this.copyUniforms.texture, 0);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -362,8 +377,7 @@ export class ExportCompositor {
 
     gl.useProgram(this.copyProgram);
     gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this.baseTexture);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, layers[0]!.frame);
+    this.uploadTextureWithFlip(this.baseTexture, layers[0]!.frame);
     gl.uniform1i(this.copyUniforms.texture, 0);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
@@ -385,8 +399,7 @@ export class ExportCompositor {
       gl.uniform1i(this.blendUniforms.baseTexture, 0);
 
       gl.activeTexture(gl.TEXTURE1);
-      gl.bindTexture(gl.TEXTURE_2D, this.overlayTexture);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, layer.frame);
+      this.uploadTextureWithFlip(this.overlayTexture, layer.frame);
       gl.uniform1i(this.blendUniforms.overlayTexture, 1);
 
       gl.uniform1f(this.blendUniforms.opacity, opacity);
@@ -427,15 +440,7 @@ export class ExportCompositor {
       gl.uniform1i(this.blendUniforms.baseTexture, 0);
 
       gl.activeTexture(gl.TEXTURE1);
-      gl.bindTexture(gl.TEXTURE_2D, this.subtitleTexture);
-      gl.texImage2D(
-        gl.TEXTURE_2D,
-        0,
-        gl.RGBA,
-        gl.RGBA,
-        gl.UNSIGNED_BYTE,
-        subtitleLayer.canvas
-      );
+      this.uploadTextureWithFlip(this.subtitleTexture, subtitleLayer.canvas);
       gl.uniform1i(this.blendUniforms.overlayTexture, 1);
 
       gl.uniform1f(this.blendUniforms.opacity, 1.0);
@@ -480,8 +485,7 @@ export class ExportCompositor {
         gl.uniform1i(this.blendUniforms.baseTexture, 0);
 
         gl.activeTexture(gl.TEXTURE1);
-        gl.bindTexture(gl.TEXTURE_2D, this.overlayBitmapTexture);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, overlayCanvas);
+        this.uploadTextureWithFlip(this.overlayBitmapTexture, overlayCanvas);
         gl.uniform1i(this.blendUniforms.overlayTexture, 1);
 
         gl.uniform1f(this.blendUniforms.opacity, overlay.opacity);
@@ -530,13 +534,12 @@ export class ExportCompositor {
       if (i === 0) {
         // First overlay - blend directly onto screen
         gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, this.baseTexture);
         // Create a black base texture
         const blackCanvas = new OffscreenCanvas(this.width, this.height);
         const blackCtx = blackCanvas.getContext('2d')!;
         blackCtx.fillStyle = 'black';
         blackCtx.fillRect(0, 0, this.width, this.height);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, blackCanvas);
+        this.uploadTextureWithFlip(this.baseTexture, blackCanvas);
         gl.uniform1i(this.blendUniforms.baseTexture, 0);
       } else {
         // Subsequent overlays - read back from screen
@@ -562,8 +565,7 @@ export class ExportCompositor {
       }
 
       gl.activeTexture(gl.TEXTURE1);
-      gl.bindTexture(gl.TEXTURE_2D, this.overlayBitmapTexture);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, overlayCanvas);
+      this.uploadTextureWithFlip(this.overlayBitmapTexture, overlayCanvas);
       gl.uniform1i(this.blendUniforms.overlayTexture, 1);
 
       gl.uniform1f(this.blendUniforms.opacity, overlay.opacity);
