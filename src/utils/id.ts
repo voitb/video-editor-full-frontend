@@ -37,3 +37,17 @@ export function createClipId(): string {
 export function createSourceId(): string {
   return createId('src');
 }
+
+/**
+ * Generate a subtitle clip ID
+ */
+export function createSubtitleClipId(): string {
+  return createId('subclip');
+}
+
+/**
+ * Generate a subtitle cue ID
+ */
+export function createCueId(): string {
+  return createId('cue');
+}

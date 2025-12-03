@@ -52,8 +52,10 @@ export const TIMELINE_COLORS = {
   trackHeaderBg: '#151515',
   trackVideoBg: '#1e293b',
   trackAudioBg: '#1e3b2e',
+  trackSubtitleBg: '#3b2e1e',
   trackVideoDropBg: '#2a4a6a',
   trackAudioDropBg: '#2a6a4a',
+  trackSubtitleDropBg: '#6a4a2a',
   rulerBg: '#1a1a1a',
   minimapBg: '#0d0d0d',
   scrollbarBg: '#1a1a1a',
@@ -67,6 +69,9 @@ export const TIMELINE_COLORS = {
   clipAudio: '#3b9858',
   clipAudioSelected: '#4fcc83',
   clipAudioHover: '#4ab56a',
+  clipSubtitle: '#cc6633',
+  clipSubtitleSelected: '#ff8844',
+  clipSubtitleHover: '#e07740',
 
   // UI Elements
   playhead: '#ff4444',
@@ -206,4 +211,22 @@ export const MEDIA_LIBRARY = {
   WIDTH: 280,
   /** List item height in pixels */
   ITEM_HEIGHT: 56,
+} as const;
+
+/** Subtitle constants */
+export const SUBTITLE = {
+  /** Default style settings */
+  DEFAULT_STYLE: {
+    fontFamily: 'Arial, sans-serif',
+    fontSize: 48,
+    color: '#ffffff',
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    showBackground: true,
+  },
+  /** Minimum cue duration in microseconds (500ms) */
+  MIN_CUE_DURATION_US: 500_000,
+  /** Default cue duration in microseconds (2 seconds) */
+  DEFAULT_CUE_DURATION_US: 2_000_000,
+  /** Panel width in pixels */
+  PANEL_WIDTH: 320,
 } as const;

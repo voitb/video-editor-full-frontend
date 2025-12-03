@@ -6,8 +6,10 @@
 import type { CSSProperties } from 'react';
 import { useCallback, useMemo, useRef, useState, useEffect } from 'react';
 import type { Track } from '../core/Track';
+import { isSubtitleClip } from '../core/Track';
 import type { Clip } from '../core/Clip';
-import type { TimelineViewport, TrackUIState } from '../core/types';
+import type { SubtitleClip } from '../core/SubtitleClip';
+import type { TimelineViewport, TrackUIState, TrackType } from '../core/types';
 import { formatTimecodeAdaptive } from '../utils/time';
 import { TIMELINE, TIMELINE_COLORS } from '../constants';
 
@@ -93,6 +95,54 @@ interface SnapTarget {
 interface SnapResult {
   snappedTimeUs: number;
   snappedTo: SnapTarget | null;
+}
+
+// ============================================================================
+// HELPERS
+// ============================================================================
+
+/** Get background color for a track based on type */
+function getTrackBgColor(type: TrackType, isDropTarget: boolean): string {
+  if (isDropTarget) {
+    switch (type) {
+      case 'video':
+        return TIMELINE_COLORS.trackVideoDropBg;
+      case 'audio':
+        return TIMELINE_COLORS.trackAudioDropBg;
+      case 'subtitle':
+        return TIMELINE_COLORS.trackSubtitleDropBg;
+    }
+  }
+  switch (type) {
+    case 'video':
+      return TIMELINE_COLORS.trackVideoBg;
+    case 'audio':
+      return TIMELINE_COLORS.trackAudioBg;
+    case 'subtitle':
+      return TIMELINE_COLORS.trackSubtitleBg;
+  }
+}
+
+/** Get clip color based on track type */
+function getClipColor(
+  type: TrackType,
+  isSelected: boolean,
+  isHovered: boolean
+): string {
+  if (type === 'subtitle') {
+    if (isSelected) return TIMELINE_COLORS.clipSubtitleSelected;
+    if (isHovered) return TIMELINE_COLORS.clipSubtitleHover;
+    return TIMELINE_COLORS.clipSubtitle;
+  }
+  if (type === 'audio') {
+    if (isSelected) return TIMELINE_COLORS.clipAudioSelected;
+    if (isHovered) return TIMELINE_COLORS.clipAudioHover;
+    return TIMELINE_COLORS.clipAudio;
+  }
+  // video
+  if (isSelected) return TIMELINE_COLORS.clipVideoSelected;
+  if (isHovered) return TIMELINE_COLORS.clipVideoHover;
+  return TIMELINE_COLORS.clipVideo;
 }
 
 // ============================================================================
@@ -1041,7 +1091,7 @@ function TrackHeader({
         flexDirection: 'column',
         borderBottom: `1px solid ${TIMELINE_COLORS.border}`,
         backgroundColor: isDropTarget
-          ? (track.type === 'video' ? TIMELINE_COLORS.trackVideoDropBg : TIMELINE_COLORS.trackAudioDropBg)
+          ? getTrackBgColor(track.type, true)
           : 'transparent',
         transition: 'background-color 0.15s',
         position: 'relative',
@@ -1069,12 +1119,12 @@ function TrackHeader({
               justifyContent: 'center',
               fontSize: 10,
               fontWeight: 600,
-              backgroundColor: track.type === 'video' ? TIMELINE_COLORS.clipVideo : TIMELINE_COLORS.clipAudio,
+              backgroundColor: getClipColor(track.type, false, false),
               borderRadius: 3,
               flexShrink: 0,
             }}
           >
-            {track.type === 'video' ? 'V' : 'A'}
+            {track.type === 'video' ? 'V' : track.type === 'audio' ? 'A' : 'S'}
           </span>
           <span
             style={{
@@ -1091,8 +1141,8 @@ function TrackHeader({
 
         {/* Right: M/S/L buttons + remove */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-          {/* Mute button */}
-          {onMute && (
+          {/* Mute button (not shown for subtitle tracks) */}
+          {onMute && track.type !== 'subtitle' && (
             <button
               onClick={() => onMute(track.id, !isMuted)}
               style={{
@@ -1114,8 +1164,8 @@ function TrackHeader({
               M
             </button>
           )}
-          {/* Solo button */}
-          {onSolo && (
+          {/* Solo button (not shown for subtitle tracks) */}
+          {onSolo && track.type !== 'subtitle' && (
             <button
               onClick={() => onSolo(track.id, !isSolo)}
               style={{
@@ -1328,9 +1378,7 @@ function TrackLane(props: TrackLaneProps) {
       onDrop={handleDrop}
       style={{
         height,
-        backgroundColor: isDropTarget
-          ? (track.type === 'video' ? TIMELINE_COLORS.trackVideoDropBg : TIMELINE_COLORS.trackAudioDropBg)
-          : (track.type === 'video' ? TIMELINE_COLORS.trackVideoBg : TIMELINE_COLORS.trackAudioBg),
+        backgroundColor: getTrackBgColor(track.type, isDropTarget),
         borderBottom: `1px solid ${TIMELINE_COLORS.border}`,
         position: 'relative',
         transition: 'background-color 0.15s',
@@ -1339,33 +1387,226 @@ function TrackLane(props: TrackLaneProps) {
       }}
     >
       {/* Clips */}
-      {track.clips.map((clip) => (
-        <ClipBlock
-          key={clip.id}
-          clip={clip}
-          trackId={track.id}
-          trackType={track.type}
-          timeToPixel={timeToPixel}
-          pixelToTime={pixelToTime}
-          isSelected={clip.id === selectedClipId}
-          onSelect={onClipSelect}
-          onMove={onClipMove}
-          onMoveToTrack={onClipMoveToTrack}
-          onTrimStart={onClipTrimStart}
-          onTrimEnd={onClipTrimEnd}
-          onSeek={onSeek}
-          onUnlink={onClipUnlink}
-          onDelete={onClipDelete}
-          applySnap={applySnap}
-          setActiveSnapLine={setActiveSnapLine}
-          setDropTargetTrackId={setDropTargetTrackId}
-          allTracks={allTracks}
-          isLinkedHighlighted={clip.id === hoveredLinkedClipId}
-          onHoverLinked={setHoveredLinkedClipId}
-          onDragPreview={onDragPreview}
-          previewStartUs={dragPreviewMap.get(clip.id)}
-        />
-      ))}
+      {track.clips.map((clip) =>
+        isSubtitleClip(clip) ? (
+          <SubtitleClipBlock
+            key={clip.id}
+            clip={clip}
+            trackId={track.id}
+            timeToPixel={timeToPixel}
+            pixelToTime={pixelToTime}
+            isSelected={clip.id === selectedClipId}
+            onSelect={onClipSelect}
+            onMove={onClipMove}
+            onDelete={onClipDelete}
+            applySnap={applySnap}
+            setActiveSnapLine={setActiveSnapLine}
+          />
+        ) : (
+          <ClipBlock
+            key={clip.id}
+            clip={clip as Clip}
+            trackId={track.id}
+            trackType={track.type as 'video' | 'audio'}
+            timeToPixel={timeToPixel}
+            pixelToTime={pixelToTime}
+            isSelected={clip.id === selectedClipId}
+            onSelect={onClipSelect}
+            onMove={onClipMove}
+            onMoveToTrack={onClipMoveToTrack}
+            onTrimStart={onClipTrimStart}
+            onTrimEnd={onClipTrimEnd}
+            onSeek={onSeek}
+            onUnlink={onClipUnlink}
+            onDelete={onClipDelete}
+            applySnap={applySnap}
+            setActiveSnapLine={setActiveSnapLine}
+            setDropTargetTrackId={setDropTargetTrackId}
+            allTracks={allTracks}
+            isLinkedHighlighted={clip.id === hoveredLinkedClipId}
+            onHoverLinked={setHoveredLinkedClipId}
+            onDragPreview={onDragPreview}
+            previewStartUs={dragPreviewMap.get(clip.id)}
+          />
+        )
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// SUBTITLE CLIP BLOCK
+// ============================================================================
+
+interface SubtitleClipBlockProps {
+  clip: SubtitleClip;
+  trackId: string;
+  timeToPixel: (timeUs: number) => number;
+  pixelToTime: (pixel: number) => number;
+  isSelected: boolean;
+  onSelect?: (clipId: string, trackId: string) => void;
+  onMove?: (clipId: string, newStartUs: number) => boolean;
+  onDelete?: (clipId: string) => void;
+  applySnap: (
+    proposedStartUs: number,
+    clipDurationUs: number,
+    excludeClipId?: string
+  ) => SnapResult;
+  setActiveSnapLine: (timeUs: number | null) => void;
+}
+
+function SubtitleClipBlock(props: SubtitleClipBlockProps) {
+  const {
+    clip,
+    trackId,
+    timeToPixel,
+    pixelToTime,
+    isSelected,
+    onSelect,
+    onMove,
+    onDelete,
+    applySnap,
+    setActiveSnapLine,
+  } = props;
+
+  const [isHovered, setIsHovered] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStartRef = useRef({ x: 0, startUs: 0 });
+
+  const left = timeToPixel(clip.startUs);
+  const width = Math.max(timeToPixel(clip.endUs) - left, 20);
+
+  // Get first cue text for preview
+  const previewText =
+    clip.cues.length > 0
+      ? clip.cues[0]!.text.substring(0, 30) + (clip.cues[0]!.text.length > 30 ? '...' : '')
+      : 'Empty';
+
+  const handleMouseDown = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      if (e.button !== 0) return;
+
+      // Select on click
+      onSelect?.(clip.id, trackId);
+
+      // Start drag
+      setIsDragging(true);
+      dragStartRef.current = {
+        x: e.clientX,
+        startUs: clip.startUs,
+      };
+
+      const handleMouseMove = (moveEvent: MouseEvent) => {
+        const deltaX = moveEvent.clientX - dragStartRef.current.x;
+        const deltaTime = pixelToTime(deltaX) - pixelToTime(0);
+        const proposedStart = Math.max(0, dragStartRef.current.startUs + deltaTime);
+
+        const { snappedTimeUs, snappedTo } = applySnap(
+          proposedStart,
+          clip.durationUs,
+          clip.id
+        );
+
+        if (snappedTo) {
+          setActiveSnapLine(snappedTo.timeUs);
+        } else {
+          setActiveSnapLine(null);
+        }
+
+        onMove?.(clip.id, snappedTimeUs);
+      };
+
+      const handleMouseUp = () => {
+        setIsDragging(false);
+        setActiveSnapLine(null);
+        document.removeEventListener('mousemove', handleMouseMove);
+        document.removeEventListener('mouseup', handleMouseUp);
+      };
+
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+    },
+    [clip.id, clip.startUs, clip.durationUs, trackId, onSelect, onMove, pixelToTime, applySnap, setActiveSnapLine]
+  );
+
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if ((e.key === 'Delete' || e.key === 'Backspace') && isSelected) {
+        e.preventDefault();
+        onDelete?.(clip.id);
+      }
+    },
+    [clip.id, isSelected, onDelete]
+  );
+
+  return (
+    <div
+      tabIndex={0}
+      onKeyDown={handleKeyDown}
+      onMouseDown={handleMouseDown}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+      style={{
+        position: 'absolute',
+        left,
+        top: 2,
+        bottom: 2,
+        width,
+        backgroundColor: getClipColor('subtitle', isSelected, isHovered),
+        borderRadius: 4,
+        cursor: isDragging ? 'grabbing' : 'grab',
+        overflow: 'hidden',
+        display: 'flex',
+        alignItems: 'center',
+        padding: '0 8px',
+        boxSizing: 'border-box',
+        boxShadow: isSelected ? '0 0 0 2px rgba(255,255,255,0.5)' : 'none',
+        outline: 'none',
+      }}
+    >
+      {/* Subtitle icon */}
+      <span
+        style={{
+          marginRight: 6,
+          fontSize: 12,
+          opacity: 0.8,
+        }}
+      >
+        CC
+      </span>
+
+      {/* Preview text */}
+      <span
+        style={{
+          flex: 1,
+          fontSize: 11,
+          color: TIMELINE_COLORS.textPrimary,
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+        }}
+      >
+        {previewText}
+      </span>
+
+      {/* Cue count badge */}
+      {clip.cueCount > 0 && (
+        <span
+          style={{
+            marginLeft: 6,
+            padding: '1px 4px',
+            fontSize: 10,
+            backgroundColor: 'rgba(0,0,0,0.3)',
+            borderRadius: 3,
+            color: TIMELINE_COLORS.textSecondary,
+          }}
+        >
+          {clip.cueCount}
+        </span>
+      )}
     </div>
   );
 }

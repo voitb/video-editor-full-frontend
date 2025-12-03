@@ -1,18 +1,38 @@
 /**
  * Video Editor V2 - Track Class
- * A track contains multiple clips of the same type (video or audio).
+ * A track contains multiple clips of the same type (video, audio, or subtitle).
  */
 
-import type { TrackType, TrackConfig, TrackJSON, ClipConfig } from './types';
+import type {
+  TrackType,
+  TrackConfig,
+  TrackJSON,
+  ClipConfig,
+  SubtitleClipConfig,
+} from './types';
 import { Clip } from './Clip';
+import { SubtitleClip } from './SubtitleClip';
 import { createTrackId } from '../utils/id';
+
+/** Union type for all clip types */
+export type AnyClip = Clip | SubtitleClip;
+
+/** Type guard for SubtitleClip */
+export function isSubtitleClip(clip: AnyClip): clip is SubtitleClip {
+  return clip instanceof SubtitleClip;
+}
+
+/** Type guard for regular Clip */
+export function isMediaClip(clip: AnyClip): clip is Clip {
+  return clip instanceof Clip;
+}
 
 export class Track {
   readonly id: string;
   readonly type: TrackType;
   label: string;
 
-  private _clips: Clip[] = [];
+  private _clips: AnyClip[] = [];
 
   constructor(config: TrackConfig, id?: string) {
     this.id = id ?? createTrackId();
@@ -21,9 +41,16 @@ export class Track {
   }
 
   /**
+   * Check if this is a subtitle track
+   */
+  isSubtitleTrack(): boolean {
+    return this.type === 'subtitle';
+  }
+
+  /**
    * Get all clips (read-only)
    */
-  get clips(): readonly Clip[] {
+  get clips(): readonly AnyClip[] {
     return this._clips;
   }
 
@@ -45,16 +72,25 @@ export class Track {
   /**
    * Add a clip to the track
    */
-  addClip(clip: Clip): void {
+  addClip(clip: AnyClip): void {
     this._clips.push(clip);
     this.sortClips();
   }
 
   /**
-   * Create and add a clip from config
+   * Create and add a media clip from config (for video/audio tracks)
    */
   createClip(config: ClipConfig): Clip {
     const clip = new Clip(config);
+    this.addClip(clip);
+    return clip;
+  }
+
+  /**
+   * Create and add a subtitle clip from config (for subtitle tracks)
+   */
+  createSubtitleClip(config: SubtitleClipConfig): SubtitleClip {
+    const clip = new SubtitleClip(config);
     this.addClip(clip);
     return clip;
   }
@@ -72,30 +108,30 @@ export class Track {
   /**
    * Get a clip by ID
    */
-  getClip(clipId: string): Clip | undefined {
-    return this._clips.find(c => c.id === clipId);
+  getClip(clipId: string): AnyClip | undefined {
+    return this._clips.find((c) => c.id === clipId);
   }
 
   /**
    * Get clips that overlap a time range
    */
-  getClipsInRange(startUs: number, endUs: number): Clip[] {
-    return this._clips.filter(clip => clip.overlapsRange(startUs, endUs));
+  getClipsInRange(startUs: number, endUs: number): AnyClip[] {
+    return this._clips.filter((clip) => clip.overlapsRange(startUs, endUs));
   }
 
   /**
    * Get the clip at a specific timeline time
    */
-  getClipAt(timelineTimeUs: number): Clip | undefined {
-    return this._clips.find(clip => clip.isActiveAt(timelineTimeUs));
+  getClipAt(timelineTimeUs: number): AnyClip | undefined {
+    return this._clips.find((clip) => clip.isActiveAt(timelineTimeUs));
   }
 
   /**
    * Get all clips that are active at a specific time
    * (For audio tracks, multiple clips might overlap)
    */
-  getActiveClipsAt(timelineTimeUs: number): Clip[] {
-    return this._clips.filter(clip => clip.isActiveAt(timelineTimeUs));
+  getActiveClipsAt(timelineTimeUs: number): AnyClip[] {
+    return this._clips.filter((clip) => clip.isActiveAt(timelineTimeUs));
   }
 
   /**
@@ -157,11 +193,18 @@ export class Track {
    * Serialize to JSON
    */
   toJSON(): TrackJSON {
+    const mediaClips = this._clips.filter(isMediaClip);
+    const subtitleClips = this._clips.filter(isSubtitleClip);
+
     return {
       id: this.id,
       type: this.type,
       label: this.label,
-      clips: this._clips.map(c => c.toJSON()),
+      clips: mediaClips.map((c) => c.toJSON()),
+      subtitleClips:
+        subtitleClips.length > 0
+          ? subtitleClips.map((c) => c.toJSON())
+          : undefined,
     };
   }
 
@@ -170,9 +213,19 @@ export class Track {
    */
   static fromJSON(json: TrackJSON): Track {
     const track = new Track({ type: json.type, label: json.label }, json.id);
+
+    // Load media clips
     for (const clipJson of json.clips) {
       track.addClip(Clip.fromJSON(clipJson));
     }
+
+    // Load subtitle clips
+    if (json.subtitleClips) {
+      for (const subClipJson of json.subtitleClips) {
+        track.addClip(SubtitleClip.fromJSON(subClipJson));
+      }
+    }
+
     return track;
   }
 }

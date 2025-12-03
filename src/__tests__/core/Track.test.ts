@@ -122,8 +122,8 @@ describe('Track', () => {
       const clips = track.getClipsInRange(400_000, 1_200_000);
 
       expect(clips).toHaveLength(2);
-      expect(clips[0]!.sourceId).toBe('src-1');
-      expect(clips[1]!.sourceId).toBe('src-2');
+      expect((clips[0] as Clip).sourceId).toBe('src-1');
+      expect((clips[1] as Clip).sourceId).toBe('src-2');
     });
   });
 

@@ -13,6 +13,8 @@ import { Timeline } from './Timeline';
 import { PlaybackControls } from './PlaybackControls';
 import { MediaLibrary } from './MediaLibrary';
 import { ExportModal } from './ExportModal';
+import { SubtitleOverlay } from './SubtitleOverlay';
+import { SubtitlePanel } from './SubtitlePanel';
 import { MEDIA_LIBRARY } from '../constants';
 import type { ExportSourceData } from '../workers/messages/exportMessages';
 
@@ -310,6 +312,35 @@ export function EditorApp(props: EditorAppProps) {
     notifyCompositionChanged();
   }, [composition, linkedSelection, selectedClipId, refresh, notifyCompositionChanged]);
 
+  // Handle creating a subtitle track
+  const handleCreateSubtitleTrack = useCallback(() => {
+    const subtitleCount = tracks.filter((t) => t.type === 'subtitle').length + 1;
+    createTrack({ type: 'subtitle', label: `Subtitles ${subtitleCount}` });
+  }, [createTrack, tracks]);
+
+  // Handle adding a subtitle clip
+  const handleAddSubtitleClip = useCallback(
+    (trackId: string, clip: import('../core/SubtitleClip').SubtitleClip) => {
+      const track = composition.getTrack(trackId);
+      if (!track || track.type !== 'subtitle') return;
+      track.addClip(clip);
+      refresh();
+      notifyCompositionChanged();
+      // Select the new clip
+      setSelectedClipId(clip.id);
+    },
+    [composition, refresh, notifyCompositionChanged]
+  );
+
+  // Handle updating a subtitle clip (trigger refresh)
+  const handleSubtitleClipUpdate = useCallback(
+    (_clipId: string, _clip: import('../core/SubtitleClip').SubtitleClip) => {
+      refresh();
+      notifyCompositionChanged();
+    },
+    [refresh, notifyCompositionChanged]
+  );
+
   // Keyboard shortcuts for In/Out points and Delete
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -514,6 +545,15 @@ export function EditorApp(props: EditorAppProps) {
                   objectFit: 'contain',
                 }}
               />
+              {/* Subtitle overlay for preview */}
+              <SubtitleOverlay
+                currentTimeUs={currentTimeUs}
+                tracks={tracks}
+                compositionWidth={composition.config.width}
+                compositionHeight={composition.config.height}
+                containerWidth={previewWidth}
+                containerHeight={previewHeight}
+              />
             </div>
           </div>
 
@@ -549,6 +589,19 @@ export function EditorApp(props: EditorAppProps) {
             loadingProgress={loadingProgressPercent}
           />
         </aside>
+
+        {/* Subtitle Panel */}
+        <SubtitlePanel
+          tracks={tracks}
+          selectedClipId={selectedClipId}
+          currentTimeUs={currentTimeUs}
+          onSeek={seek}
+          onClipUpdate={handleSubtitleClipUpdate}
+          onCreateTrack={handleCreateSubtitleTrack}
+          onAddClip={handleAddSubtitleClip}
+          onClipSelect={handleClipSelect}
+          onRefresh={refresh}
+        />
       </main>
 
       {/* Timeline */}

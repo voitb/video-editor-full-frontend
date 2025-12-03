@@ -9,9 +9,12 @@ import type {
   TrackConfig,
   ClipConfig,
   ActiveClip,
+  SubtitleClipConfig,
 } from './types';
-import { Track } from './Track';
+import { Track, isMediaClip, isSubtitleClip } from './Track';
+import type { AnyClip } from './Track';
 import { Clip } from './Clip';
+import { SubtitleClip } from './SubtitleClip';
 import { Source } from './Source';
 import { createCompositionId } from '../utils/id';
 import { COMPOSITION } from '../constants';
@@ -59,7 +62,14 @@ export class Composition {
    * Get audio tracks only
    */
   get audioTracks(): Track[] {
-    return this._tracks.filter(t => t.type === 'audio');
+    return this._tracks.filter((t) => t.type === 'audio');
+  }
+
+  /**
+   * Get subtitle tracks only
+   */
+  get subtitleTracks(): Track[] {
+    return this._tracks.filter((t) => t.type === 'subtitle');
   }
 
   /**
@@ -111,12 +121,12 @@ export class Composition {
   }
 
   /**
-   * Sort tracks: video tracks first, then audio tracks
+   * Sort tracks: video first, then audio, then subtitle
    */
   private sortTracks(): void {
+    const typeOrder: Record<string, number> = { video: 0, audio: 1, subtitle: 2 };
     this._tracks.sort((a, b) => {
-      if (a.type === b.type) return 0;
-      return a.type === 'video' ? -1 : 1;
+      return (typeOrder[a.type] ?? 99) - (typeOrder[b.type] ?? 99);
     });
   }
 
@@ -158,7 +168,7 @@ export class Composition {
   isSourceInUse(sourceId: string): boolean {
     for (const track of this._tracks) {
       for (const clip of track.clips) {
-        if (clip.sourceId === sourceId) return true;
+        if (isMediaClip(clip) && clip.sourceId === sourceId) return true;
       }
     }
     return false;
@@ -171,7 +181,7 @@ export class Composition {
     const clips: Clip[] = [];
     for (const track of this._tracks) {
       for (const clip of track.clips) {
-        if (clip.sourceId === sourceId) {
+        if (isMediaClip(clip) && clip.sourceId === sourceId) {
           clips.push(clip);
         }
       }
@@ -184,9 +194,9 @@ export class Composition {
   // ============================================================================
 
   /**
-   * Get a clip by ID (searches all tracks)
+   * Get any clip by ID (searches all tracks)
    */
-  getClip(clipId: string): { clip: Clip; track: Track } | undefined {
+  getAnyClip(clipId: string): { clip: AnyClip; track: Track } | undefined {
     for (const track of this._tracks) {
       const clip = track.getClip(clipId);
       if (clip) return { clip, track };
@@ -195,12 +205,48 @@ export class Composition {
   }
 
   /**
-   * Add a clip to a track
+   * Get a media clip by ID (searches all tracks)
+   */
+  getClip(clipId: string): { clip: Clip; track: Track } | undefined {
+    const result = this.getAnyClip(clipId);
+    if (result && isMediaClip(result.clip)) {
+      return { clip: result.clip, track: result.track };
+    }
+    return undefined;
+  }
+
+  /**
+   * Get a subtitle clip by ID (searches all tracks)
+   */
+  getSubtitleClip(
+    clipId: string
+  ): { clip: SubtitleClip; track: Track } | undefined {
+    const result = this.getAnyClip(clipId);
+    if (result && isSubtitleClip(result.clip)) {
+      return { clip: result.clip, track: result.track };
+    }
+    return undefined;
+  }
+
+  /**
+   * Add a media clip to a track
    */
   addClipToTrack(trackId: string, config: ClipConfig): Clip | undefined {
     const track = this.getTrack(trackId);
     if (!track) return undefined;
     return track.createClip(config);
+  }
+
+  /**
+   * Add a subtitle clip to a track
+   */
+  addSubtitleClipToTrack(
+    trackId: string,
+    config: SubtitleClipConfig
+  ): SubtitleClip | undefined {
+    const track = this.getTrack(trackId);
+    if (!track || track.type !== 'subtitle') return undefined;
+    return track.createSubtitleClip(config);
   }
 
   /**
@@ -405,6 +451,7 @@ export class Composition {
   /**
    * Get active clips at a specific timeline time
    * Returns clips sorted by track index for proper z-ordering
+   * Note: Subtitle clips are excluded - they use HTML overlay rendering
    */
   getActiveClipsAt(timelineTimeUs: number): ActiveClip[] {
     const result: ActiveClip[] = [];
@@ -412,7 +459,13 @@ export class Composition {
     for (let trackIndex = 0; trackIndex < this._tracks.length; trackIndex++) {
       const track = this._tracks[trackIndex]!;
 
+      // Skip subtitle tracks - they use HTML overlay rendering
+      if (track.type === 'subtitle') continue;
+
       for (const clip of track.getActiveClipsAt(timelineTimeUs)) {
+        // Only process media clips
+        if (!isMediaClip(clip)) continue;
+
         result.push({
           clipId: clip.id,
           sourceId: clip.sourceId,

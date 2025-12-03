@@ -13,8 +13,9 @@ import type {
   StartExportCommand,
   ExportSourceData,
 } from './messages/exportMessages';
-import type { ClipJSON, TrackJSON, ExportPhase } from '../core/types';
-import { ExportCompositor, type ExportLayer } from '../export/ExportCompositor';
+import type { ClipJSON, TrackJSON, ExportPhase, SubtitleClipJSON } from '../core/types';
+import { ExportCompositor, type ExportLayer, type SubtitleLayer } from '../export/ExportCompositor';
+import { SubtitleRenderer, getActiveSubtitleCuesAt } from '../renderer/SubtitleRenderer';
 import { EXPORT, TIME } from '../constants';
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
@@ -61,6 +62,7 @@ interface ActiveClipInfo {
 
 let cancelled = false;
 let compositor: ExportCompositor | null = null;
+let subtitleRenderer: SubtitleRenderer | null = null;
 const sources = new Map<string, SourceDecodeState>();
 let tracks: TrackJSON[] = [];
 let exportStartTime = 0;
@@ -145,8 +147,9 @@ async function startExport(cmd: StartExportCommand): Promise<void> {
 
   postProgress(0, totalFrames, 'initializing');
 
-  // Initialize compositor
+  // Initialize compositor and subtitle renderer
   compositor = new ExportCompositor(outputWidth, outputHeight);
+  subtitleRenderer = new SubtitleRenderer(outputWidth, outputHeight);
 
   // Load all sources
   await loadSources(cmd.sources);
@@ -223,6 +226,9 @@ async function startExport(cmd: StartExportCommand): Promise<void> {
   // Process video frames
   postProgress(0, totalFrames, 'encoding_video');
 
+  // Extract subtitle tracks for burn-in
+  const subtitleTracks = getSubtitleTracks();
+
   for (let frameNum = 0; frameNum < totalFrames; frameNum++) {
     if (cancelled) {
       cleanup();
@@ -255,8 +261,18 @@ async function startExport(cmd: StartExportCommand): Promise<void> {
       }
     }
 
-    // Composite layers
-    const compositedFrame = compositor!.composite(layers, frameTimeUs);
+    // Get active subtitle cues and render if any
+    let subtitleLayer: SubtitleLayer | undefined;
+    if (subtitleTracks.length > 0 && subtitleRenderer) {
+      const activeCues = getActiveSubtitleCuesAt(subtitleTracks, frameTimeUs);
+      if (activeCues.length > 0) {
+        const subtitleCanvas = subtitleRenderer.render(activeCues);
+        subtitleLayer = { canvas: subtitleCanvas };
+      }
+    }
+
+    // Composite layers with optional subtitle overlay
+    const compositedFrame = compositor!.composite(layers, frameTimeUs, subtitleLayer);
 
     // Close input frames
     for (const layer of layers) {
@@ -542,6 +558,9 @@ function getActiveClipsAt(timelineTimeUs: number): ActiveClipInfo[] {
   for (let trackIndex = 0; trackIndex < tracks.length; trackIndex++) {
     const track = tracks[trackIndex]!;
 
+    // Skip subtitle tracks - they are handled separately via getSubtitleTracks
+    if (track.type === 'subtitle') continue;
+
     for (const clip of track.clips) {
       const clipDurationUs = clip.trimOut - clip.trimIn;
       const clipEndUs = clip.startUs + clipDurationUs;
@@ -566,6 +585,41 @@ function getActiveClipsAt(timelineTimeUs: number): ActiveClipInfo[] {
   }
 
   return activeClips;
+}
+
+/**
+ * Get subtitle tracks formatted for subtitle rendering.
+ * Extracts subtitle clips from tracks for use with getActiveSubtitleCuesAt.
+ */
+function getSubtitleTracks(): Array<{
+  clips: Array<{
+    startUs: number;
+    cues: SubtitleClipJSON['cues'];
+    style: SubtitleClipJSON['style'];
+  }>;
+}> {
+  const subtitleTracks: Array<{
+    clips: Array<{
+      startUs: number;
+      cues: SubtitleClipJSON['cues'];
+      style: SubtitleClipJSON['style'];
+    }>;
+  }> = [];
+
+  for (const track of tracks) {
+    if (track.type !== 'subtitle') continue;
+    if (!track.subtitleClips || track.subtitleClips.length === 0) continue;
+
+    const clips = track.subtitleClips.map((clip) => ({
+      startUs: clip.startUs,
+      cues: clip.cues,
+      style: clip.style,
+    }));
+
+    subtitleTracks.push({ clips });
+  }
+
+  return subtitleTracks;
 }
 
 // ============================================================================
@@ -824,6 +878,9 @@ function cleanup(): void {
     compositor.dispose();
     compositor = null;
   }
+
+  // Clear subtitle renderer
+  subtitleRenderer = null;
 }
 
 // Type augmentation for MP4Box

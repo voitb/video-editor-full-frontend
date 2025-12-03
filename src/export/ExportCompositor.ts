@@ -60,6 +60,12 @@ export interface ExportLayer {
   opacity: number;
 }
 
+/** Subtitle overlay layer using OffscreenCanvas */
+export interface SubtitleLayer {
+  /** Canvas with rendered subtitle text */
+  canvas: OffscreenCanvas;
+}
+
 /**
  * WebGL2-based compositor for export.
  * Designed to work in Worker context with OffscreenCanvas.
@@ -76,6 +82,7 @@ export class ExportCompositor {
 
   private baseTexture: WebGLTexture | null = null;
   private overlayTexture: WebGLTexture | null = null;
+  private subtitleTexture: WebGLTexture | null = null;
   private framebuffer: WebGLFramebuffer | null = null;
   private framebufferTexture: WebGLTexture | null = null;
 
@@ -131,6 +138,7 @@ export class ExportCompositor {
     this.createGeometry();
     this.baseTexture = this.createTexture();
     this.overlayTexture = this.createTexture();
+    this.subtitleTexture = this.createTexture();
     this.createFramebuffer();
 
     gl.enable(gl.BLEND);
@@ -262,9 +270,14 @@ export class ExportCompositor {
    *
    * @param layers - Array of layers to composite (sorted by z-index)
    * @param timestampUs - Timestamp for the output VideoFrame
+   * @param subtitleLayer - Optional subtitle overlay to burn in
    * @returns Composited VideoFrame
    */
-  composite(layers: ExportLayer[], timestampUs: number): VideoFrame {
+  composite(
+    layers: ExportLayer[],
+    timestampUs: number,
+    subtitleLayer?: SubtitleLayer
+  ): VideoFrame {
     const { gl } = this;
     gl.viewport(0, 0, this.width, this.height);
     gl.bindVertexArray(this.vao);
@@ -274,10 +287,10 @@ export class ExportCompositor {
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       gl.clearColor(0, 0, 0, 1);
       gl.clear(gl.COLOR_BUFFER_BIT);
-    } else if (layers.length === 1) {
+    } else if (layers.length === 1 && !subtitleLayer) {
       this.drawSingleLayer(layers[0]!);
     } else {
-      this.drawMultipleLayers(layers);
+      this.drawMultipleLayers(layers, subtitleLayer);
     }
 
     gl.bindVertexArray(null);
@@ -305,8 +318,9 @@ export class ExportCompositor {
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
 
-  private drawMultipleLayers(layers: ExportLayer[]): void {
+  private drawMultipleLayers(layers: ExportLayer[], subtitleLayer?: SubtitleLayer): void {
     const { gl } = this;
+    const hasSubtitles = subtitleLayer !== undefined;
 
     // First layer to framebuffer
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
@@ -326,8 +340,10 @@ export class ExportCompositor {
     for (let i = 1; i < layers.length; i++) {
       const layer = layers[i]!;
       const opacity = layer.opacity;
+      const isLastVideoLayer = i === layers.length - 1;
 
-      if (i === layers.length - 1) {
+      // Only output to screen if this is the last layer AND there are no subtitles
+      if (isLastVideoLayer && !hasSubtitles) {
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       }
 
@@ -345,7 +361,7 @@ export class ExportCompositor {
 
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
-      if (i < layers.length - 1) {
+      if (!isLastVideoLayer || hasSubtitles) {
         gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
         gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this.framebuffer);
         gl.blitFramebuffer(
@@ -362,6 +378,33 @@ export class ExportCompositor {
         );
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
       }
+    }
+
+    // Draw subtitle overlay as final layer
+    if (hasSubtitles) {
+      // Output to screen for final composite
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.framebufferTexture);
+      gl.uniform1i(this.blendUniforms.baseTexture, 0);
+
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, this.subtitleTexture);
+      gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.RGBA,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
+        subtitleLayer.canvas
+      );
+      gl.uniform1i(this.blendUniforms.overlayTexture, 1);
+
+      gl.uniform1f(this.blendUniforms.opacity, 1.0);
+      gl.uniform1i(this.blendUniforms.hasOverlay, 1);
+
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     }
   }
 
@@ -385,6 +428,7 @@ export class ExportCompositor {
     if (this.vao) gl.deleteVertexArray(this.vao);
     if (this.baseTexture) gl.deleteTexture(this.baseTexture);
     if (this.overlayTexture) gl.deleteTexture(this.overlayTexture);
+    if (this.subtitleTexture) gl.deleteTexture(this.subtitleTexture);
     if (this.framebuffer) gl.deleteFramebuffer(this.framebuffer);
     if (this.framebufferTexture) gl.deleteTexture(this.framebufferTexture);
   }

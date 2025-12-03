@@ -8,7 +8,7 @@
 // ============================================================================
 
 /** Track type identifier */
-export type TrackType = 'video' | 'audio';
+export type TrackType = 'video' | 'audio' | 'subtitle';
 
 /** Source loading states */
 export type SourceState = 'idle' | 'loading' | 'playable' | 'ready' | 'error';
@@ -113,6 +113,7 @@ export interface TrackJSON {
   type: TrackType;
   label: string;
   clips: ClipJSON[];
+  subtitleClips?: SubtitleClipJSON[];
 }
 
 /** Serialized source reference for persistence */
@@ -255,4 +256,55 @@ export interface ExportResult {
   durationMs: number;
   /** File size in bytes */
   fileSizeBytes: number;
+}
+
+// ============================================================================
+// SUBTITLE TYPES
+// ============================================================================
+
+/** A single subtitle cue (text segment) */
+export interface SubtitleCue {
+  /** Unique identifier */
+  id: string;
+  /** Start time relative to clip start (microseconds) */
+  startUs: number;
+  /** End time relative to clip start (microseconds) */
+  endUs: number;
+  /** Text content (may contain newlines) */
+  text: string;
+}
+
+/** Subtitle styling options */
+export interface SubtitleStyle {
+  /** Font family (web-safe) */
+  fontFamily: string;
+  /** Font size in pixels (at 1080p reference) */
+  fontSize: number;
+  /** Text color (hex) */
+  color: string;
+  /** Background color (hex with alpha) */
+  backgroundColor: string;
+  /** Whether to show background box */
+  showBackground: boolean;
+}
+
+/** Configuration for creating a subtitle clip */
+export interface SubtitleClipConfig {
+  /** Position on timeline (microseconds) */
+  startUs: number;
+  /** Array of cues */
+  cues: SubtitleCue[];
+  /** Style settings */
+  style: SubtitleStyle;
+  /** Optional label */
+  label?: string;
+}
+
+/** Serialized subtitle clip for persistence */
+export interface SubtitleClipJSON {
+  id: string;
+  startUs: number;
+  cues: SubtitleCue[];
+  style: SubtitleStyle;
+  label: string;
 }
