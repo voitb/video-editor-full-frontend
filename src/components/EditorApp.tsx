@@ -3,7 +3,7 @@
  * Demonstrates how to use the video editor components together.
  */
 
-import { useRef, useEffect, useCallback, useState, useMemo } from 'react';
+import { useRef, useEffect, useCallback, useState } from 'react';
 import { useComposition } from '../hooks/useComposition';
 import { useEngine } from '../hooks/useEngine';
 import { useTimeline } from '../hooks/useTimeline';
@@ -116,16 +116,6 @@ export function EditorApp(props: EditorAppProps) {
     clearInPoint,
     clearOutPoint,
   } = useExportRange({ durationUs });
-
-  // Sort tracks: video tracks first, then audio, overlay, then subtitle tracks (professional NLE layout)
-  // Use tracks.length as dependency to ensure re-computation when tracks are added/removed
-  const sortedTracks = useMemo(() => {
-    const videoTracks = tracks.filter(t => t.type === 'video');
-    const audioTracks = tracks.filter(t => t.type === 'audio');
-    const overlayTracks = tracks.filter(t => t.type === 'overlay');
-    const subtitleTracks = tracks.filter(t => t.type === 'subtitle');
-    return [...videoTracks, ...audioTracks, ...overlayTracks, ...subtitleTracks];
-  }, [tracks, tracks.length]);
 
   // Initialize engine when canvas is ready
   useEffect(() => {
@@ -376,6 +366,13 @@ export function EditorApp(props: EditorAppProps) {
 
     return newTrack;
   }, [createTrack, tracks]);
+
+  // Handle reordering a track via drag-and-drop
+  const handleTrackReorder = useCallback((trackId: string, newOrder: number) => {
+    composition.reorderTrack(trackId, newOrder);
+    refresh();
+    notifyCompositionChanged();
+  }, [composition, refresh, notifyCompositionChanged]);
 
   // Handle unlinking a clip
   const handleClipUnlink = useCallback((clipId: string) => {
@@ -1051,7 +1048,7 @@ export function EditorApp(props: EditorAppProps) {
         }}
       >
         <Timeline
-          tracks={sortedTracks}
+          tracks={tracks}
           currentTimeUs={currentTimeUs}
           durationUs={durationUs}
           viewport={viewport}
@@ -1076,6 +1073,7 @@ export function EditorApp(props: EditorAppProps) {
           onTrackRename={handleTrackRename}
           onTrackColorChange={handleTrackColorChange}
           onTrackInsert={handleTrackInsert}
+          onTrackReorder={handleTrackReorder}
           onFitToView={() => resetViewport(durationUs)}
           onExternalDropToTrack={handleExternalDropToTrack}
           onClipDelete={handleClipDelete}

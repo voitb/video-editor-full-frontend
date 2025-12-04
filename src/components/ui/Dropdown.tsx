@@ -7,6 +7,7 @@ import {
   offset,
   flip,
   shift,
+  limitShift,
   autoUpdate,
   useClick,
   useDismiss,
@@ -80,10 +81,15 @@ export function Dropdown({
     middleware: [
       offset(offsetPx),
       flip({
-        fallbackPlacements: ['top-start', 'top-end', 'bottom-end', 'top', 'bottom'],
-        padding: 8,
+        fallbackPlacements: ['top-start', 'top-end', 'bottom-end', 'top', 'bottom', 'right-start', 'left-start'],
+        padding: 16,
+        crossAxis: true,
       }),
-      shift({ padding: 8 }),
+      shift({
+        padding: 16,
+        crossAxis: true,
+        limiter: limitShift(),
+      }),
     ],
     whileElementsMounted: autoUpdate,
   });

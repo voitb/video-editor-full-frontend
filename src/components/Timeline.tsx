@@ -14,7 +14,25 @@ import type { TimelineViewport, TrackUIState, TrackType } from '../core/types';
 import { formatTimecodeAdaptive } from '../utils/time';
 import { TIMELINE, TIMELINE_COLORS, TRACK_COLOR_OPTIONS } from '../constants';
 import { ContextMenu, MenuItem, MenuSeparator, MenuHeader } from './ui';
-import { Dropdown, DropdownTrigger } from './ui';
+import { Dropdown } from './ui';
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  DragOverlay,
+  type DragStartEvent,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 
 // ============================================================================
 // TYPES
@@ -75,6 +93,8 @@ export interface TimelineProps {
   onTrackColorChange?: (trackId: string, color: string | undefined) => void;
   /** Callback when inserting a track relative to another */
   onTrackInsert?: (type: 'video' | 'audio' | 'subtitle' | 'overlay', referenceTrackId: string, position: 'above' | 'below') => void;
+  /** Callback when a track is reordered via drag-and-drop */
+  onTrackReorder?: (trackId: string, newOrder: number) => void;
   /** Callback when a clip is unlinked */
   onClipUnlink?: (clipId: string) => void;
   /** Callback when fit to view is requested */
@@ -230,6 +250,7 @@ export function Timeline(props: TimelineProps) {
     onTrackRename,
     onTrackColorChange,
     onTrackInsert,
+    onTrackReorder,
     onClipUnlink,
     onFitToView,
     onExternalDropToTrack,
@@ -276,6 +297,40 @@ export function Timeline(props: TimelineProps) {
     x: number;
     y: number;
   } | null>(null);
+  const [activeTrackId, setActiveTrackId] = useState<string | null>(null);
+
+  // Configure sensors for track reordering drag-and-drop
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 8, // Require 8px movement before drag starts
+      },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
+  );
+
+  // Handle track drag start
+  const handleTrackDragStart = useCallback((event: DragStartEvent) => {
+    setActiveTrackId(event.active.id as string);
+  }, []);
+
+  // Handle track drag end - reorder tracks
+  const handleTrackDragEnd = useCallback((event: DragEndEvent) => {
+    const { active, over } = event;
+    setActiveTrackId(null);
+
+    if (over && active.id !== over.id) {
+      // Find the new order based on drop position
+      const oldIndex = tracks.findIndex(t => t.id === active.id);
+      const newIndex = tracks.findIndex(t => t.id === over.id);
+
+      if (oldIndex !== -1 && newIndex !== -1) {
+        onTrackReorder?.(active.id as string, newIndex);
+      }
+    }
+  }, [tracks, onTrackReorder]);
 
   // Track container width for responsive timeline
   useEffect(() => {
@@ -845,95 +900,131 @@ export function Timeline(props: TimelineProps) {
           </div>
 
           {/* Track rows - each has sticky header + lane */}
-          {tracks.map((track, trackIndex) => (
-            <div
-              key={track.id}
-              style={{
-                display: 'flex',
-                flexDirection: 'row',
-                height: getTrackHeight(track.id),
-              }}
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragStart={handleTrackDragStart}
+            onDragEnd={handleTrackDragEnd}
+          >
+            <SortableContext
+              items={tracks.map(t => t.id)}
+              strategy={verticalListSortingStrategy}
             >
-              {/* Sticky track header - stays fixed on left while scrolling horizontally */}
-              <div
-                style={{
-                  position: 'sticky',
-                  left: 0,
-                  width: TIMELINE.TRACK_HEADER_WIDTH,
-                  flexShrink: 0,
-                  zIndex: 10,
-                  backgroundColor: TIMELINE_COLORS.trackHeaderBg,
-                  borderRight: `1px solid ${TIMELINE_COLORS.border}`,
-                }}
-              >
-                <TrackHeader
-                  track={track}
-                  height={getTrackHeight(track.id)}
-                  isDropTarget={dropTargetTrackId === track.id}
-                  trackState={trackStates?.[track.id]}
-                  onRemove={onTrackRemove}
-                  onMute={onTrackMute}
-                  onSolo={onTrackSolo}
-                  onLock={onTrackLock}
-                  onResize={onTrackResize}
-                  onRename={onTrackRename}
-                  onColorChange={onTrackColorChange}
-                  onContextMenu={(trackId, x, y) => setTrackHeaderMenu({ trackId, x, y })}
-                />
-              </div>
-              {/* Track lane - scrolls with content */}
-              <div style={{ position: 'relative', width: totalTimelineWidth }}>
-                <TrackLane
-                  track={track}
-                  trackIndex={trackIndex}
-                  height={getTrackHeight(track.id)}
-                  timeToPixel={timeToPixel}
-                  pixelToTime={pixelToTime}
-                  selectedClipId={selectedClipId}
-                  isDropTarget={dropTargetTrackId === track.id}
-                  isLocked={trackStates?.[track.id]?.locked ?? false}
-                  onClipSelect={onClipSelect}
-                  onClipMove={onClipMove}
-                  onClipMoveToTrack={onClipMoveToTrack}
-                  onClipTrimStart={onClipTrimStart}
-                  onClipTrimEnd={onClipTrimEnd}
-                  onSeek={onSeek}
-                  onClipUnlink={onClipUnlink}
-                  onClipDelete={onClipDelete}
-                  onExternalDropToTrack={onExternalDropToTrack}
-                  applySnap={applySnap}
-                  setActiveSnapLine={setActiveSnapLine}
-                  setDropTargetTrackId={setDropTargetTrackId}
-                  allTracks={tracks}
-                  pixelsPerSecond={pixelsPerSecond}
-                  scrollLeft={scrollLeft}
-                  hoveredLinkedClipId={hoveredLinkedClipId}
-                  setHoveredLinkedClipId={setHoveredLinkedClipId}
-                  onDragPreview={handleDragPreview}
-                  dragPreviewMap={dragPreviewMap}
-                  onAddSubtitleClip={onAddSubtitleClip}
-                  onSubtitleEdit={onSubtitleEdit}
-                  onSubtitleTrimStart={onSubtitleTrimStart}
-                  onSubtitleTrimEnd={onSubtitleTrimEnd}
-                  onSubtitleMoveToTrack={onSubtitleMoveToTrack}
-                  onSubtitleMove={onSubtitleMove}
-                  onSubtitleDuplicate={onSubtitleDuplicate}
-                  onSubtitleSplit={onSubtitleSplit}
-                  onSubtitleAddCue={onSubtitleAddCue}
-                  onAddOverlayClip={onAddOverlayClip}
-                  onOverlayEdit={onOverlayEdit}
-                  onOverlayTrimStart={onOverlayTrimStart}
-                  onOverlayTrimEnd={onOverlayTrimEnd}
-                  onOverlayMoveToTrack={onOverlayMoveToTrack}
-                  onOverlayMove={onOverlayMove}
-                  onOverlayDuplicate={onOverlayDuplicate}
-                  onOverlaySplit={onOverlaySplit}
-                  currentTimeUs={currentTimeUs}
-                  tracks={tracks}
-                />
-              </div>
-            </div>
-          ))}
+              {tracks.map((track, trackIndex) => (
+                <SortableTrackRow key={track.id} id={track.id}>
+                  {(dragHandleProps, isDragging) => (
+                    <div
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'row',
+                        height: getTrackHeight(track.id),
+                      }}
+                    >
+                      {/* Sticky track header - stays fixed on left while scrolling horizontally */}
+                      <div
+                        style={{
+                          position: 'sticky',
+                          left: 0,
+                          width: TIMELINE.TRACK_HEADER_WIDTH,
+                          flexShrink: 0,
+                          zIndex: 10,
+                          backgroundColor: TIMELINE_COLORS.trackHeaderBg,
+                          borderRight: `1px solid ${TIMELINE_COLORS.border}`,
+                        }}
+                      >
+                        <TrackHeader
+                          track={track}
+                          height={getTrackHeight(track.id)}
+                          isDropTarget={dropTargetTrackId === track.id}
+                          trackState={trackStates?.[track.id]}
+                          onRemove={onTrackRemove}
+                          onMute={onTrackMute}
+                          onSolo={onTrackSolo}
+                          onLock={onTrackLock}
+                          onResize={onTrackResize}
+                          onRename={onTrackRename}
+                          onColorChange={onTrackColorChange}
+                          onContextMenu={(trackId, x, y) => setTrackHeaderMenu({ trackId, x, y })}
+                          dragHandleProps={dragHandleProps}
+                          isDragging={isDragging}
+                        />
+                      </div>
+                      {/* Track lane - scrolls with content */}
+                      <div style={{ position: 'relative', width: totalTimelineWidth }}>
+                        <TrackLane
+                          track={track}
+                          trackIndex={trackIndex}
+                          height={getTrackHeight(track.id)}
+                          timeToPixel={timeToPixel}
+                          pixelToTime={pixelToTime}
+                          selectedClipId={selectedClipId}
+                          isDropTarget={dropTargetTrackId === track.id}
+                          isLocked={trackStates?.[track.id]?.locked ?? false}
+                          onClipSelect={onClipSelect}
+                          onClipMove={onClipMove}
+                          onClipMoveToTrack={onClipMoveToTrack}
+                          onClipTrimStart={onClipTrimStart}
+                          onClipTrimEnd={onClipTrimEnd}
+                          onSeek={onSeek}
+                          onClipUnlink={onClipUnlink}
+                          onClipDelete={onClipDelete}
+                          onExternalDropToTrack={onExternalDropToTrack}
+                          applySnap={applySnap}
+                          setActiveSnapLine={setActiveSnapLine}
+                          setDropTargetTrackId={setDropTargetTrackId}
+                          allTracks={tracks}
+                          pixelsPerSecond={pixelsPerSecond}
+                          scrollLeft={scrollLeft}
+                          hoveredLinkedClipId={hoveredLinkedClipId}
+                          setHoveredLinkedClipId={setHoveredLinkedClipId}
+                          onDragPreview={handleDragPreview}
+                          dragPreviewMap={dragPreviewMap}
+                          onAddSubtitleClip={onAddSubtitleClip}
+                          onSubtitleEdit={onSubtitleEdit}
+                          onSubtitleTrimStart={onSubtitleTrimStart}
+                          onSubtitleTrimEnd={onSubtitleTrimEnd}
+                          onSubtitleMoveToTrack={onSubtitleMoveToTrack}
+                          onSubtitleMove={onSubtitleMove}
+                          onSubtitleDuplicate={onSubtitleDuplicate}
+                          onSubtitleSplit={onSubtitleSplit}
+                          onSubtitleAddCue={onSubtitleAddCue}
+                          onAddOverlayClip={onAddOverlayClip}
+                          onOverlayEdit={onOverlayEdit}
+                          onOverlayTrimStart={onOverlayTrimStart}
+                          onOverlayTrimEnd={onOverlayTrimEnd}
+                          onOverlayMoveToTrack={onOverlayMoveToTrack}
+                          onOverlayMove={onOverlayMove}
+                          onOverlayDuplicate={onOverlayDuplicate}
+                          onOverlaySplit={onOverlaySplit}
+                          currentTimeUs={currentTimeUs}
+                          tracks={tracks}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </SortableTrackRow>
+              ))}
+            </SortableContext>
+
+            {/* Drag overlay for visual feedback during track drag */}
+            <DragOverlay>
+              {activeTrackId ? (
+                <div
+                  style={{
+                    backgroundColor: TIMELINE_COLORS.trackHeaderBg,
+                    border: `2px solid ${TIMELINE_COLORS.playhead}`,
+                    borderRadius: 4,
+                    padding: '8px 12px',
+                    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.5)',
+                  }}
+                >
+                  <span style={{ fontSize: 11, color: TIMELINE_COLORS.textSecondary }}>
+                    {tracks.find(t => t.id === activeTrackId)?.label || 'Track'}
+                  </span>
+                </div>
+              ) : null}
+            </DragOverlay>
+          </DndContext>
 
           {/* Snap indicator line - offset by header width */}
           {activeSnapLine !== null && (
@@ -1240,6 +1331,45 @@ export function Timeline(props: TimelineProps) {
 }
 
 // ============================================================================
+// SORTABLE TRACK ROW (for drag-and-drop reordering)
+// ============================================================================
+
+interface SortableTrackRowProps {
+  id: string;
+  children: (dragHandleProps: React.HTMLAttributes<HTMLDivElement>, isDragging: boolean) => React.ReactNode;
+}
+
+function SortableTrackRow({ id, children }: SortableTrackRowProps) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id });
+
+  const style: CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    zIndex: isDragging ? 100 : 'auto',
+    position: 'relative' as const,
+  };
+
+  // Combine attributes and listeners for drag handle
+  const dragHandleProps = {
+    ...attributes,
+    ...listeners,
+  };
+
+  return (
+    <div ref={setNodeRef} style={style}>
+      {children(dragHandleProps, isDragging)}
+    </div>
+  );
+}
+
+// ============================================================================
 // TRACK HEADER
 // ============================================================================
 
@@ -1256,6 +1386,10 @@ interface TrackHeaderProps {
   onRename?: (trackId: string, newLabel: string) => void;
   onColorChange?: (trackId: string, color: string | undefined) => void;
   onContextMenu?: (trackId: string, x: number, y: number) => void;
+  /** Props for drag handle (from dnd-kit useSortable) */
+  dragHandleProps?: React.HTMLAttributes<HTMLDivElement>;
+  /** Whether this track is currently being dragged */
+  isDragging?: boolean;
 }
 
 function TrackHeader({
@@ -1271,6 +1405,8 @@ function TrackHeader({
   onRename: _onRename,
   onColorChange: _onColorChange,
   onContextMenu,
+  dragHandleProps,
+  isDragging,
 }: TrackHeaderProps) {
   const [isResizing, setIsResizing] = useState(false);
   const resizeStartY = useRef(0);
@@ -1330,9 +1466,37 @@ function TrackHeader({
           : 'transparent',
         transition: 'background-color 0.15s',
         position: 'relative',
+        opacity: isDragging ? 0.5 : 1,
       }}
       onContextMenu={handleContextMenu}
     >
+      {/* Drag handle */}
+      {dragHandleProps && (
+        <div
+          {...dragHandleProps}
+          style={{
+            width: 16,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            cursor: isDragging ? 'grabbing' : 'grab',
+            color: TIMELINE_COLORS.textMuted,
+            flexShrink: 0,
+            touchAction: 'none',
+          }}
+          title="Drag to reorder track"
+        >
+          <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor">
+            <circle cx="3" cy="2" r="1.5" />
+            <circle cx="7" cy="2" r="1.5" />
+            <circle cx="3" cy="7" r="1.5" />
+            <circle cx="7" cy="7" r="1.5" />
+            <circle cx="3" cy="12" r="1.5" />
+            <circle cx="7" cy="12" r="1.5" />
+          </svg>
+        </div>
+      )}
+
       {/* Color indicator bar */}
       <div
         style={{

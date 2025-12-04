@@ -7,6 +7,7 @@ import {
   offset,
   flip,
   shift,
+  limitShift,
   autoUpdate,
   useClick,
   useDismiss,
@@ -14,7 +15,7 @@ import {
   FloatingPortal,
   type Placement,
 } from '@floating-ui/react';
-import { useEffect, useRef, type ReactNode, type CSSProperties } from 'react';
+import { useEffect, useRef, useState, useLayoutEffect, type ReactNode, type CSSProperties } from 'react';
 import { TIMELINE_COLORS } from '../../constants';
 
 export interface FloatingMenuProps {
@@ -104,10 +105,15 @@ export function useFloatingMenu(options: {
     middleware: [
       offset(offsetPx),
       flip({
-        fallbackPlacements: ['top-start', 'top-end', 'bottom-end'],
-        padding: 8,
+        fallbackPlacements: ['top-start', 'top-end', 'bottom-end', 'top', 'bottom', 'right-start', 'left-start'],
+        padding: 16,
+        crossAxis: true,
       }),
-      shift({ padding: 8 }),
+      shift({
+        padding: 16,
+        crossAxis: true,
+        limiter: limitShift(),
+      }),
     ],
     whileElementsMounted: autoUpdate,
   });
@@ -147,6 +153,7 @@ export function ContextMenuFloating({
   style?: CSSProperties;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
+  const [adjustedPosition, setAdjustedPosition] = useState({ left: x, top: y });
 
   // Handle click outside
   useEffect(() => {
@@ -177,34 +184,39 @@ export function ContextMenuFloating({
     };
   }, [open, onClose]);
 
-  // Calculate position with viewport collision detection
-  const getAdjustedPosition = () => {
-    if (!open) return { left: x, top: y };
+  // Calculate position with actual menu dimensions after render
+  useLayoutEffect(() => {
+    if (!open || !menuRef.current) {
+      setAdjustedPosition({ left: x, top: y });
+      return;
+    }
 
+    const padding = 16;
     const viewportWidth = window.innerWidth;
     const viewportHeight = window.innerHeight;
-    const menuWidth = minWidth + 20; // Estimated width with padding
-    const menuHeight = 300; // Estimated max height
+
+    // Use actual menu dimensions
+    const rect = menuRef.current.getBoundingClientRect();
+    const menuWidth = rect.width || minWidth + 20;
+    const menuHeight = rect.height || 300;
 
     let adjustedX = x;
     let adjustedY = y;
 
     // Flip horizontally if would overflow right edge
-    if (x + menuWidth > viewportWidth - 8) {
-      adjustedX = Math.max(8, x - menuWidth);
+    if (x + menuWidth > viewportWidth - padding) {
+      adjustedX = Math.max(padding, viewportWidth - menuWidth - padding);
     }
 
     // Flip vertically if would overflow bottom edge
-    if (y + menuHeight > viewportHeight - 8) {
-      adjustedY = Math.max(8, y - menuHeight);
+    if (y + menuHeight > viewportHeight - padding) {
+      adjustedY = Math.max(padding, viewportHeight - menuHeight - padding);
     }
 
-    return { left: adjustedX, top: adjustedY };
-  };
+    setAdjustedPosition({ left: adjustedX, top: adjustedY });
+  }, [open, x, y, minWidth]);
 
   if (!open) return null;
-
-  const position = getAdjustedPosition();
 
   return (
     <FloatingPortal>
@@ -213,8 +225,8 @@ export function ContextMenuFloating({
         onClick={(e) => e.stopPropagation()}
         style={{
           position: 'fixed',
-          left: position.left,
-          top: position.top,
+          left: adjustedPosition.left,
+          top: adjustedPosition.top,
           zIndex: 9999,
           minWidth,
           ...MENU_STYLES.container,
