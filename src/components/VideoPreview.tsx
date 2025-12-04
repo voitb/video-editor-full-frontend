@@ -1,39 +1,89 @@
-import { useEffect, useRef } from 'react';
-import { logger } from '../utils/logger';
+/**
+ * Video Editor V2 - VideoPreview Component
+ * Canvas-based video preview with playback controls.
+ */
 
-interface VideoPreviewProps {
-  onCanvasReady: (canvas: HTMLCanvasElement) => void;
+import { useRef, useEffect, forwardRef, useImperativeHandle } from 'react';
+
+export interface VideoPreviewProps {
+  /** Width of the preview canvas */
   width?: number;
+  /** Height of the preview canvas */
   height?: number;
+  /** CSS class name */
+  className?: string;
+  /** CSS styles */
+  style?: React.CSSProperties;
+  /** Callback when canvas is ready */
+  onCanvasReady?: (canvas: HTMLCanvasElement) => void;
 }
 
-export function VideoPreview({ onCanvasReady, width = 640, height = 360 }: VideoPreviewProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const initializedRef = useRef(false);
+export interface VideoPreviewHandle {
+  /** Get the canvas element */
+  getCanvas: () => HTMLCanvasElement | null;
+}
 
-  useEffect(() => {
-    if (canvasRef.current && !initializedRef.current) {
-      try {
-        initializedRef.current = true;
+/**
+ * Video preview component that renders video frames to a canvas.
+ * Connect this to the useEngine hook for playback.
+ *
+ * @example
+ * ```tsx
+ * const previewRef = useRef<VideoPreviewHandle>(null);
+ * const { composition } = useComposition();
+ * const { initialize, play, pause } = useEngine({ composition });
+ *
+ * useEffect(() => {
+ *   const canvas = previewRef.current?.getCanvas();
+ *   if (canvas) {
+ *     initialize(canvas);
+ *   }
+ * }, [initialize]);
+ *
+ * return (
+ *   <VideoPreview
+ *     ref={previewRef}
+ *     width={1280}
+ *     height={720}
+ *   />
+ * );
+ * ```
+ */
+export const VideoPreview = forwardRef<VideoPreviewHandle, VideoPreviewProps>(
+  function VideoPreview(props, ref) {
+    const {
+      width = 1280,
+      height = 720,
+      className,
+      style,
+      onCanvasReady,
+    } = props;
+
+    const canvasRef = useRef<HTMLCanvasElement>(null);
+
+    // Expose canvas via ref
+    useImperativeHandle(ref, () => ({
+      getCanvas: () => canvasRef.current,
+    }), []);
+
+    // Notify when canvas is ready
+    useEffect(() => {
+      if (canvasRef.current && onCanvasReady) {
         onCanvasReady(canvasRef.current);
-      } catch (error) {
-        logger.error('Failed to initialize canvas:', error);
-        initializedRef.current = false; // Allow retry on next render
       }
-    }
-  }, [onCanvasReady]);
+    }, [onCanvasReady]);
 
-  return (
-    <div
-      className="relative border border-gray-700 bg-black rounded-lg overflow-hidden"
-      style={{ width, height }}
-    >
+    return (
       <canvas
         ref={canvasRef}
         width={width}
         height={height}
-        className="w-full h-full block"
+        className={className}
+        style={{
+          backgroundColor: '#000',
+          ...style,
+        }}
       />
-    </div>
-  );
-}
+    );
+  }
+);

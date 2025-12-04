@@ -1,82 +1,85 @@
-import { Component, type ReactNode } from 'react';
-import { logger } from '../utils/logger';
+/**
+ * Video Editor V2 - Error Boundary Component
+ */
 
-interface Props {
+import { Component, type ReactNode, type ErrorInfo } from 'react';
+
+interface ErrorBoundaryProps {
   children: ReactNode;
+  fallback?: ReactNode;
 }
 
-interface State {
+interface ErrorBoundaryState {
   hasError: boolean;
   error: Error | null;
 }
 
-export class ErrorBoundary extends Component<Props, State> {
-  private _isMounted = false;
-
-  constructor(props: Props) {
+export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  constructor(props: ErrorBoundaryProps) {
     super(props);
     this.state = { hasError: false, error: null };
   }
 
-  static getDerivedStateFromError(error: Error): State {
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
     return { hasError: true, error };
   }
 
-  componentDidMount(): void {
-    this._isMounted = true;
-    // Handle global errors (including worker errors)
-    window.addEventListener('error', this.handleWindowError);
-    // Handle unhandled promise rejections
-    window.addEventListener('unhandledrejection', this.handlePromiseRejection);
+  componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
+    console.error('Error caught by boundary:', error, errorInfo);
   }
 
-  componentWillUnmount(): void {
-    this._isMounted = false;
-    window.removeEventListener('error', this.handleWindowError);
-    window.removeEventListener('unhandledrejection', this.handlePromiseRejection);
-  }
-
-  componentDidCatch(error: Error, errorInfo: React.ErrorInfo): void {
-    logger.error('ErrorBoundary caught error:', error, errorInfo);
-  }
-
-  private handleWindowError = (event: ErrorEvent): void => {
-    if (!this._isMounted) return;
-    if (event.error) {
-      logger.error('Window error:', event.error);
-    }
-  };
-
-  private handlePromiseRejection = (event: PromiseRejectionEvent): void => {
-    if (!this._isMounted) return;
-    logger.error('Unhandled promise rejection:', event.reason);
-  };
-
-  handleReset = (): void => {
-    this.setState({ hasError: false, error: null });
-  };
-
-  render(): ReactNode {
+  render() {
     if (this.state.hasError) {
+      if (this.props.fallback) {
+        return this.props.fallback;
+      }
+
       return (
-        <div className="flex flex-col items-center justify-center min-h-screen bg-gray-900 text-white p-8">
-          <div className="max-w-md text-center">
-            <h1 className="text-2xl font-bold mb-4">Something went wrong</h1>
-            <p className="text-gray-400 mb-6">
-              The video editor encountered an unexpected error. Please reload the page to try again.
-            </p>
-            {this.state.error && (
-              <pre className="bg-gray-800 p-4 rounded text-left text-sm text-red-400 overflow-auto mb-6">
-                {this.state.error.message}
-              </pre>
-            )}
-            <button
-              onClick={() => window.location.reload()}
-              className="px-6 py-2 bg-blue-600 hover:bg-blue-500 rounded font-medium transition-colors"
-            >
-              Reload Page
-            </button>
-          </div>
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            minHeight: '100vh',
+            backgroundColor: '#0a0a0a',
+            color: '#fff',
+            fontFamily: 'system-ui, sans-serif',
+            padding: 32,
+          }}
+        >
+          <h1 style={{ fontSize: 24, marginBottom: 16 }}>Something went wrong</h1>
+          <p style={{ color: '#888', marginBottom: 24, textAlign: 'center', maxWidth: 500 }}>
+            The video editor encountered an unexpected error. Please refresh the page to try again.
+          </p>
+          <pre
+            style={{
+              backgroundColor: '#1a1a1a',
+              padding: 16,
+              borderRadius: 8,
+              fontSize: 12,
+              color: '#ff6b6b',
+              maxWidth: '100%',
+              overflow: 'auto',
+            }}
+          >
+            {this.state.error?.message}
+          </pre>
+          <button
+            onClick={() => window.location.reload()}
+            style={{
+              marginTop: 24,
+              padding: '12px 24px',
+              backgroundColor: '#3b82f6',
+              color: '#fff',
+              border: 'none',
+              borderRadius: 6,
+              cursor: 'pointer',
+              fontSize: 14,
+            }}
+          >
+            Refresh Page
+          </button>
         </div>
       );
     }
