@@ -1,17 +1,30 @@
 /**
  * Overlay Processor
  * Handles overlay rendering to canvas for compositing.
+ *
+ * Note: OverlayRenderer pre-renders overlays to full-frame ImageBitmaps
+ * with the overlay already positioned correctly within the frame.
+ * This processor simply draws those bitmaps to the compositing canvas.
  */
 
 import type { OverlayPosition } from './types';
 
 /**
- * Render an overlay bitmap to a canvas at the specified position.
+ * Render an overlay bitmap to a canvas for compositing.
  * Returns a canvas that can be used as a texture source.
+ *
+ * The bitmap is expected to be a full-frame image with the overlay
+ * already positioned correctly by OverlayRenderer. We draw it at (0,0)
+ * to preserve the pre-calculated positioning.
+ *
+ * @param bitmap - Pre-rendered overlay bitmap (full-frame with positioning applied)
+ * @param _position - Position data (unused - positioning already applied in bitmap)
+ * @param compositionWidth - Output composition width
+ * @param compositionHeight - Output composition height
  */
 export function renderOverlayToCanvas(
   bitmap: ImageBitmap,
-  position: OverlayPosition,
+  _position: OverlayPosition,
   compositionWidth: number,
   compositionHeight: number
 ): OffscreenCanvas {
@@ -19,31 +32,9 @@ export function renderOverlayToCanvas(
   const ctx = canvas.getContext('2d');
   if (!ctx) return canvas;
 
-  // Calculate pixel position from percentages
-  const x = (position.xPercent / 100) * compositionWidth;
-  const y = (position.yPercent / 100) * compositionHeight;
-
-  // Calculate dimensions
-  let width = bitmap.width;
-  let height = bitmap.height;
-
-  if (position.widthPercent !== null) {
-    width = (position.widthPercent / 100) * compositionWidth;
-    // Maintain aspect ratio if only width is specified
-    if (position.heightPercent === null) {
-      height = (width / bitmap.width) * bitmap.height;
-    }
-  }
-
-  if (position.heightPercent !== null) {
-    height = (position.heightPercent / 100) * compositionHeight;
-    // Maintain aspect ratio if only height is specified
-    if (position.widthPercent === null) {
-      width = (height / bitmap.height) * bitmap.width;
-    }
-  }
-
-  ctx.drawImage(bitmap, x, y, width, height);
+  // Draw the full-frame bitmap at origin - positioning is already baked into the bitmap
+  // by OverlayRenderer (which centers overlays on xPercent/yPercent coordinates)
+  ctx.drawImage(bitmap, 0, 0);
 
   return canvas;
 }
