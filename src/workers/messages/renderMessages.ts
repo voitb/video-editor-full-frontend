@@ -177,6 +177,34 @@ export interface SeekCompleteEvent {
   timeUs: number;
 }
 
+/** Performance metrics from worker */
+export interface PerfMetricsEvent {
+  type: 'PERF_METRICS';
+  metrics: WorkerPerfMetrics;
+}
+
+/** Worker performance metrics data */
+export interface WorkerPerfMetrics {
+  /** Decoder queue depth per source */
+  decoderQueueDepth: Record<string, number>;
+  /** Frame queue depth per source */
+  frameQueueDepth: Record<string, number>;
+  /** Current FPS */
+  fps: number;
+  /** Average frame time in ms */
+  avgFrameTimeMs: number;
+  /** Total frames decoded */
+  framesDecoded: number;
+  /** Total frames rendered */
+  framesRendered: number;
+  /** Total frames dropped */
+  framesDropped: number;
+  /** Device tier detected */
+  deviceTier: 'low' | 'medium' | 'high';
+  /** Current playback state */
+  isPlaying: boolean;
+}
+
 /** All possible events */
 export type RenderWorkerEvent =
   | SourceReadyEvent
@@ -188,7 +216,8 @@ export type RenderWorkerEvent =
   | AudioDataEvent
   | ErrorEvent
   | WorkerReadyEvent
-  | SeekCompleteEvent;
+  | SeekCompleteEvent
+  | PerfMetricsEvent;
 
 // ============================================================================
 // TYPE GUARDS

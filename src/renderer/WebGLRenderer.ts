@@ -39,7 +39,14 @@ export class WebGLRenderer {
 
   constructor(canvas: OffscreenCanvas) {
     this.canvas = canvas;
-    const gl = canvas.getContext('webgl2');
+    // OPTIMIZATION: Configure WebGL context for video rendering performance
+    const gl = canvas.getContext('webgl2', {
+      alpha: false,               // Video doesn't need alpha channel
+      antialias: false,           // Not needed for video frames
+      powerPreference: 'high-performance', // Prioritize speed over power
+      desynchronized: true,       // Allow non-vsync updates for lower latency
+      preserveDrawingBuffer: false,
+    });
     if (!gl) throw new Error('WebGL2 not supported');
     this.gl = gl;
 

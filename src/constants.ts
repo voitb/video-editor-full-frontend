@@ -122,6 +122,42 @@ export const PLAYBACK = {
   AUDIO_DRIFT_THRESHOLD_US: 50_000,
 } as const;
 
+/** Decoder constants for performance optimization */
+export const DECODER = {
+  /** Maximum pending video decode operations before applying backpressure */
+  MAX_PENDING_DECODES: 16,
+  /** Target decoder queue depth for optimal performance */
+  TARGET_QUEUE_DEPTH: 8,
+  /** Low queue threshold - start feeding more when below this */
+  LOW_QUEUE_THRESHOLD: 4,
+  /** Maximum samples to feed per iteration to prevent decoder overwhelm */
+  MAX_SAMPLES_PER_FEED: 8,
+} as const;
+
+/** Frame queue configuration for adaptive memory management */
+export const FRAME_QUEUE = {
+  /** Frames to keep behind current time for scrubbing */
+  LOOK_BEHIND_FRAMES: 2,
+  /** Frames to buffer ahead of current time */
+  LOOK_AHEAD_FRAMES: 6,
+  /** Low-end device multiplier for queue sizes */
+  LOW_END_MULTIPLIER: 0.5,
+  /** Frame duration approximation for 30fps (in microseconds) */
+  FRAME_DURATION_US: 33_333,
+} as const;
+
+/** Performance monitoring constants */
+export const PERFORMANCE = {
+  /** Interval for sending performance metrics (ms) */
+  METRICS_INTERVAL_MS: 500,
+  /** FPS calculation window (number of frames) */
+  FPS_WINDOW_SIZE: 60,
+  /** Low FPS warning threshold */
+  LOW_FPS_THRESHOLD: 20,
+  /** Target FPS for playback matching */
+  DEFAULT_TARGET_FPS: 30,
+} as const;
+
 /** Composition defaults */
 export const COMPOSITION = {
   /** Default width */

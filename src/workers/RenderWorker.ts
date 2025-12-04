@@ -16,12 +16,15 @@ import type {
   ErrorEvent,
   AudioDataEvent,
   SeekCompleteEvent,
+  PerfMetricsEvent,
+  WorkerPerfMetrics,
 } from './messages/renderMessages';
 import type { ActiveClip } from '../core/types';
 import { WebGLRenderer } from '../renderer/WebGLRenderer';
 import { Compositor, type CompositorLayer } from '../renderer/Compositor';
-import { PLAYBACK, TIME } from '../constants';
+import { PLAYBACK, TIME, DECODER, PERFORMANCE } from '../constants';
 import { createLogger, setLogLevel } from '../utils/logger';
+import { detectDeviceTier, TIER_CONFIGS, type DeviceTier, type TierConfig } from '../utils/deviceTier';
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
 // Force verbose logging while debugging seek/preview issues.
@@ -84,6 +87,21 @@ let currentTimeUs = 0;
 let playbackStartTimeUs = 0;
 let playbackStartWallTime = 0;
 let animationFrameId: number | null = null;
+
+// Performance optimization state
+const deviceTier: DeviceTier = detectDeviceTier();
+const tierConfig: TierConfig = TIER_CONFIGS[deviceTier];
+
+// FPS matching state
+let targetFrameIntervalMs = tierConfig.frameIntervalMs;
+let lastRenderTime = 0;
+
+// Performance metrics
+let framesDecoded = 0;
+let framesRendered = 0;
+let framesDropped = 0;
+let lastMetricsTime = 0;
+let frameTimestamps: number[] = [];
 
 // ============================================================================
 // POST RESPONSE
@@ -635,6 +653,32 @@ async function seek(timeUs: number): Promise<void> {
     playbackStartWallTime = performance.now();
   }
 
+  // OPTIMIZATION: Show nearest cached frame immediately for instant visual feedback
+  // This prevents the UI from appearing frozen during seek
+  const instantFrame = findNearestCachedFrame(timeUs);
+  if (instantFrame && compositor) {
+    logger.debug('Seek: instant feedback with cached frame', {
+      targetTimeUs: timeUs,
+      cachedFrameTimeUs: instantFrame.timestampUs,
+    });
+    // Render the cached frame immediately (don't close it yet)
+    const layers: CompositorLayer[] = [];
+    for (const clip of activeClips) {
+      if (clip.trackType !== 'video') continue;
+      if (!isClipActiveAt(clip, timeUs)) continue;
+      const sourceState = sources.get(clip.sourceId);
+      if (!sourceState) continue;
+      if (instantFrame.sourceId === clip.sourceId) {
+        layers.push({ frame: instantFrame.frame, clip });
+        break;
+      }
+    }
+    if (layers.length > 0) {
+      compositor.composite(layers);
+      // Don't close - frame is still in queue
+    }
+  }
+
   // Clear frame queues and reset decoders
   for (const sourceState of sources.values()) {
     for (const { frame } of sourceState.frameQueue) {
@@ -643,7 +687,7 @@ async function seek(timeUs: number): Promise<void> {
     sourceState.frameQueue = [];
     sourceState.lastQueuedSample = -1;
 
-    // Reset decoder
+    // Reset decoder - non-blocking
     if (sourceState.decoder?.state === 'configured') {
       sourceState.decoder.reset();
       initDecoder(sourceState, sourceState.videoTrack!);
@@ -693,8 +737,25 @@ function syncToTime(timeUs: number): void {
 function playbackLoop(): void {
   if (state !== 'playing') return;
 
+  const now = performance.now();
+
+  // OPTIMIZATION: FPS matching - skip render if not enough time has passed
+  // This reduces CPU usage when source video is 24/30fps but display is 60fps
+  const timeSinceLastRender = now - lastRenderTime;
+  if (timeSinceLastRender < targetFrameIntervalMs) {
+    // Still need to check for end of composition and schedule next frame
+    animationFrameId = requestAnimationFrame(playbackLoop);
+    return;
+  }
+
+  // Track frame timing for FPS calculation
+  frameTimestamps.push(now);
+  if (frameTimestamps.length > PERFORMANCE.FPS_WINDOW_SIZE) {
+    frameTimestamps.shift();
+  }
+
   // Calculate current time from wall clock
-  const elapsed = performance.now() - playbackStartWallTime;
+  const elapsed = now - playbackStartWallTime;
   const targetTimeUs = playbackStartTimeUs + Math.round(elapsed * 1000);
 
   // Check if past composition duration (use compositionDurationUs from Engine,
@@ -705,19 +766,86 @@ function playbackLoop(): void {
     return;
   }
 
+  // OPTIMIZATION: Graceful frame dropping on low-end devices
+  // If we're falling behind, skip to catch up
+  const lag = targetTimeUs - currentTimeUs;
+  const lagMs = lag / 1000;
+  if (lagMs > tierConfig.frameDropThresholdMs && currentTimeUs > 0) {
+    framesDropped++;
+    logger.debug('Frame drop due to lag', {
+      lagMs,
+      threshold: tierConfig.frameDropThresholdMs,
+      droppedTotal: framesDropped,
+    });
+    // Skip ahead but still render
+  }
+
   currentTimeUs = targetTimeUs;
+  lastRenderTime = now;
 
   // Feed decoders
   feedDecoders(currentTimeUs, { reason: 'playback' });
 
   // Render frame
-  renderFrame(currentTimeUs);
+  const rendered = renderFrame(currentTimeUs);
+  if (rendered) {
+    framesRendered++;
+  }
 
   // Post time update
   postResponse({ type: 'TIME_UPDATE', currentTimeUs } as TimeUpdateEvent);
 
+  // Send performance metrics periodically
+  if (now - lastMetricsTime >= PERFORMANCE.METRICS_INTERVAL_MS) {
+    sendPerformanceMetrics();
+    lastMetricsTime = now;
+  }
+
   // Continue loop
   animationFrameId = requestAnimationFrame(playbackLoop);
+}
+
+/**
+ * Send performance metrics to main thread for profiling UI.
+ */
+function sendPerformanceMetrics(): void {
+  // Calculate FPS from frame timestamps
+  let fps = 0;
+  let avgFrameTimeMs = 0;
+
+  if (frameTimestamps.length >= 2) {
+    const first = frameTimestamps[0]!;
+    const last = frameTimestamps[frameTimestamps.length - 1]!;
+    const duration = last - first;
+    if (duration > 0) {
+      fps = Math.round((frameTimestamps.length - 1) / (duration / 1000));
+      avgFrameTimeMs = Math.round((duration / (frameTimestamps.length - 1)) * 100) / 100;
+    }
+  }
+
+  // Collect decoder and frame queue depths
+  const decoderQueueDepth: Record<string, number> = {};
+  const frameQueueDepth: Record<string, number> = {};
+
+  for (const [sourceId, sourceState] of sources.entries()) {
+    decoderQueueDepth[sourceId] = sourceState.decoder?.decodeQueueSize ?? 0;
+    frameQueueDepth[sourceId] = sourceState.frameQueue.length;
+  }
+
+  const metrics: WorkerPerfMetrics = {
+    decoderQueueDepth,
+    frameQueueDepth,
+    fps,
+    avgFrameTimeMs,
+    framesDecoded,
+    framesRendered,
+    framesDropped,
+    deviceTier,
+    isPlaying: state === 'playing',
+  };
+
+  const event: PerfMetricsEvent = { type: 'PERF_METRICS', metrics };
+  postResponse(event);
 }
 
 async function flushAllDecoders(): Promise<void> {
@@ -740,6 +868,11 @@ async function flushAllDecoders(): Promise<void> {
 
 function feedDecoders(timelineTimeUs: number, opts?: { reason?: string }): void {
   const reason = opts?.reason ?? 'loop';
+
+  // Get adaptive limits based on device tier
+  const maxPendingDecodes = tierConfig.maxPendingDecodes;
+  const maxSamplesPerFeed = DECODER.MAX_SAMPLES_PER_FEED;
+
   for (const clip of activeClips) {
     // CRITICAL: Only decode video for clips on video tracks
     // Audio track clips should not decode video - saves decoder resources
@@ -749,6 +882,18 @@ function feedDecoders(timelineTimeUs: number, opts?: { reason?: string }): void 
 
     const sourceState = sources.get(clip.sourceId);
     if (!sourceState || !sourceState.decoder) continue;
+
+    // OPTIMIZATION: Check decoder queue depth and apply backpressure
+    // This prevents overwhelming low-end devices
+    const decoderQueueSize = sourceState.decoder.decodeQueueSize;
+    if (decoderQueueSize >= maxPendingDecodes) {
+      logger.debug('Decoder backpressure applied', {
+        sourceId: clip.sourceId,
+        queueSize: decoderQueueSize,
+        maxPending: maxPendingDecodes,
+      });
+      continue; // Wait for decoder to catch up
+    }
 
     // Convert timeline time to source time
     const sourceTimeUs = timelineTimeUs - clip.timelineStartUs + clip.sourceStartUs;
@@ -761,9 +906,21 @@ function feedDecoders(timelineTimeUs: number, opts?: { reason?: string }): void 
 
     // Queue samples from keyframe to target + buffer ahead
     const startIdx = Math.max(sourceState.lastQueuedSample + 1, keyframeIdx);
-    const endIdx = Math.min(targetSample + PLAYBACK.MAX_QUEUE_SIZE, sourceState.samples.length - 1);
 
-    logger.info('Queue decode', {
+    // OPTIMIZATION: Limit how far ahead we buffer based on device tier
+    const bufferAhead = tierConfig.lookAheadFrames;
+    const endIdx = Math.min(
+      targetSample + bufferAhead,
+      sourceState.samples.length - 1
+    );
+
+    // OPTIMIZATION: Limit samples fed per iteration to prevent blocking
+    const samplesToFeed = Math.min(endIdx - startIdx + 1, maxSamplesPerFeed);
+    const actualEndIdx = startIdx + samplesToFeed - 1;
+
+    if (startIdx > actualEndIdx) continue;
+
+    logger.debug('Queue decode', {
       clipId: clip.clipId,
       sourceId: clip.sourceId,
       reason,
@@ -772,12 +929,14 @@ function feedDecoders(timelineTimeUs: number, opts?: { reason?: string }): void 
       targetSample,
       keyframeIdx,
       startIdx,
-      endIdx,
+      endIdx: actualEndIdx,
       lastQueuedSample: sourceState.lastQueuedSample,
       decoderState: sourceState.decoder.state,
+      decoderQueueSize,
+      deviceTier,
     });
 
-    for (let i = startIdx; i <= endIdx; i++) {
+    for (let i = startIdx; i <= actualEndIdx; i++) {
       const sample = sourceState.samples[i];
       if (!sample) continue;
 
@@ -790,6 +949,7 @@ function feedDecoders(timelineTimeUs: number, opts?: { reason?: string }): void 
 
       sourceState.decoder.decode(chunk);
       sourceState.lastQueuedSample = i;
+      framesDecoded++;
     }
   }
 }
@@ -980,6 +1140,41 @@ function isClipActiveAt(clip: ActiveClip, timelineTimeUs: number): boolean {
   const clipDuration = clip.sourceEndUs - clip.sourceStartUs;
   const clipEnd = clip.timelineStartUs + clipDuration;
   return timelineTimeUs >= clip.timelineStartUs && timelineTimeUs < clipEnd;
+}
+
+/**
+ * Find the nearest cached frame across all sources for instant seek feedback.
+ * Returns the frame with its source ID, or null if no cached frames exist.
+ */
+function findNearestCachedFrame(targetTimeUs: number): { frame: VideoFrame; timestampUs: number; sourceId: string } | null {
+  let bestMatch: { frame: VideoFrame; timestampUs: number; sourceId: string } | null = null;
+  let bestDiff = Infinity;
+
+  for (const clip of activeClips) {
+    if (clip.trackType !== 'video') continue;
+    if (!isClipActiveAt(clip, targetTimeUs)) continue;
+
+    const sourceState = sources.get(clip.sourceId);
+    if (!sourceState || sourceState.frameQueue.length === 0) continue;
+
+    // Convert timeline time to source time
+    const sourceTimeUs = targetTimeUs - clip.timelineStartUs + clip.sourceStartUs;
+
+    // Find closest frame in this source's queue
+    for (const entry of sourceState.frameQueue) {
+      const diff = Math.abs(entry.timestampUs - sourceTimeUs);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        bestMatch = {
+          frame: entry.frame,
+          timestampUs: entry.timestampUs,
+          sourceId: clip.sourceId,
+        };
+      }
+    }
+  }
+
+  return bestMatch;
 }
 
 // ============================================================================

@@ -9,6 +9,7 @@ import type { Composition } from '../core/Composition';
 import { HlsSource } from '../core/HlsSource';
 import { FileSource } from '../core/FileSource';
 import { TIME } from '../constants';
+import type { WorkerPerfMetrics } from '../workers/messages/renderMessages';
 
 export interface UseEngineOptions {
   /** Composition to render */
@@ -36,6 +37,8 @@ export interface UseEngineReturn {
   loadingProgress: Map<string, number>;
   /** Error message if any */
   error: string | null;
+  /** Performance metrics from worker (for dev profiling) */
+  perfMetrics: WorkerPerfMetrics | null;
   /** Initialize engine with a canvas element */
   initialize: (canvas: HTMLCanvasElement) => void;
   /** Load an HLS source */
@@ -98,6 +101,7 @@ export function useEngine(options: UseEngineOptions): UseEngineReturn {
   const engineRef = useRef<Engine | null>(null);
   const [state, setState] = useState<EngineState>('idle');
   const [currentTimeUs, setCurrentTimeUs] = useState(0);
+  const [perfMetrics, setPerfMetrics] = useState<WorkerPerfMetrics | null>(null);
   const [durationUs, setDurationUs] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [loadingProgress, setLoadingProgress] = useState<Map<string, number>>(new Map());
@@ -163,6 +167,10 @@ export function useEngine(options: UseEngineOptions): UseEngineReturn {
 
         case 'error':
           setError(event.message);
+          break;
+
+        case 'perfMetrics':
+          setPerfMetrics(event.metrics);
           break;
       }
     });
@@ -257,6 +265,7 @@ export function useEngine(options: UseEngineOptions): UseEngineReturn {
     isPlaying,
     loadingProgress,
     error,
+    perfMetrics,
     initialize,
     loadHlsSource,
     loadFileSource,

@@ -14,6 +14,7 @@ import { PlaybackControls } from './PlaybackControls';
 import { TabbedSidebar, type SidebarTab } from './TabbedSidebar';
 import { SubtitleOverlay } from './SubtitleOverlay';
 import { HtmlOverlay } from './HtmlOverlay';
+import { PerformanceMonitor } from './PerformanceMonitor';
 
 // Lazy load ExportModal - only loaded when export button is clicked
 const ExportModal = lazy(() => import('./ExportModal').then(m => ({ default: m.ExportModal })));
@@ -93,6 +94,7 @@ export function EditorApp(props: EditorAppProps) {
     isPlaying,
     loadingProgress,
     error,
+    perfMetrics,
     initialize,
     loadHlsSource,
     loadFileSource,
@@ -1150,6 +1152,9 @@ export function EditorApp(props: EditorAppProps) {
           />
         </Suspense>
       )}
+
+      {/* Performance Monitor - Dev-only, toggle with Ctrl+Shift+P */}
+      <PerformanceMonitor metrics={perfMetrics} />
     </div>
   );
 }

@@ -92,10 +92,15 @@ export class Compositor {
     this.width = canvas.width;
     this.height = canvas.height;
 
+    // OPTIMIZATION: Configure WebGL context for compositing performance
+    // Note: We need alpha:true for layer blending, but optimize other settings
     const gl = canvas.getContext('webgl2', {
-      alpha: true,
+      alpha: true,                   // Required for layer blending
       premultipliedAlpha: true,
       preserveDrawingBuffer: false,
+      antialias: false,              // Not needed for video compositing
+      powerPreference: 'high-performance', // Prioritize speed
+      desynchronized: true,          // Reduce latency
     });
 
     if (!gl) throw new Error('WebGL2 not supported');

@@ -11,6 +11,7 @@ import type {
   RenderWorkerCommand,
   RenderWorkerEvent,
   AudioDataEvent,
+  WorkerPerfMetrics,
 } from '../workers/messages/renderMessages';
 import { TIME, PLAYBACK } from '../constants';
 import { createLogger } from '../utils/logger';
@@ -38,7 +39,8 @@ export type EngineEvent =
   | { type: 'sourceReady'; sourceId: string }
   | { type: 'sourcePlayable'; sourceId: string }
   | { type: 'sourceError'; sourceId: string; message: string }
-  | { type: 'error'; message: string };
+  | { type: 'error'; message: string }
+  | { type: 'perfMetrics'; metrics: WorkerPerfMetrics };
 
 export type EngineEventCallback = (event: EngineEvent) => void;
 
@@ -181,6 +183,11 @@ export class Engine {
         } else {
           this.setError(event.message);
         }
+        break;
+
+      case 'PERF_METRICS':
+        // Forward performance metrics to subscribers
+        this.emit({ type: 'perfMetrics', metrics: event.metrics });
         break;
     }
   }
