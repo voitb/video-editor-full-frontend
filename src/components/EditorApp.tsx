@@ -326,6 +326,57 @@ export function EditorApp(props: EditorAppProps) {
     notifyCompositionChanged();
   }, [removeTrack, notifyCompositionChanged]);
 
+  // Handle renaming a track
+  const handleTrackRename = useCallback((trackId: string, newLabel: string) => {
+    const track = composition.getTrack(trackId);
+    if (track) {
+      track.setLabel(newLabel);
+      refresh();
+      notifyCompositionChanged();
+    }
+  }, [composition, refresh, notifyCompositionChanged]);
+
+  // Handle changing track color
+  const handleTrackColorChange = useCallback((trackId: string, color: string | undefined) => {
+    const track = composition.getTrack(trackId);
+    if (track) {
+      track.setColor(color);
+      refresh();
+      notifyCompositionChanged();
+    }
+  }, [composition, refresh, notifyCompositionChanged]);
+
+  // Handle inserting a track at a specific position (above or below another track)
+  // Uses absolute visual position - any track type can be at any position
+  const handleTrackInsert = useCallback((
+    type: 'video' | 'audio' | 'subtitle' | 'overlay',
+    referenceTrackId: string,
+    position: 'above' | 'below'
+  ) => {
+    const trackCount = tracks.filter(t => t.type === type).length + 1;
+    const label = type === 'video'
+      ? `Video ${trackCount}`
+      : type === 'audio'
+      ? `Audio ${trackCount}`
+      : type === 'overlay'
+      ? `Overlay ${trackCount}`
+      : `Subtitles ${trackCount}`;
+
+    // Find reference track's visual index (absolute position)
+    const refTrackIndex = tracks.findIndex(t => t.id === referenceTrackId);
+    let order = tracks.length; // Default to end if not found
+
+    if (refTrackIndex !== -1) {
+      // Insert at visual position regardless of track type
+      order = position === 'above' ? refTrackIndex : refTrackIndex + 1;
+    }
+
+    // Create the new track with calculated order (Composition.addTrack handles shifting)
+    const newTrack = createTrack({ type, label, order });
+
+    return newTrack;
+  }, [createTrack, tracks]);
+
   // Handle unlinking a clip
   const handleClipUnlink = useCallback((clipId: string) => {
     unlinkClip(clipId);
@@ -345,12 +396,6 @@ export function EditorApp(props: EditorAppProps) {
     refresh();
     notifyCompositionChanged();
   }, [composition, linkedSelection, selectedClipId, refresh, notifyCompositionChanged]);
-
-  // Handle creating a subtitle track
-  const handleCreateSubtitleTrack = useCallback(() => {
-    const subtitleCount = tracks.filter((t) => t.type === 'subtitle').length + 1;
-    createTrack({ type: 'subtitle', label: `Subtitles ${subtitleCount}` });
-  }, [createTrack, tracks]);
 
   // Handle adding a subtitle clip
   const handleAddSubtitleClip = useCallback(
@@ -547,14 +592,6 @@ export function EditorApp(props: EditorAppProps) {
   // ============================================================================
   // OVERLAY HANDLERS
   // ============================================================================
-
-  // Handle creating an overlay track
-  const handleCreateOverlayTrack = useCallback(() => {
-    const trackCount = composition.tracks.filter(t => t.type === 'overlay').length;
-    composition.createTrack({ type: 'overlay', label: `Overlay ${trackCount + 1}` });
-    refresh();
-    notifyCompositionChanged();
-  }, [composition, refresh, notifyCompositionChanged]);
 
   // Handle adding an overlay clip
   const handleAddOverlayClip = useCallback((trackId: string, clip: OverlayClip) => {
@@ -993,16 +1030,16 @@ export function EditorApp(props: EditorAppProps) {
           currentTimeUs={currentTimeUs}
           onSeek={seek}
           onSubtitleClipUpdate={handleSubtitleClipUpdate}
-          onCreateSubtitleTrack={handleCreateSubtitleTrack}
           onAddSubtitleClip={handleAddSubtitleClip}
           onSubtitleClipSelect={handleClipSelect}
           // Overlays tab props
           onOverlayClipUpdate={handleOverlayClipUpdate}
-          onCreateOverlayTrack={handleCreateOverlayTrack}
           onAddOverlayClip={handleAddOverlayClip}
           onOverlayClipSelect={handleOverlayClipSelect}
           // Common
           onRefresh={refresh}
+          // Track creation
+          onTrackAdd={handleTrackAdd}
         />
       </main>
 
@@ -1036,6 +1073,9 @@ export function EditorApp(props: EditorAppProps) {
           onTrackSolo={setTrackSolo}
           onTrackLock={setTrackLocked}
           onTrackResize={setTrackHeight}
+          onTrackRename={handleTrackRename}
+          onTrackColorChange={handleTrackColorChange}
+          onTrackInsert={handleTrackInsert}
           onFitToView={() => resetViewport(durationUs)}
           onExternalDropToTrack={handleExternalDropToTrack}
           onClipDelete={handleClipDelete}

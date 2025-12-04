@@ -38,6 +38,8 @@ export class Track {
   readonly id: string;
   readonly type: TrackType;
   label: string;
+  color: string | undefined;
+  order: number;
 
   private _clips: AnyClip[] = [];
 
@@ -45,6 +47,29 @@ export class Track {
     this.id = id ?? createTrackId();
     this.type = config.type;
     this.label = config.label;
+    this.color = config.color;
+    this.order = config.order ?? 0;
+  }
+
+  /**
+   * Set track order (position within type group)
+   */
+  setOrder(order: number): void {
+    this.order = order;
+  }
+
+  /**
+   * Set track color
+   */
+  setColor(color: string | undefined): void {
+    this.color = color;
+  }
+
+  /**
+   * Set track label
+   */
+  setLabel(label: string): void {
+    this.label = label;
   }
 
   /**
@@ -198,7 +223,7 @@ export class Track {
    * Clone the track with new ID
    */
   clone(): Track {
-    const track = new Track({ type: this.type, label: this.label });
+    const track = new Track({ type: this.type, label: this.label, color: this.color });
     for (const clip of this._clips) {
       track.addClip(clip.clone());
     }
@@ -224,6 +249,7 @@ export class Track {
       id: this.id,
       type: this.type,
       label: this.label,
+      color: this.color,
       clips: mediaClips.map((c) => c.toJSON()),
       subtitleClips:
         subtitleClips.length > 0
@@ -240,7 +266,7 @@ export class Track {
    * Create from JSON
    */
   static fromJSON(json: TrackJSON): Track {
-    const track = new Track({ type: json.type, label: json.label }, json.id);
+    const track = new Track({ type: json.type, label: json.label, color: json.color }, json.id);
 
     // Load media clips
     for (const clipJson of json.clips) {

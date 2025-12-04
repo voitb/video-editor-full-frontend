@@ -12,7 +12,9 @@ import type { SubtitleClip } from '../core/SubtitleClip';
 import type { OverlayClip } from '../core/OverlayClip';
 import type { TimelineViewport, TrackUIState, TrackType } from '../core/types';
 import { formatTimecodeAdaptive } from '../utils/time';
-import { TIMELINE, TIMELINE_COLORS } from '../constants';
+import { TIMELINE, TIMELINE_COLORS, TRACK_COLOR_OPTIONS } from '../constants';
+import { ContextMenu, MenuItem, MenuSeparator, MenuHeader } from './ui';
+import { Dropdown, DropdownTrigger } from './ui';
 
 // ============================================================================
 // TYPES
@@ -67,6 +69,12 @@ export interface TimelineProps {
   onTrackLock?: (trackId: string, locked: boolean) => void;
   /** Callback when track height changes */
   onTrackResize?: (trackId: string, height: number) => void;
+  /** Callback when track is renamed */
+  onTrackRename?: (trackId: string, newLabel: string) => void;
+  /** Callback when track color is changed */
+  onTrackColorChange?: (trackId: string, color: string | undefined) => void;
+  /** Callback when inserting a track relative to another */
+  onTrackInsert?: (type: 'video' | 'audio' | 'subtitle' | 'overlay', referenceTrackId: string, position: 'above' | 'below') => void;
   /** Callback when a clip is unlinked */
   onClipUnlink?: (clipId: string) => void;
   /** Callback when fit to view is requested */
@@ -219,6 +227,9 @@ export function Timeline(props: TimelineProps) {
     onTrackSolo,
     onTrackLock,
     onTrackResize,
+    onTrackRename,
+    onTrackColorChange,
+    onTrackInsert,
     onClipUnlink,
     onFitToView,
     onExternalDropToTrack,
@@ -251,7 +262,7 @@ export function Timeline(props: TimelineProps) {
   const timelineContentRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const timeRulerScrollRef = useRef<HTMLDivElement>(null);
-  const leftPanelScrollRef = useRef<HTMLDivElement>(null);
+  const isScrollSyncingRef = useRef(false); // Prevent scroll sync loops
   const [activeSnapLine, setActiveSnapLine] = useState<number | null>(null);
   const [dropTargetTrackId, setDropTargetTrackId] = useState<string | null>(null);
   const [containerWidth, setContainerWidth] = useState(0);
@@ -259,6 +270,12 @@ export function Timeline(props: TimelineProps) {
   const [scrollLeft, setScrollLeft] = useState(0);
   const [hoveredLinkedClipId, setHoveredLinkedClipId] = useState<string | null>(null);
   const [dragPreviewMap, setDragPreviewMap] = useState<Map<string, number>>(new Map());
+  const [addTrackDropdownOpen, setAddTrackDropdownOpen] = useState(false);
+  const [trackHeaderMenu, setTrackHeaderMenu] = useState<{
+    trackId: string;
+    x: number;
+    y: number;
+  } | null>(null);
 
   // Track container width for responsive timeline
   useEffect(() => {
@@ -310,11 +327,15 @@ export function Timeline(props: TimelineProps) {
     return (pixel / pixelsPerSecond) * 1_000_000;
   }, [pixelsPerSecond]);
 
-  // Handle scroll synchronization between all panels
-  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+  // Handle scroll synchronization (unified scroll container -> time ruler only)
+  const handleContentScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    // Skip if this scroll was triggered by sync from another source
+    if (isScrollSyncingRef.current) return;
+
+    isScrollSyncingRef.current = true;
+
     const target = e.currentTarget;
     const newScrollLeft = target.scrollLeft;
-    const newScrollTop = target.scrollTop;
 
     // Update scroll state for scrollbar
     setScrollLeft(newScrollLeft);
@@ -324,15 +345,15 @@ export function Timeline(props: TimelineProps) {
       timeRulerScrollRef.current.scrollLeft = newScrollLeft;
     }
 
-    // Sync left panel vertical scroll (track headers)
-    if (leftPanelScrollRef.current) {
-      leftPanelScrollRef.current.scrollTop = newScrollTop;
-    }
-
     // Notify parent of viewport scroll for viewport sync
     if (onViewportScroll) {
       onViewportScroll(newScrollLeft, containerWidth, totalTimelineWidth);
     }
+
+    // Reset sync flag after a frame to allow subsequent scrolls
+    requestAnimationFrame(() => {
+      isScrollSyncingRef.current = false;
+    });
   }, [onViewportScroll, containerWidth, totalTimelineWidth]);
 
   // Sync scroll position when viewport changes externally (e.g., from zoom)
@@ -566,6 +587,14 @@ export function Timeline(props: TimelineProps) {
   // Check if scrollbar should be visible
   const showScrollbar = totalTimelineWidth > containerWidth;
 
+  // Close track header menu when clicking elsewhere
+  useEffect(() => {
+    if (!trackHeaderMenu) return;
+    const handleClickOutside = () => setTrackHeaderMenu(null);
+    window.addEventListener('click', handleClickOutside);
+    return () => window.removeEventListener('click', handleClickOutside);
+  }, [trackHeaderMenu]);
+
   return (
     <div
       ref={containerRef}
@@ -575,198 +604,132 @@ export function Timeline(props: TimelineProps) {
         overflow: 'hidden',
         userSelect: 'none',
         display: 'flex',
-        flexDirection: 'row', // Two-panel horizontal layout
+        flexDirection: 'column', // Column layout: header, tracks, footer
         ...style,
       }}
     >
       {/* ============================================================ */}
-      {/* LEFT PANEL - Fixed width, contains track headers */}
+      {/* HEADER ROW - Fixed height, contains controls and time ruler */}
       {/* ============================================================ */}
       <div
         style={{
-          width: TIMELINE.TRACK_HEADER_WIDTH,
-          flexShrink: 0,
           display: 'flex',
-          flexDirection: 'column',
-          backgroundColor: TIMELINE_COLORS.trackHeaderBg,
-          borderRight: `1px solid ${TIMELINE_COLORS.border}`,
-          zIndex: 20, // Above everything in right panel
+          flexDirection: 'row',
+          flexShrink: 0,
+          height: TIMELINE.TIME_RULER_HEIGHT,
+          borderBottom: `1px solid ${TIMELINE_COLORS.border}`,
         }}
       >
-        {/* Header corner with zoom slider and fit button */}
+        {/* Left corner with zoom slider, fit button, and add track dropdown */}
         <div
           style={{
-            height: TIMELINE.TIME_RULER_HEIGHT,
-            borderBottom: `1px solid ${TIMELINE_COLORS.border}`,
+            width: TIMELINE.TRACK_HEADER_WIDTH,
             flexShrink: 0,
             display: 'flex',
             alignItems: 'center',
-            justifyContent: 'center',
+            justifyContent: 'space-between',
             padding: '0 4px',
             gap: 4,
             boxSizing: 'border-box',
-            overflow: 'hidden',
+            overflow: 'visible', // Allow dropdown to overflow
+            backgroundColor: TIMELINE_COLORS.trackHeaderBg,
+            borderRight: `1px solid ${TIMELINE_COLORS.border}`,
           }}
         >
-          {onZoomChange && (
-            <TimelineZoomSlider
-              zoomLevel={viewport.zoomLevel}
-              minZoom={1}
-              maxZoom={TIMELINE.MAX_ZOOM_LEVEL}
-              onChange={onZoomChange}
-            />
-          )}
-          {onFitToView && (
-            <button
-              onClick={onFitToView}
-              style={{
-                padding: '2px 6px',
-                fontSize: 10,
-                backgroundColor: '#333',
-                color: '#fff',
-                border: 'none',
-                borderRadius: 3,
-                cursor: 'pointer',
-                whiteSpace: 'nowrap',
-              }}
-              title="Fit timeline to view"
-            >
-              Fit
-            </button>
-          )}
-        </div>
-
-        {/* Track headers - scrolls vertically only, synced with right panel */}
-        <div
-          ref={leftPanelScrollRef}
-          className="timeline-scroll-hide"
-          style={{
-            flex: 1,
-            overflowY: 'auto',
-            overflowX: 'hidden',
-          }}
-        >
-          {tracks.map((track) => (
-            <TrackHeader
-              key={track.id}
-              track={track}
-              height={getTrackHeight(track.id)}
-              isDropTarget={dropTargetTrackId === track.id}
-              trackState={trackStates?.[track.id]}
-              onRemove={onTrackRemove}
-              onMute={onTrackMute}
-              onSolo={onTrackSolo}
-              onLock={onTrackLock}
-              onResize={onTrackResize}
-            />
-          ))}
-
-          {/* Add track buttons */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            {onZoomChange && (
+              <TimelineZoomSlider
+                zoomLevel={viewport.zoomLevel}
+                minZoom={1}
+                maxZoom={TIMELINE.MAX_ZOOM_LEVEL}
+                onChange={onZoomChange}
+              />
+            )}
+            {onFitToView && (
+              <button
+                onClick={onFitToView}
+                style={{
+                  padding: '2px 6px',
+                  fontSize: 10,
+                  backgroundColor: '#333',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: 3,
+                  cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                }}
+                title="Fit timeline to view"
+              >
+                Fit
+              </button>
+            )}
+          </div>
+          {/* Add Track dropdown - fixed in header, always visible */}
           {onTrackAdd && (
-            <div
-              style={{
-                padding: 8,
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 4,
-              }}
+            <Dropdown
+              open={addTrackDropdownOpen}
+              onOpenChange={setAddTrackDropdownOpen}
+              placement="bottom-start"
+              trigger={
+                <button
+                  type="button"
+                  onClick={() => setAddTrackDropdownOpen(!addTrackDropdownOpen)}
+                  style={{
+                    padding: '4px 8px',
+                    fontSize: 11,
+                    backgroundColor: '#2a4a7a',
+                    color: '#fff',
+                    border: `1px solid ${TIMELINE_COLORS.border}`,
+                    borderRadius: 4,
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 4,
+                  }}
+                >
+                  + Track
+                </button>
+              }
             >
-              <button
-                onClick={() => onTrackAdd('video')}
-                style={{
-                  padding: '4px 8px',
-                  fontSize: 11,
-                  backgroundColor: '#2a4a7a',
-                  color: '#fff',
-                  border: 'none',
-                  borderRadius: 3,
-                  cursor: 'pointer',
-                }}
-              >
-                + Video Track
-              </button>
-              <button
-                onClick={() => onTrackAdd('audio')}
-                style={{
-                  padding: '4px 8px',
-                  fontSize: 11,
-                  backgroundColor: '#2a7a4a',
-                  color: '#fff',
-                  border: 'none',
-                  borderRadius: 3,
-                  cursor: 'pointer',
-                }}
-              >
-                + Audio Track
-              </button>
-              <button
-                onClick={() => onTrackAdd('subtitle')}
-                style={{
-                  padding: '4px 8px',
-                  fontSize: 11,
-                  backgroundColor: TIMELINE_COLORS.clipSubtitle,
-                  color: '#fff',
-                  border: 'none',
-                  borderRadius: 3,
-                  cursor: 'pointer',
-                }}
-              >
-                + Subtitle Track
-              </button>
-            </div>
+              {[
+                { type: 'video' as const, label: 'Video Track', color: '#2a4a7a' },
+                { type: 'audio' as const, label: 'Audio Track', color: '#2a7a4a' },
+                { type: 'subtitle' as const, label: 'Subtitle Track', color: TIMELINE_COLORS.clipSubtitle },
+                { type: 'overlay' as const, label: 'Overlay Track', color: TIMELINE_COLORS.clipOverlay },
+              ].map((item) => (
+                <MenuItem
+                  key={item.type}
+                  onClick={() => {
+                    onTrackAdd(item.type);
+                    setAddTrackDropdownOpen(false);
+                  }}
+                >
+                  <span
+                    style={{
+                      width: 12,
+                      height: 12,
+                      borderRadius: 2,
+                      backgroundColor: item.color,
+                      flexShrink: 0,
+                    }}
+                  />
+                  {item.label}
+                </MenuItem>
+              ))}
+            </Dropdown>
           )}
         </div>
 
-        {/* Minimap label */}
-        <div
-          style={{
-            height: TIMELINE.MINIMAP_HEIGHT,
-            borderTop: `1px solid ${TIMELINE_COLORS.border}`,
-            flexShrink: 0,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-        >
-          <span style={{ fontSize: 9, color: TIMELINE_COLORS.textMuted }}>OVERVIEW</span>
-        </div>
-
-        {/* Scrollbar spacer - only when scrollbar visible */}
-        {showScrollbar && (
-          <div
-            style={{
-              height: TIMELINE.SCROLLBAR_HEIGHT,
-              borderTop: `1px solid ${TIMELINE_COLORS.border}`,
-              flexShrink: 0,
-            }}
-          />
-        )}
-      </div>
-
-      {/* ============================================================ */}
-      {/* RIGHT PANEL - Flexible width, contains timeline content */}
-      {/* ============================================================ */}
-      <div
-        style={{
-          flex: 1,
-          display: 'flex',
-          flexDirection: 'column',
-          overflow: 'hidden',
-          minWidth: 0, // Allow flex shrink
-        }}
-      >
         {/* Time ruler - syncs horizontal scroll with track content */}
         <div
           ref={timeRulerScrollRef}
           onMouseDown={handleRulerMouseDown}
           className="timeline-scroll-hide"
           style={{
-            height: TIMELINE.TIME_RULER_HEIGHT,
+            flex: 1,
             backgroundColor: TIMELINE_COLORS.rulerBg,
-            borderBottom: `1px solid ${TIMELINE_COLORS.border}`,
             overflowX: 'auto',
             overflowY: 'hidden',
-            flexShrink: 0,
             position: 'relative',
             zIndex: 5,
             boxShadow: '0 2px 4px rgba(0, 0, 0, 0.3)',
@@ -825,286 +788,453 @@ export function Timeline(props: TimelineProps) {
             })}
           </div>
         </div>
+      </div>
 
-        {/* Track content area - scrolls both horizontally and vertically */}
+      {/* ============================================================ */}
+      {/* TRACKS AREA - Unified scroll container with sticky headers */}
+      {/* ============================================================ */}
+      <div
+        ref={scrollContainerRef}
+        className="timeline-scroll-hide"
+        style={{
+          flex: 1,
+          overflow: 'auto',
+        }}
+        onScroll={handleContentScroll}
+      >
+        {/* Timeline content with sticky track headers */}
         <div
-          ref={scrollContainerRef}
-          className="timeline-scroll-hide"
+          ref={timelineContentRef}
           style={{
-            flex: 1,
-            overflow: 'auto',
+            width: totalTimelineWidth + TIMELINE.TRACK_HEADER_WIDTH,
+            minWidth: totalTimelineWidth + TIMELINE.TRACK_HEADER_WIDTH,
+            position: 'relative',
           }}
-          onScroll={handleScroll}
+          onClick={handleTimelineClick}
         >
-          {/* Timeline content */}
+          {/* Grid lines - offset to account for sticky header column */}
           <div
-            ref={timelineContentRef}
             style={{
-              width: totalTimelineWidth,
-              minWidth: totalTimelineWidth,
-              position: 'relative',
+              position: 'absolute',
+              top: 0,
+              left: TIMELINE.TRACK_HEADER_WIDTH,
+              right: 0,
+              bottom: 0,
+              pointerEvents: 'none',
+              zIndex: 1,
             }}
-            onClick={handleTimelineClick}
           >
-            {/* Grid lines */}
-            <div
-              style={{
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                right: 0,
-                bottom: 0,
-                pointerEvents: 'none',
-                zIndex: 1,
-              }}
-            >
-              {gridLines.map((line) => (
-                <div
-                  key={`grid-${line.timeUs}`}
-                  style={{
-                    position: 'absolute',
-                    left: timeToPixel(line.timeUs),
-                    top: 0,
-                    bottom: 0,
-                    width: 1,
-                    backgroundColor:
-                      line.type === 'major'
-                        ? TIMELINE_COLORS.gridMajor
-                        : line.type === 'minor'
-                        ? TIMELINE_COLORS.gridMinor
-                        : TIMELINE_COLORS.gridSubMinor,
-                  }}
-                />
-              ))}
-            </div>
-
-            {/* Track lanes */}
-            {tracks.map((track, trackIndex) => (
-              <TrackLane
-                key={track.id}
-                track={track}
-                trackIndex={trackIndex}
-                height={getTrackHeight(track.id)}
-                timeToPixel={timeToPixel}
-                pixelToTime={pixelToTime}
-                selectedClipId={selectedClipId}
-                isDropTarget={dropTargetTrackId === track.id}
-                isLocked={trackStates?.[track.id]?.locked ?? false}
-                onClipSelect={onClipSelect}
-                onClipMove={onClipMove}
-                onClipMoveToTrack={onClipMoveToTrack}
-                onClipTrimStart={onClipTrimStart}
-                onClipTrimEnd={onClipTrimEnd}
-                onSeek={onSeek}
-                onClipUnlink={onClipUnlink}
-                onClipDelete={onClipDelete}
-                onExternalDropToTrack={onExternalDropToTrack}
-                applySnap={applySnap}
-                setActiveSnapLine={setActiveSnapLine}
-                setDropTargetTrackId={setDropTargetTrackId}
-                allTracks={tracks}
-                pixelsPerSecond={pixelsPerSecond}
-                scrollLeft={scrollLeft}
-                hoveredLinkedClipId={hoveredLinkedClipId}
-                setHoveredLinkedClipId={setHoveredLinkedClipId}
-                onDragPreview={handleDragPreview}
-                dragPreviewMap={dragPreviewMap}
-                onAddSubtitleClip={onAddSubtitleClip}
-                onSubtitleEdit={onSubtitleEdit}
-                onSubtitleTrimStart={onSubtitleTrimStart}
-                onSubtitleTrimEnd={onSubtitleTrimEnd}
-                onSubtitleMoveToTrack={onSubtitleMoveToTrack}
-                onSubtitleMove={onSubtitleMove}
-                onSubtitleDuplicate={onSubtitleDuplicate}
-                onSubtitleSplit={onSubtitleSplit}
-                onSubtitleAddCue={onSubtitleAddCue}
-                onAddOverlayClip={onAddOverlayClip}
-                onOverlayEdit={onOverlayEdit}
-                onOverlayTrimStart={onOverlayTrimStart}
-                onOverlayTrimEnd={onOverlayTrimEnd}
-                onOverlayMoveToTrack={onOverlayMoveToTrack}
-                onOverlayMove={onOverlayMove}
-                onOverlayDuplicate={onOverlayDuplicate}
-                onOverlaySplit={onOverlaySplit}
-                currentTimeUs={currentTimeUs}
-                tracks={tracks}
+            {gridLines.map((line) => (
+              <div
+                key={`grid-${line.timeUs}`}
+                style={{
+                  position: 'absolute',
+                  left: timeToPixel(line.timeUs),
+                  top: 0,
+                  bottom: 0,
+                  width: 1,
+                  backgroundColor:
+                    line.type === 'major'
+                      ? TIMELINE_COLORS.gridMajor
+                      : line.type === 'minor'
+                      ? TIMELINE_COLORS.gridMinor
+                      : TIMELINE_COLORS.gridSubMinor,
+                }}
               />
             ))}
+          </div>
 
-            {/* Snap indicator line */}
-            {activeSnapLine !== null && (
+          {/* Track rows - each has sticky header + lane */}
+          {tracks.map((track, trackIndex) => (
+            <div
+              key={track.id}
+              style={{
+                display: 'flex',
+                flexDirection: 'row',
+                height: getTrackHeight(track.id),
+              }}
+            >
+              {/* Sticky track header - stays fixed on left while scrolling horizontally */}
               <div
                 style={{
-                  position: 'absolute',
-                  left: timeToPixel(activeSnapLine),
-                  top: 0,
-                  bottom: 0,
-                  width: 2,
-                  backgroundColor: TIMELINE_COLORS.snapLine,
-                  pointerEvents: 'none',
-                  zIndex: 90,
-                }}
-              />
-            )}
-
-            {/* In-point marker */}
-            {inPointPosition !== null && (
-              <div
-                style={{
-                  position: 'absolute',
-                  left: inPointPosition,
-                  top: 0,
-                  bottom: 0,
-                  width: 2,
-                  backgroundColor: '#00ffff',
-                  pointerEvents: 'none',
-                  zIndex: 95,
+                  position: 'sticky',
+                  left: 0,
+                  width: TIMELINE.TRACK_HEADER_WIDTH,
+                  flexShrink: 0,
+                  zIndex: 10,
+                  backgroundColor: TIMELINE_COLORS.trackHeaderBg,
+                  borderRight: `1px solid ${TIMELINE_COLORS.border}`,
                 }}
               >
-                {/* In-point head */}
-                <div
-                  style={{
-                    position: 'absolute',
-                    top: 0,
-                    left: -5,
-                    width: 12,
-                    height: 10,
-                    backgroundColor: '#00ffff',
-                    clipPath: 'polygon(50% 100%, 0 0, 100% 0)',
-                  }}
+                <TrackHeader
+                  track={track}
+                  height={getTrackHeight(track.id)}
+                  isDropTarget={dropTargetTrackId === track.id}
+                  trackState={trackStates?.[track.id]}
+                  onRemove={onTrackRemove}
+                  onMute={onTrackMute}
+                  onSolo={onTrackSolo}
+                  onLock={onTrackLock}
+                  onResize={onTrackResize}
+                  onRename={onTrackRename}
+                  onColorChange={onTrackColorChange}
+                  onContextMenu={(trackId, x, y) => setTrackHeaderMenu({ trackId, x, y })}
                 />
-                {/* "I" label */}
-                <div
-                  style={{
-                    position: 'absolute',
-                    top: 12,
-                    left: -4,
-                    fontSize: 9,
-                    fontWeight: 'bold',
-                    color: '#00ffff',
-                    userSelect: 'none',
-                  }}
-                >
-                  I
-                </div>
               </div>
-            )}
-
-            {/* Out-point marker */}
-            {outPointPosition !== null && (
-              <div
-                style={{
-                  position: 'absolute',
-                  left: outPointPosition,
-                  top: 0,
-                  bottom: 0,
-                  width: 2,
-                  backgroundColor: '#ff00ff',
-                  pointerEvents: 'none',
-                  zIndex: 95,
-                }}
-              >
-                {/* Out-point head */}
-                <div
-                  style={{
-                    position: 'absolute',
-                    top: 0,
-                    left: -5,
-                    width: 12,
-                    height: 10,
-                    backgroundColor: '#ff00ff',
-                    clipPath: 'polygon(50% 100%, 0 0, 100% 0)',
-                  }}
+              {/* Track lane - scrolls with content */}
+              <div style={{ position: 'relative', width: totalTimelineWidth }}>
+                <TrackLane
+                  track={track}
+                  trackIndex={trackIndex}
+                  height={getTrackHeight(track.id)}
+                  timeToPixel={timeToPixel}
+                  pixelToTime={pixelToTime}
+                  selectedClipId={selectedClipId}
+                  isDropTarget={dropTargetTrackId === track.id}
+                  isLocked={trackStates?.[track.id]?.locked ?? false}
+                  onClipSelect={onClipSelect}
+                  onClipMove={onClipMove}
+                  onClipMoveToTrack={onClipMoveToTrack}
+                  onClipTrimStart={onClipTrimStart}
+                  onClipTrimEnd={onClipTrimEnd}
+                  onSeek={onSeek}
+                  onClipUnlink={onClipUnlink}
+                  onClipDelete={onClipDelete}
+                  onExternalDropToTrack={onExternalDropToTrack}
+                  applySnap={applySnap}
+                  setActiveSnapLine={setActiveSnapLine}
+                  setDropTargetTrackId={setDropTargetTrackId}
+                  allTracks={tracks}
+                  pixelsPerSecond={pixelsPerSecond}
+                  scrollLeft={scrollLeft}
+                  hoveredLinkedClipId={hoveredLinkedClipId}
+                  setHoveredLinkedClipId={setHoveredLinkedClipId}
+                  onDragPreview={handleDragPreview}
+                  dragPreviewMap={dragPreviewMap}
+                  onAddSubtitleClip={onAddSubtitleClip}
+                  onSubtitleEdit={onSubtitleEdit}
+                  onSubtitleTrimStart={onSubtitleTrimStart}
+                  onSubtitleTrimEnd={onSubtitleTrimEnd}
+                  onSubtitleMoveToTrack={onSubtitleMoveToTrack}
+                  onSubtitleMove={onSubtitleMove}
+                  onSubtitleDuplicate={onSubtitleDuplicate}
+                  onSubtitleSplit={onSubtitleSplit}
+                  onSubtitleAddCue={onSubtitleAddCue}
+                  onAddOverlayClip={onAddOverlayClip}
+                  onOverlayEdit={onOverlayEdit}
+                  onOverlayTrimStart={onOverlayTrimStart}
+                  onOverlayTrimEnd={onOverlayTrimEnd}
+                  onOverlayMoveToTrack={onOverlayMoveToTrack}
+                  onOverlayMove={onOverlayMove}
+                  onOverlayDuplicate={onOverlayDuplicate}
+                  onOverlaySplit={onOverlaySplit}
+                  currentTimeUs={currentTimeUs}
+                  tracks={tracks}
                 />
-                {/* "O" label */}
-                <div
-                  style={{
-                    position: 'absolute',
-                    top: 12,
-                    left: -4,
-                    fontSize: 9,
-                    fontWeight: 'bold',
-                    color: '#ff00ff',
-                    userSelect: 'none',
-                  }}
-                >
-                  O
-                </div>
               </div>
-            )}
+            </div>
+          ))}
 
-            {/* Playhead */}
+          {/* Snap indicator line - offset by header width */}
+          {activeSnapLine !== null && (
             <div
               style={{
                 position: 'absolute',
-                left: playheadPosition,
+                left: TIMELINE.TRACK_HEADER_WIDTH + timeToPixel(activeSnapLine),
                 top: 0,
                 bottom: 0,
                 width: 2,
-                backgroundColor: TIMELINE_COLORS.playhead,
+                backgroundColor: TIMELINE_COLORS.snapLine,
                 pointerEvents: 'none',
-                zIndex: 100,
+                zIndex: 90,
+              }}
+            />
+          )}
+
+          {/* In-point marker - offset by header width */}
+          {inPointPosition !== null && (
+            <div
+              style={{
+                position: 'absolute',
+                left: TIMELINE.TRACK_HEADER_WIDTH + inPointPosition,
+                top: 0,
+                bottom: 0,
+                width: 2,
+                backgroundColor: '#00ffff',
+                pointerEvents: 'none',
+                zIndex: 95,
               }}
             >
-              {/* Playhead head */}
+              {/* In-point head */}
               <div
                 style={{
                   position: 'absolute',
                   top: 0,
                   left: -5,
                   width: 12,
-                  height: 12,
-                  backgroundColor: TIMELINE_COLORS.playhead,
+                  height: 10,
+                  backgroundColor: '#00ffff',
                   clipPath: 'polygon(50% 100%, 0 0, 100% 0)',
                 }}
               />
+              {/* "I" label */}
+              <div
+                style={{
+                  position: 'absolute',
+                  top: 12,
+                  left: -4,
+                  fontSize: 9,
+                  fontWeight: 'bold',
+                  color: '#00ffff',
+                  userSelect: 'none',
+                }}
+              >
+                I
+              </div>
             </div>
+          )}
+
+          {/* Out-point marker - offset by header width */}
+          {outPointPosition !== null && (
+            <div
+              style={{
+                position: 'absolute',
+                left: TIMELINE.TRACK_HEADER_WIDTH + outPointPosition,
+                top: 0,
+                bottom: 0,
+                width: 2,
+                backgroundColor: '#ff00ff',
+                pointerEvents: 'none',
+                zIndex: 95,
+              }}
+            >
+              {/* Out-point head */}
+              <div
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: -5,
+                  width: 12,
+                  height: 10,
+                  backgroundColor: '#ff00ff',
+                  clipPath: 'polygon(50% 100%, 0 0, 100% 0)',
+                }}
+              />
+              {/* "O" label */}
+              <div
+                style={{
+                  position: 'absolute',
+                  top: 12,
+                  left: -4,
+                  fontSize: 9,
+                  fontWeight: 'bold',
+                  color: '#ff00ff',
+                  userSelect: 'none',
+                }}
+              >
+                O
+              </div>
+            </div>
+          )}
+
+          {/* Playhead - offset by header width */}
+          <div
+            style={{
+              position: 'absolute',
+              left: TIMELINE.TRACK_HEADER_WIDTH + playheadPosition,
+              top: 0,
+              bottom: 0,
+              width: 2,
+              backgroundColor: TIMELINE_COLORS.playhead,
+              pointerEvents: 'none',
+              zIndex: 100,
+            }}
+          >
+            {/* Playhead head */}
+            <div
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: -5,
+                width: 12,
+                height: 12,
+                backgroundColor: TIMELINE_COLORS.playhead,
+                clipPath: 'polygon(50% 100%, 0 0, 100% 0)',
+              }}
+            />
           </div>
         </div>
-
-        {/* Minimap */}
-        <TimelineMinimapCanvas
-          tracks={tracks}
-          durationUs={durationUs}
-          currentTimeUs={currentTimeUs}
-          viewport={viewport}
-          containerWidth={containerWidth}
-          totalTimelineWidth={totalTimelineWidth}
-          onViewportChange={onViewportScroll ? (startTimeUs) => {
-            const effectiveDuration = Math.max(durationUs, TIMELINE.MIN_VISIBLE_DURATION_US);
-            const visibleDuration = effectiveDuration / viewport.zoomLevel;
-            const maxStartTime = effectiveDuration - visibleDuration;
-            if (maxStartTime > 0) {
-              const scrollRatio = startTimeUs / maxStartTime;
-              const newScrollLeft = scrollRatio * (totalTimelineWidth - containerWidth);
-              onViewportScroll(newScrollLeft, containerWidth, totalTimelineWidth);
-              if (scrollContainerRef.current) {
-                scrollContainerRef.current.scrollLeft = newScrollLeft;
-              }
-            }
-          } : undefined}
-          onSeek={onSeek}
-          trackStates={trackStates}
-          getTrackHeight={getTrackHeight}
-        />
-
-        {/* Custom Horizontal Scrollbar */}
-        {showScrollbar && (
-          <TimelineScrollbarSimple
-            containerWidth={containerWidth}
-            totalWidth={totalTimelineWidth}
-            scrollLeft={scrollLeft}
-            onScroll={(newScrollLeft) => {
-              if (scrollContainerRef.current) {
-                scrollContainerRef.current.scrollLeft = newScrollLeft;
-              }
-              if (timeRulerScrollRef.current) {
-                timeRulerScrollRef.current.scrollLeft = newScrollLeft;
-              }
-            }}
-          />
-        )}
       </div>
+
+      {/* ============================================================ */}
+      {/* FOOTER ROW - Minimap and scrollbar */}
+      {/* ============================================================ */}
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'row',
+          flexShrink: 0,
+        }}
+      >
+        {/* Minimap label */}
+        <div
+          style={{
+            width: TIMELINE.TRACK_HEADER_WIDTH,
+            height: TIMELINE.MINIMAP_HEIGHT,
+            flexShrink: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            backgroundColor: TIMELINE_COLORS.trackHeaderBg,
+            borderTop: `1px solid ${TIMELINE_COLORS.border}`,
+            borderRight: `1px solid ${TIMELINE_COLORS.border}`,
+          }}
+        >
+          <span style={{ fontSize: 9, color: TIMELINE_COLORS.textMuted }}>OVERVIEW</span>
+        </div>
+
+        {/* Minimap and scrollbar container */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', borderTop: `1px solid ${TIMELINE_COLORS.border}` }}>
+          <TimelineMinimapCanvas
+            tracks={tracks}
+            durationUs={durationUs}
+            currentTimeUs={currentTimeUs}
+            viewport={viewport}
+            containerWidth={containerWidth}
+            totalTimelineWidth={totalTimelineWidth}
+            onViewportChange={onViewportScroll ? (startTimeUs) => {
+              const effectiveDuration = Math.max(durationUs, TIMELINE.MIN_VISIBLE_DURATION_US);
+              const visibleDuration = effectiveDuration / viewport.zoomLevel;
+              const maxStartTime = effectiveDuration - visibleDuration;
+              if (maxStartTime > 0) {
+                const scrollRatio = startTimeUs / maxStartTime;
+                const newScrollLeft = scrollRatio * (totalTimelineWidth - containerWidth);
+                onViewportScroll(newScrollLeft, containerWidth, totalTimelineWidth);
+                if (scrollContainerRef.current) {
+                  scrollContainerRef.current.scrollLeft = newScrollLeft;
+                }
+              }
+            } : undefined}
+            onSeek={onSeek}
+            trackStates={trackStates}
+            getTrackHeight={getTrackHeight}
+          />
+
+          {/* Custom Horizontal Scrollbar */}
+          {showScrollbar && (
+            <TimelineScrollbarSimple
+              containerWidth={containerWidth}
+              totalWidth={totalTimelineWidth}
+              scrollLeft={scrollLeft}
+              onScroll={(newScrollLeft) => {
+                if (scrollContainerRef.current) {
+                  scrollContainerRef.current.scrollLeft = newScrollLeft;
+                }
+                if (timeRulerScrollRef.current) {
+                  timeRulerScrollRef.current.scrollLeft = newScrollLeft;
+                }
+              }}
+            />
+          )}
+        </div>
+      </div>
+
+      {/* Track Header Context Menu */}
+      <ContextMenu
+        open={trackHeaderMenu !== null}
+        onClose={() => setTrackHeaderMenu(null)}
+        x={trackHeaderMenu?.x ?? 0}
+        y={trackHeaderMenu?.y ?? 0}
+      >
+        {/* Add Track submenu */}
+        {onTrackAdd && trackHeaderMenu && (
+          <>
+            <MenuHeader>Add Track</MenuHeader>
+            {[
+              { type: 'video' as const, label: 'Video Track Above' },
+              { type: 'audio' as const, label: 'Audio Track Above' },
+              { type: 'subtitle' as const, label: 'Subtitle Track Above' },
+              { type: 'overlay' as const, label: 'Overlay Track Above' },
+            ].map((item) => (
+              <MenuItem
+                key={item.type}
+                onClick={() => {
+                  onTrackInsert?.(item.type, trackHeaderMenu.trackId, 'above');
+                  setTrackHeaderMenu(null);
+                }}
+              >
+                {item.label}
+              </MenuItem>
+            ))}
+            <MenuSeparator />
+          </>
+        )}
+
+        {/* Track Color submenu */}
+        {onTrackColorChange && trackHeaderMenu && (
+          <>
+            <MenuHeader>Track Color</MenuHeader>
+            <div
+              style={{
+                padding: '4px 12px 8px',
+                display: 'flex',
+                gap: 4,
+                flexWrap: 'wrap',
+              }}
+            >
+              {TRACK_COLOR_OPTIONS.map((option) => (
+                <button
+                  key={option.name}
+                  onClick={() => {
+                    onTrackColorChange(trackHeaderMenu.trackId, option.value);
+                    setTrackHeaderMenu(null);
+                  }}
+                  style={{
+                    width: 20,
+                    height: 20,
+                    padding: 0,
+                    backgroundColor: option.value || '#333',
+                    border: option.value ? 'none' : `1px dashed ${TIMELINE_COLORS.border}`,
+                    borderRadius: 3,
+                    cursor: 'pointer',
+                  }}
+                  title={option.name}
+                />
+              ))}
+            </div>
+            <MenuSeparator />
+          </>
+        )}
+
+        {/* Rename Track */}
+        {onTrackRename && trackHeaderMenu && (
+          <MenuItem
+            onClick={() => {
+              const track = tracks.find(t => t.id === trackHeaderMenu.trackId);
+              const newLabel = window.prompt('Enter new track name:', track?.label || '');
+              if (newLabel && newLabel.trim()) {
+                onTrackRename(trackHeaderMenu.trackId, newLabel.trim());
+              }
+              setTrackHeaderMenu(null);
+            }}
+          >
+            Rename Track
+          </MenuItem>
+        )}
+
+        {/* Delete Track */}
+        {onTrackRemove && trackHeaderMenu && (
+          <MenuItem
+            onClick={() => {
+              onTrackRemove(trackHeaderMenu.trackId);
+              setTrackHeaderMenu(null);
+            }}
+            danger
+          >
+            Delete Track
+          </MenuItem>
+        )}
+      </ContextMenu>
     </div>
   );
 }
@@ -1123,6 +1253,9 @@ interface TrackHeaderProps {
   onSolo?: (trackId: string, solo: boolean) => void;
   onLock?: (trackId: string, locked: boolean) => void;
   onResize?: (trackId: string, height: number) => void;
+  onRename?: (trackId: string, newLabel: string) => void;
+  onColorChange?: (trackId: string, color: string | undefined) => void;
+  onContextMenu?: (trackId: string, x: number, y: number) => void;
 }
 
 function TrackHeader({
@@ -1135,6 +1268,9 @@ function TrackHeader({
   onSolo,
   onLock,
   onResize,
+  onRename: _onRename,
+  onColorChange: _onColorChange,
+  onContextMenu,
 }: TrackHeaderProps) {
   const [isResizing, setIsResizing] = useState(false);
   const resizeStartY = useRef(0);
@@ -1177,12 +1313,17 @@ function TrackHeader({
     resizeStartHeight.current = height;
   };
 
+  const handleContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    onContextMenu?.(track.id, e.clientX, e.clientY);
+  };
+
   return (
     <div
       style={{
         height,
         display: 'flex',
-        flexDirection: 'column',
+        flexDirection: 'row',
         borderBottom: `1px solid ${TIMELINE_COLORS.border}`,
         backgroundColor: isDropTarget
           ? getTrackBgColor(track.type, true)
@@ -1190,48 +1331,67 @@ function TrackHeader({
         transition: 'background-color 0.15s',
         position: 'relative',
       }}
+      onContextMenu={handleContextMenu}
     >
-      {/* Main content */}
+      {/* Color indicator bar */}
+      <div
+        style={{
+          width: 4,
+          backgroundColor: track.color || 'transparent',
+          flexShrink: 0,
+        }}
+      />
+
+      {/* Main content wrapper */}
       <div
         style={{
           flex: 1,
           display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          padding: '0 6px',
-          minHeight: 0,
+          flexDirection: 'column',
+          minWidth: 0,
         }}
       >
-        {/* Left: Track type icon + label */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 }}>
-          <span
-            style={{
-              width: 18,
-              height: 18,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: 10,
-              fontWeight: 600,
-              backgroundColor: getClipColor(track.type, false, false),
-              borderRadius: 3,
-              flexShrink: 0,
-            }}
-          >
-            {track.type === 'video' ? 'V' : track.type === 'audio' ? 'A' : 'S'}
-          </span>
-          <span
-            style={{
-              fontSize: 11,
-              color: TIMELINE_COLORS.textSecondary,
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            {track.label}
-          </span>
-        </div>
+        {/* Main content */}
+        <div
+          style={{
+            flex: 1,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '0 6px',
+            minHeight: 0,
+          }}
+        >
+          {/* Left: Track type icon + label */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 }}>
+            <span
+              style={{
+                width: 18,
+                height: 18,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: 10,
+                fontWeight: 600,
+                backgroundColor: getClipColor(track.type, false, false),
+                borderRadius: 3,
+                flexShrink: 0,
+              }}
+            >
+              {track.type === 'video' ? 'V' : track.type === 'audio' ? 'A' : track.type === 'overlay' ? 'O' : 'S'}
+            </span>
+            <span
+              style={{
+                fontSize: 11,
+                color: TIMELINE_COLORS.textSecondary,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {track.label}
+            </span>
+          </div>
 
         {/* Right: M/S/L buttons + remove */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
@@ -1325,35 +1485,36 @@ function TrackHeader({
               ×
             </button>
           )}
+          </div>
         </div>
-      </div>
 
-      {/* Resize handle */}
-      {onResize && (
-        <div
-          onMouseDown={handleResizeStart}
-          style={{
-            position: 'absolute',
-            bottom: 0,
-            left: 0,
-            right: 0,
-            height: 4,
-            cursor: 'ns-resize',
-            backgroundColor: isResizing ? TIMELINE_COLORS.borderLight : 'transparent',
-            transition: 'background-color 0.15s',
-          }}
-          onMouseEnter={(e) => {
-            if (!isResizing) {
-              e.currentTarget.style.backgroundColor = TIMELINE_COLORS.borderLight;
-            }
-          }}
-          onMouseLeave={(e) => {
-            if (!isResizing) {
-              e.currentTarget.style.backgroundColor = 'transparent';
-            }
-          }}
-        />
-      )}
+        {/* Resize handle */}
+        {onResize && (
+          <div
+            onMouseDown={handleResizeStart}
+            style={{
+              position: 'absolute',
+              bottom: 0,
+              left: 0,
+              right: 0,
+              height: 4,
+              cursor: 'ns-resize',
+              backgroundColor: isResizing ? TIMELINE_COLORS.borderLight : 'transparent',
+              transition: 'background-color 0.15s',
+            }}
+            onMouseEnter={(e) => {
+              if (!isResizing) {
+                e.currentTarget.style.backgroundColor = TIMELINE_COLORS.borderLight;
+              }
+            }}
+            onMouseLeave={(e) => {
+              if (!isResizing) {
+                e.currentTarget.style.backgroundColor = 'transparent';
+              }
+            }}
+          />
+        )}
+      </div>
     </div>
   );
 }
@@ -1654,78 +1815,36 @@ function TrackLane(props: TrackLaneProps) {
       )}
 
       {/* Track context menu (for adding subtitle/overlay clips) */}
-      {trackContextMenu && (
-        <div
-          style={{
-            position: 'fixed',
-            left: trackContextMenu.x,
-            top: trackContextMenu.y,
-            backgroundColor: '#1a1a1a',
-            border: '1px solid #444',
-            borderRadius: 4,
-            padding: 4,
-            zIndex: 1000,
-            minWidth: 140,
-            boxShadow: '0 2px 8px rgba(0,0,0,0.5)',
-          }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          {track.type === 'subtitle' && (
-            <button
-              onClick={() => {
-                onAddSubtitleClip?.(track.id, trackContextMenu.timeUs);
-                setTrackContextMenu(null);
-              }}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                width: '100%',
-                padding: '6px 10px',
-                backgroundColor: 'transparent',
-                border: 'none',
-                borderRadius: 3,
-                color: TIMELINE_COLORS.textPrimary,
-                fontSize: 12,
-                cursor: 'pointer',
-                textAlign: 'left',
-              }}
-              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#333')}
-              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
-            >
-              <span>➕</span>
-              <span>Add Subtitle</span>
-            </button>
-          )}
-          {track.type === 'overlay' && (
-            <button
-              onClick={() => {
-                onAddOverlayClip?.(track.id, trackContextMenu.timeUs);
-                setTrackContextMenu(null);
-              }}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                width: '100%',
-                padding: '6px 10px',
-                backgroundColor: 'transparent',
-                border: 'none',
-                borderRadius: 3,
-                color: TIMELINE_COLORS.textPrimary,
-                fontSize: 12,
-                cursor: 'pointer',
-                textAlign: 'left',
-              }}
-              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#333')}
-              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
-            >
-              <span>➕</span>
-              <span>Add Overlay</span>
-            </button>
-          )}
-        </div>
-      )}
+      <ContextMenu
+        open={trackContextMenu !== null}
+        onClose={() => setTrackContextMenu(null)}
+        x={trackContextMenu?.x ?? 0}
+        y={trackContextMenu?.y ?? 0}
+        minWidth={140}
+      >
+        {track.type === 'subtitle' && trackContextMenu && (
+          <MenuItem
+            onClick={() => {
+              onAddSubtitleClip?.(track.id, trackContextMenu.timeUs);
+              setTrackContextMenu(null);
+            }}
+          >
+            <span>+</span>
+            <span>Add Subtitle</span>
+          </MenuItem>
+        )}
+        {track.type === 'overlay' && trackContextMenu && (
+          <MenuItem
+            onClick={() => {
+              onAddOverlayClip?.(track.id, trackContextMenu.timeUs);
+              setTrackContextMenu(null);
+            }}
+          >
+            <span>+</span>
+            <span>Add Overlay</span>
+          </MenuItem>
+        )}
+      </ContextMenu>
     </div>
   );
 }
@@ -2058,22 +2177,6 @@ function SubtitleClipBlock(props: SubtitleClipBlockProps) {
   const isMoving = dragState?.type === 'move';
   const isTrimming = dragState?.type === 'trim-start' || dragState?.type === 'trim-end';
 
-  // Context menu button style
-  const menuButtonStyle: React.CSSProperties = {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-    width: '100%',
-    padding: '6px 10px',
-    backgroundColor: 'transparent',
-    border: 'none',
-    borderRadius: 3,
-    color: TIMELINE_COLORS.textPrimary,
-    fontSize: 12,
-    cursor: 'pointer',
-    textAlign: 'left',
-  };
-
   return (
     <div
       tabIndex={0}
@@ -2190,116 +2293,38 @@ function SubtitleClipBlock(props: SubtitleClipBlockProps) {
       )}
 
       {/* Context menu */}
-      {contextMenu && (
-        <div
-          style={{
-            position: 'fixed',
-            left: contextMenu.x,
-            top: contextMenu.y,
-            backgroundColor: '#1a1a1a',
-            border: '1px solid #444',
-            borderRadius: 4,
-            padding: 4,
-            zIndex: 1000,
-            minWidth: 180,
-            boxShadow: '0 2px 8px rgba(0,0,0,0.5)',
-          }}
-          onClick={(e) => e.stopPropagation()}
+      <ContextMenu
+        open={contextMenu !== null}
+        onClose={() => setContextMenu(null)}
+        x={contextMenu?.x ?? 0}
+        y={contextMenu?.y ?? 0}
+      >
+        <MenuItem onClick={() => { onEdit?.(clip.id); setContextMenu(null); }}>
+          Edit Subtitles
+        </MenuItem>
+        <MenuItem onClick={() => { onDuplicate?.(clip.id); setContextMenu(null); }}>
+          <span>Duplicate</span>
+          <span style={{ marginLeft: 'auto', opacity: 0.5, fontSize: 10 }}>Cmd+D</span>
+        </MenuItem>
+        <MenuItem
+          onClick={() => { if (canSplit) { onSplit?.(clip.id, currentTimeUs); } setContextMenu(null); }}
+          disabled={!canSplit}
         >
-          {/* Edit Subtitles */}
-          <button
-            onClick={() => {
-              onEdit?.(clip.id);
-              setContextMenu(null);
-            }}
-            style={menuButtonStyle}
-            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#333')}
-            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
-          >
-            <span>✏️</span>
-            <span>Edit Subtitles</span>
-          </button>
-
-          {/* Duplicate */}
-          <button
-            onClick={() => {
-              onDuplicate?.(clip.id);
-              setContextMenu(null);
-            }}
-            style={menuButtonStyle}
-            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#333')}
-            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
-          >
-            <span>📋</span>
-            <span>Duplicate</span>
-            <span style={{ marginLeft: 'auto', opacity: 0.5, fontSize: 10 }}>⌘D</span>
-          </button>
-
-          {/* Split at Playhead */}
-          <button
-            onClick={() => {
-              if (canSplit) {
-                onSplit?.(clip.id, currentTimeUs);
-              }
-              setContextMenu(null);
-            }}
-            disabled={!canSplit}
-            style={{
-              ...menuButtonStyle,
-              opacity: canSplit ? 1 : 0.4,
-              cursor: canSplit ? 'pointer' : 'not-allowed',
-            }}
-            onMouseEnter={(e) => canSplit && (e.currentTarget.style.backgroundColor = '#333')}
-            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
-          >
-            <span>✂️</span>
-            <span>Split at Playhead</span>
-            <span style={{ marginLeft: 'auto', opacity: 0.5, fontSize: 10 }}>S</span>
-          </button>
-
-          {/* Add Cue at Playhead */}
-          <button
-            onClick={() => {
-              if (canSplit) {
-                onAddCue?.(clip.id, currentTimeUs);
-              }
-              setContextMenu(null);
-            }}
-            disabled={!canSplit}
-            style={{
-              ...menuButtonStyle,
-              opacity: canSplit ? 1 : 0.4,
-              cursor: canSplit ? 'pointer' : 'not-allowed',
-            }}
-            onMouseEnter={(e) => canSplit && (e.currentTarget.style.backgroundColor = '#333')}
-            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
-          >
-            <span>➕</span>
-            <span>Add Cue at Playhead</span>
-          </button>
-
-          {/* Separator */}
-          <div style={{ height: 1, backgroundColor: '#444', margin: '4px 0' }} />
-
-          {/* Delete */}
-          <button
-            onClick={() => {
-              onDelete?.(clip.id);
-              setContextMenu(null);
-            }}
-            style={{
-              ...menuButtonStyle,
-              color: TIMELINE_COLORS.playhead,
-            }}
-            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#333')}
-            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
-          >
-            <span>🗑️</span>
-            <span>Delete</span>
-            <span style={{ marginLeft: 'auto', opacity: 0.5, fontSize: 10 }}>⌫</span>
-          </button>
-        </div>
-      )}
+          <span>Split at Playhead</span>
+          <span style={{ marginLeft: 'auto', opacity: 0.5, fontSize: 10 }}>S</span>
+        </MenuItem>
+        <MenuItem
+          onClick={() => { if (canSplit) { onAddCue?.(clip.id, currentTimeUs); } setContextMenu(null); }}
+          disabled={!canSplit}
+        >
+          Add Cue at Playhead
+        </MenuItem>
+        <MenuSeparator />
+        <MenuItem onClick={() => { onDelete?.(clip.id); setContextMenu(null); }} danger>
+          <span>Delete</span>
+          <span style={{ marginLeft: 'auto', opacity: 0.5, fontSize: 10 }}>Del</span>
+        </MenuItem>
+      </ContextMenu>
     </div>
   );
 }
@@ -2632,22 +2657,6 @@ function OverlayClipBlock(props: OverlayClipBlockProps) {
   const isMoving = dragState?.type === 'move';
   const isTrimming = dragState?.type === 'trim-start' || dragState?.type === 'trim-end';
 
-  // Context menu button style
-  const menuButtonStyle: React.CSSProperties = {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-    width: '100%',
-    padding: '6px 10px',
-    backgroundColor: 'transparent',
-    border: 'none',
-    borderRadius: 3,
-    color: TIMELINE_COLORS.textPrimary,
-    fontSize: 12,
-    cursor: 'pointer',
-    textAlign: 'left',
-  };
-
   return (
     <div
       tabIndex={0}
@@ -2749,95 +2758,32 @@ function OverlayClipBlock(props: OverlayClipBlockProps) {
       </span>
 
       {/* Context menu */}
-      {contextMenu && (
-        <div
-          style={{
-            position: 'fixed',
-            left: contextMenu.x,
-            top: contextMenu.y,
-            backgroundColor: '#1a1a1a',
-            border: '1px solid #444',
-            borderRadius: 4,
-            padding: 4,
-            zIndex: 1000,
-            minWidth: 180,
-            boxShadow: '0 2px 8px rgba(0,0,0,0.5)',
-          }}
-          onClick={(e) => e.stopPropagation()}
+      <ContextMenu
+        open={contextMenu !== null}
+        onClose={() => setContextMenu(null)}
+        x={contextMenu?.x ?? 0}
+        y={contextMenu?.y ?? 0}
+      >
+        <MenuItem onClick={() => { onEdit?.(clip.id); setContextMenu(null); }}>
+          Edit Overlay
+        </MenuItem>
+        <MenuItem onClick={() => { onDuplicate?.(clip.id); setContextMenu(null); }}>
+          <span>Duplicate</span>
+          <span style={{ marginLeft: 'auto', opacity: 0.5, fontSize: 10 }}>Cmd+D</span>
+        </MenuItem>
+        <MenuItem
+          onClick={() => { if (canSplit) { onSplit?.(clip.id, currentTimeUs); } setContextMenu(null); }}
+          disabled={!canSplit}
         >
-          {/* Edit Overlay */}
-          <button
-            onClick={() => {
-              onEdit?.(clip.id);
-              setContextMenu(null);
-            }}
-            style={menuButtonStyle}
-            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#333')}
-            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
-          >
-            <span>✏️</span>
-            <span>Edit Overlay</span>
-          </button>
-
-          {/* Duplicate */}
-          <button
-            onClick={() => {
-              onDuplicate?.(clip.id);
-              setContextMenu(null);
-            }}
-            style={menuButtonStyle}
-            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#333')}
-            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
-          >
-            <span>📋</span>
-            <span>Duplicate</span>
-            <span style={{ marginLeft: 'auto', opacity: 0.5, fontSize: 10 }}>⌘D</span>
-          </button>
-
-          {/* Split at Playhead */}
-          <button
-            onClick={() => {
-              if (canSplit) {
-                onSplit?.(clip.id, currentTimeUs);
-              }
-              setContextMenu(null);
-            }}
-            disabled={!canSplit}
-            style={{
-              ...menuButtonStyle,
-              opacity: canSplit ? 1 : 0.4,
-              cursor: canSplit ? 'pointer' : 'not-allowed',
-            }}
-            onMouseEnter={(e) => canSplit && (e.currentTarget.style.backgroundColor = '#333')}
-            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
-          >
-            <span>✂️</span>
-            <span>Split at Playhead</span>
-            <span style={{ marginLeft: 'auto', opacity: 0.5, fontSize: 10 }}>S</span>
-          </button>
-
-          {/* Separator */}
-          <div style={{ height: 1, backgroundColor: '#444', margin: '4px 0' }} />
-
-          {/* Delete */}
-          <button
-            onClick={() => {
-              onDelete?.(clip.id);
-              setContextMenu(null);
-            }}
-            style={{
-              ...menuButtonStyle,
-              color: TIMELINE_COLORS.playhead,
-            }}
-            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#333')}
-            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
-          >
-            <span>🗑️</span>
-            <span>Delete</span>
-            <span style={{ marginLeft: 'auto', opacity: 0.5, fontSize: 10 }}>⌫</span>
-          </button>
-        </div>
-      )}
+          <span>Split at Playhead</span>
+          <span style={{ marginLeft: 'auto', opacity: 0.5, fontSize: 10 }}>S</span>
+        </MenuItem>
+        <MenuSeparator />
+        <MenuItem onClick={() => { onDelete?.(clip.id); setContextMenu(null); }} danger>
+          <span>Delete</span>
+          <span style={{ marginLeft: 'auto', opacity: 0.5, fontSize: 10 }}>Del</span>
+        </MenuItem>
+      </ContextMenu>
     </div>
   );
 }
@@ -3487,9 +3433,8 @@ function TimelineZoomSlider({ zoomLevel, minZoom, maxZoom, onChange }: TimelineZ
         display: 'flex',
         alignItems: 'center',
         gap: 2,
-        width: '100%',
-        minWidth: 0,
-        overflow: 'hidden',
+        width: 70,
+        flexShrink: 0,
       }}
     >
       <span style={{ fontSize: 8, color: TIMELINE_COLORS.textMuted, flexShrink: 0 }}>−</span>

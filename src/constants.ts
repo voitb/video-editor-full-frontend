@@ -28,7 +28,7 @@ export const TIMELINE = {
   /** Snap threshold in pixels for clip movement */
   SNAP_THRESHOLD_PX: 10,
   /** Track header width in pixels */
-  TRACK_HEADER_WIDTH: 120,
+  TRACK_HEADER_WIDTH: 160,
   /** Minimum track height in pixels */
   MIN_TRACK_HEIGHT: 40,
   /** Maximum track height in pixels */
@@ -235,6 +235,33 @@ export const SUBTITLE = {
   /** Panel width in pixels */
   PANEL_WIDTH: 320,
 } as const;
+
+/** Track organization colors (for labeling tracks like DaVinci Resolve) */
+export const TRACK_COLORS = {
+  red: '#E54545',
+  orange: '#E58A45',
+  yellow: '#E5D145',
+  green: '#45E545',
+  cyan: '#45E5E5',
+  blue: '#4585E5',
+  purple: '#8A45E5',
+  pink: '#E545E5',
+  gray: '#808080',
+} as const;
+
+/** Track color options for UI selection */
+export const TRACK_COLOR_OPTIONS = [
+  { name: 'None', value: undefined },
+  { name: 'Red', value: TRACK_COLORS.red },
+  { name: 'Orange', value: TRACK_COLORS.orange },
+  { name: 'Yellow', value: TRACK_COLORS.yellow },
+  { name: 'Green', value: TRACK_COLORS.green },
+  { name: 'Cyan', value: TRACK_COLORS.cyan },
+  { name: 'Blue', value: TRACK_COLORS.blue },
+  { name: 'Purple', value: TRACK_COLORS.purple },
+  { name: 'Pink', value: TRACK_COLORS.pink },
+  { name: 'Gray', value: TRACK_COLORS.gray },
+] as const;
 
 /** Overlay constants */
 export const OVERLAY = {

@@ -13,6 +13,7 @@ import type { SubtitleCue, SubtitleStyle, OverlayPosition, OverlayStyle } from '
 import { formatTimecode } from '../utils/time';
 import { formatTime, parseSubtitles, exportToSRT, exportToWebVTT } from '../utils/subtitle';
 import { SUBTITLE, TIMELINE_COLORS } from '../constants';
+import type { TrackType } from '../core/types';
 
 /** Tab type */
 export type SidebarTab = 'media' | 'subtitles' | 'overlays';
@@ -39,18 +40,19 @@ export interface TabbedSidebarProps {
   currentTimeUs: number;
   onSeek?: (timeUs: number) => void;
   onSubtitleClipUpdate?: (clipId: string, clip: SubtitleClip) => void;
-  onCreateSubtitleTrack?: () => void;
   onAddSubtitleClip?: (trackId: string, clip: SubtitleClip) => void;
   onSubtitleClipSelect?: (clipId: string, trackId: string) => void;
 
   // Overlays tab props
   onOverlayClipUpdate?: (clipId: string, clip: OverlayClip) => void;
-  onCreateOverlayTrack?: () => void;
   onAddOverlayClip?: (trackId: string, clip: OverlayClip) => void;
   onOverlayClipSelect?: (clipId: string, trackId: string) => void;
 
   // Common
   onRefresh?: () => void;
+
+  // Track creation
+  onTrackAdd?: (type: TrackType) => void;
 }
 
 const SIDEBAR_WIDTH = 320;
@@ -274,6 +276,7 @@ function MediaTabContent(props: TabbedSidebarProps) {
         >
           Upload Files (MP4/MOV/MP3/WAV)
         </button>
+
       </div>
 
       {/* Source List */}
@@ -399,9 +402,9 @@ function SubtitlesTabContent(props: TabbedSidebarProps) {
     currentTimeUs,
     onSeek,
     onSubtitleClipUpdate,
-    onCreateSubtitleTrack,
     onAddSubtitleClip,
     onRefresh,
+    onTrackAdd,
   } = props;
 
   const [showStyleEditor, setShowStyleEditor] = useState(false);
@@ -535,21 +538,36 @@ function SubtitlesTabContent(props: TabbedSidebarProps) {
       {/* Header */}
       <div style={{ padding: 12, borderBottom: `1px solid ${TIMELINE_COLORS.border}` }}>
         {subtitleTracks.length === 0 ? (
-          <button
-            onClick={onCreateSubtitleTrack}
+          <div
             style={{
               width: '100%',
-              padding: '10px 16px',
-              fontSize: 13,
-              backgroundColor: TIMELINE_COLORS.clipSubtitle,
-              color: '#fff',
-              border: 'none',
+              padding: '16px',
+              fontSize: 12,
+              color: TIMELINE_COLORS.textMuted,
+              textAlign: 'center',
+              backgroundColor: 'rgba(255,255,255,0.03)',
               borderRadius: 4,
-              cursor: 'pointer',
+              border: `1px dashed ${TIMELINE_COLORS.border}`,
             }}
           >
-            + Create Subtitle Track
-          </button>
+            <div style={{ marginBottom: 12 }}>No subtitle tracks yet</div>
+            {onTrackAdd && (
+              <button
+                onClick={() => onTrackAdd('subtitle')}
+                style={{
+                  padding: '8px 16px',
+                  fontSize: 12,
+                  backgroundColor: TIMELINE_COLORS.clipSubtitle,
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: 4,
+                  cursor: 'pointer',
+                }}
+              >
+                + Add Subtitle Track
+              </button>
+            )}
+          </div>
         ) : !selectedClip ? (
           <div style={{ color: '#888', fontSize: 13, textAlign: 'center' }}>
             Select a subtitle clip to edit
@@ -877,9 +895,9 @@ function OverlaysTabContent(props: TabbedSidebarProps) {
     selectedClipId,
     currentTimeUs,
     onOverlayClipUpdate,
-    onCreateOverlayTrack,
     onAddOverlayClip,
     onRefresh,
+    onTrackAdd,
   } = props;
 
   const [showStyleEditor, setShowStyleEditor] = useState(false);
@@ -948,21 +966,36 @@ function OverlaysTabContent(props: TabbedSidebarProps) {
       {/* Header */}
       <div style={{ padding: 12, borderBottom: `1px solid ${TIMELINE_COLORS.border}` }}>
         {overlayTracks.length === 0 ? (
-          <button
-            onClick={onCreateOverlayTrack}
+          <div
             style={{
               width: '100%',
-              padding: '10px 16px',
-              fontSize: 13,
-              backgroundColor: TIMELINE_COLORS.clipOverlay,
-              color: '#fff',
-              border: 'none',
+              padding: '16px',
+              fontSize: 12,
+              color: TIMELINE_COLORS.textMuted,
+              textAlign: 'center',
+              backgroundColor: 'rgba(255,255,255,0.03)',
               borderRadius: 4,
-              cursor: 'pointer',
+              border: `1px dashed ${TIMELINE_COLORS.border}`,
             }}
           >
-            + Create Overlay Track
-          </button>
+            <div style={{ marginBottom: 12 }}>No overlay tracks yet</div>
+            {onTrackAdd && (
+              <button
+                onClick={() => onTrackAdd('overlay')}
+                style={{
+                  padding: '8px 16px',
+                  fontSize: 12,
+                  backgroundColor: TIMELINE_COLORS.clipOverlay,
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: 4,
+                  cursor: 'pointer',
+                }}
+              >
+                + Add Overlay Track
+              </button>
+            )}
+          </div>
         ) : !selectedOverlay ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <div style={{ color: '#888', fontSize: 13, textAlign: 'center' }}>

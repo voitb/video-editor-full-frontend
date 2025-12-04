@@ -80,10 +80,20 @@ export class Composition {
   }
 
   /**
-   * Add a track
+   * Add a track at the end or at a specific position
+   * If track has no order set, appends at the bottom
    */
   addTrack(track: Track): void {
-    this._tracks.push(track);
+    if (track.order === undefined || track.order < 0) {
+      // No order specified - append at end
+      const maxOrder = this._tracks.reduce((max, t) => Math.max(max, t.order ?? 0), -1);
+      track.setOrder(maxOrder + 1);
+      this._tracks.push(track);
+    } else {
+      // Order specified - insert at that position
+      this.insertTrackAt(track, track.order);
+      return; // insertTrackAt already sorts
+    }
     this.sortTracks();
   }
 
@@ -103,6 +113,7 @@ export class Composition {
     const index = this._tracks.findIndex(t => t.id === trackId);
     if (index === -1) return false;
     this._tracks.splice(index, 1);
+    this.normalizeTrackOrders(); // Keep orders sequential after removal
     return true;
   }
 
@@ -121,13 +132,72 @@ export class Composition {
   }
 
   /**
-   * Sort tracks: video first, then audio, then subtitle
+   * Sort tracks by absolute order (free ordering like DaVinci Resolve)
+   * Any track type can be at any vertical position
    */
   private sortTracks(): void {
-    const typeOrder: Record<string, number> = { video: 0, audio: 1, subtitle: 2 };
-    this._tracks.sort((a, b) => {
-      return (typeOrder[a.type] ?? 99) - (typeOrder[b.type] ?? 99);
+    this._tracks.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  }
+
+  /**
+   * Normalize track orders to be sequential (0, 1, 2, ...)
+   * Call after any track add/remove/reorder to prevent gaps
+   */
+  normalizeTrackOrders(): void {
+    this._tracks.forEach((track, index) => {
+      track.setOrder(index);
     });
+  }
+
+  /**
+   * Reorder a track to a new position (free ordering across all track types)
+   */
+  reorderTrack(trackId: string, targetOrder: number): void {
+    const track = this.getTrack(trackId);
+    if (!track) return;
+
+    const currentOrder = track.order;
+    if (currentOrder === targetOrder) return;
+
+    // Shift tracks to make room for the moved track
+    this._tracks.forEach(t => {
+      if (t.id === trackId) return; // Skip the track being moved
+
+      if (currentOrder < targetOrder) {
+        // Moving down: shift tracks in between up
+        if (t.order > currentOrder && t.order <= targetOrder) {
+          t.setOrder(t.order - 1);
+        }
+      } else {
+        // Moving up: shift tracks in between down
+        if (t.order >= targetOrder && t.order < currentOrder) {
+          t.setOrder(t.order + 1);
+        }
+      }
+    });
+
+    // Set the track's new order
+    track.setOrder(targetOrder);
+
+    this.sortTracks();
+    this.normalizeTrackOrders();
+  }
+
+  /**
+   * Insert a track at a specific position, shifting others down
+   */
+  insertTrackAt(track: Track, position: number): void {
+    // Shift all tracks at position and below
+    this._tracks.forEach(t => {
+      if (t.order >= position) {
+        t.setOrder(t.order + 1);
+      }
+    });
+
+    // Set the new track's order
+    track.setOrder(position);
+    this._tracks.push(track);
+    this.sortTracks();
   }
 
   // ============================================================================

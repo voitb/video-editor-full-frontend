@@ -58,6 +58,10 @@ export interface TrackConfig {
   type: TrackType;
   /** Display label */
   label: string;
+  /** Track color for organization (hex) */
+  color?: string;
+  /** Order within type group (for manual reordering) */
+  order?: number;
 }
 
 // ============================================================================
@@ -112,6 +116,8 @@ export interface TrackJSON {
   id: string;
   type: TrackType;
   label: string;
+  /** Track color for organization (hex) */
+  color?: string;
   clips: ClipJSON[];
   subtitleClips?: SubtitleClipJSON[];
   overlayClips?: OverlayClipJSON[];
