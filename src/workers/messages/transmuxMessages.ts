@@ -39,6 +39,10 @@ export type TransmuxWorkerCommand =
 export interface InitSegmentEvent {
   type: 'INIT_SEGMENT';
   data: ArrayBuffer;
+  /** Video width from track info (0 if unknown) */
+  width?: number;
+  /** Video height from track info (0 if unknown) */
+  height?: number;
 }
 
 /** fMP4 media segment ready */

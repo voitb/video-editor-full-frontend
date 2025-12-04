@@ -15,6 +15,7 @@ import type {
 import { HLS, TIME } from '../constants';
 import { mergeArrayBuffers } from '../utils/transferable';
 import { createLogger } from '../utils/logger';
+import * as MP4Box from 'mp4box';
 
 const logger = createLogger('HlsSource');
 
@@ -100,6 +101,10 @@ export class HlsSource extends Source {
           throw new Error('No valid quality level found');
         }
 
+        // Set video dimensions from selected quality
+        this._width = this.selectedQuality.width;
+        this._height = this.selectedQuality.height;
+
         logger.info('Selected quality', {
           width: this.selectedQuality.width,
           height: this.selectedQuality.height,
@@ -174,6 +179,10 @@ export class HlsSource extends Source {
           case 'INIT_SEGMENT':
             this.initSegment = event.data;
             this.chunks.push(event.data);
+            // Extract dimensions from init segment if not set from master playlist
+            if (this._width === 0 && this._height === 0) {
+              this.extractDimensionsFromInitSegment(event.data);
+            }
             // Emit fMP4 init segment to streaming consumers
             this.emitChunk(event.data, false);
             break;
@@ -289,6 +298,51 @@ export class HlsSource extends Source {
   }
 
   /**
+   * Extract video dimensions from fMP4 init segment using MP4Box.js
+   * Used for non-master playlists where resolution isn't in the manifest
+   */
+  private extractDimensionsFromInitSegment(initSegment: ArrayBuffer): void {
+    try {
+      const mp4boxfile = MP4Box.createFile();
+      let resolved = false;
+
+      mp4boxfile.onReady = (info: MP4BoxInfo) => {
+        if (resolved) return;
+        resolved = true;
+
+        const videoTrack = info.videoTracks?.[0];
+        if (videoTrack) {
+          this._width = videoTrack.video?.width ?? videoTrack.track_width ?? 0;
+          this._height = videoTrack.video?.height ?? videoTrack.track_height ?? 0;
+          // Also check for audio tracks
+          this._hasAudio = (info.audioTracks?.length ?? 0) > 0;
+
+          logger.info('Extracted dimensions from init segment', {
+            width: this._width,
+            height: this._height,
+            hasAudio: this._hasAudio,
+          });
+        }
+      };
+
+      mp4boxfile.onError = (error: Error) => {
+        if (resolved) return;
+        resolved = true;
+        logger.warn('Failed to parse init segment for dimensions', { error: error.message });
+      };
+
+      // MP4Box expects the buffer to have a fileStart property
+      const bufferWithPosition = initSegment.slice(0) as ArrayBuffer & { fileStart: number };
+      bufferWithPosition.fileStart = 0;
+      mp4boxfile.appendBuffer(bufferWithPosition);
+      mp4boxfile.flush();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn('Error extracting dimensions from init segment', { error: message });
+    }
+  }
+
+  /**
    * Abort loading
    */
   abort(): void {
@@ -320,4 +374,29 @@ export class HlsSource extends Source {
       url: this.url,
     };
   }
+}
+
+// Type definitions for MP4Box.js (subset of what we use)
+interface MP4BoxInfo {
+  duration?: number;
+  timescale?: number;
+  isFragmented?: boolean;
+  videoTracks?: Array<{
+    id: number;
+    codec: string;
+    duration?: number;
+    timescale?: number;
+    track_width?: number;
+    track_height?: number;
+    video?: {
+      width: number;
+      height: number;
+    };
+  }>;
+  audioTracks?: Array<{
+    id: number;
+    codec: string;
+    channel_count?: number;
+    sample_rate?: number;
+  }>;
 }
