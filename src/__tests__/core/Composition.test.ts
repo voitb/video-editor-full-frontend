@@ -63,16 +63,24 @@ describe('Composition', () => {
       expect(comp.removeTrack('non-existent')).toBe(false);
     });
 
-    it('should sort tracks (video first, then audio)', () => {
-      comp.createTrack({ type: 'audio', label: 'A1' });
-      comp.createTrack({ type: 'video', label: 'V1' });
-      comp.createTrack({ type: 'audio', label: 'A2' });
-      comp.createTrack({ type: 'video', label: 'V2' });
+    it('should insert tracks at default position 0 (stack behavior)', () => {
+      const a1 = comp.createTrack({ type: 'audio', label: 'A1' });
+      const v1 = comp.createTrack({ type: 'video', label: 'V1' });
+      const a2 = comp.createTrack({ type: 'audio', label: 'A2' });
+      const v2 = comp.createTrack({ type: 'video', label: 'V2' });
 
-      expect(comp.tracks[0]!.type).toBe('video');
-      expect(comp.tracks[1]!.type).toBe('video');
-      expect(comp.tracks[2]!.type).toBe('audio');
-      expect(comp.tracks[3]!.type).toBe('audio');
+      // Tracks without explicit order are inserted at position 0 (stack behavior)
+      // Each new track pushes others down, resulting in reverse creation order
+      expect(comp.tracks[0]!).toBe(v2); // Last created, at position 0
+      expect(comp.tracks[1]!).toBe(a2);
+      expect(comp.tracks[2]!).toBe(v1);
+      expect(comp.tracks[3]!).toBe(a1); // First created, pushed to last position
+
+      // Order property reflects position after insertions
+      expect(v2.order).toBe(0);
+      expect(a2.order).toBe(1);
+      expect(v1.order).toBe(2);
+      expect(a1.order).toBe(3);
     });
 
     it('should filter video and audio tracks', () => {
@@ -88,8 +96,9 @@ describe('Composition', () => {
       const v1 = comp.createTrack({ type: 'video', label: 'V1' });
       const a1 = comp.createTrack({ type: 'audio', label: 'A1' });
 
-      expect(comp.getTrackIndex(v1.id)).toBe(0);
-      expect(comp.getTrackIndex(a1.id)).toBe(1);
+      // Due to stack behavior (insert at 0), a1 is at index 0, v1 at index 1
+      expect(comp.getTrackIndex(a1.id)).toBe(0);
+      expect(comp.getTrackIndex(v1.id)).toBe(1);
     });
   });
 

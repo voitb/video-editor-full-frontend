@@ -124,7 +124,7 @@ export function ExportModal(props: ExportModalProps) {
 
       // Create worker
       const worker = new Worker(
-        new URL('../workers/ExportWorker.ts', import.meta.url),
+        new URL('../workers/export/ExportWorker.ts', import.meta.url),
         { type: 'module' }
       );
       workerRef.current = worker;
