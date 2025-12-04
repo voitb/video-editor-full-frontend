@@ -9,7 +9,7 @@ import { useEngine } from '../../hooks/useEngine';
 import { useTimeline } from '../../hooks/useTimeline';
 import { useExportRange } from '../../hooks/useExportRange';
 import { VideoPreview, type VideoPreviewHandle } from '../VideoPreview';
-import { Timeline } from '../timeline';
+import { Timeline } from '../Timeline';
 import { PlaybackControls } from '../PlaybackControls';
 import { TabbedSidebar, type SidebarTab } from '../sidebar';
 import { ExportModal } from '../ExportModal';

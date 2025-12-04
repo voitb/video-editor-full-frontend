@@ -16,7 +16,7 @@ interface TimeRulerProps {
   timeToPixel: (timeUs: number) => number;
   isRulerDragging: boolean;
   onMouseDown: (e: React.MouseEvent) => void;
-  scrollRef: React.RefObject<HTMLDivElement>;
+  scrollRef: React.RefObject<HTMLDivElement | null>;
 }
 
 export function TimeRuler({

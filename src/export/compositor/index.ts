@@ -1,33 +1,9 @@
 /**
  * Export Compositor Module
- * Barrel export for compositor helper modules.
+ * Re-exports shared compositor utilities from renderer/compositor.
+ *
+ * @deprecated Import directly from '../../renderer/compositor' instead.
  */
 
-// Types
-export type {
-  ExportLayer,
-  SubtitleLayer,
-  OverlayPosition,
-  OverlayInfo,
-  BlendUniforms,
-  CopyUniforms,
-} from './types';
-
-// Shaders
-export { VERTEX_SHADER, BLEND_FRAGMENT_SHADER, COPY_FRAGMENT_SHADER } from './shaders';
-
-// Shader program
-export { createProgram } from './ShaderProgram';
-
-// Geometry
-export { createGeometry } from './WebGLGeometry';
-
-// Textures
-export { createTexture, uploadTextureWithFlip } from './TextureManager';
-
-// Framebuffer
-export { createFramebuffer, blitFramebuffer } from './FramebufferManager';
-export type { FramebufferResult } from './FramebufferManager';
-
-// Overlay
-export { renderOverlayToCanvas, createBlackCanvas } from './OverlayProcessor';
+// Re-export everything from the shared compositor module
+export * from '../../renderer/compositor/index';

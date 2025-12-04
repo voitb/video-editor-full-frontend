@@ -1,6 +1,6 @@
 /**
- * WebGL Shaders for Export Compositor
- * Shader source code constants for compositing operations.
+ * WebGL Shaders for Compositing
+ * Shared shader source code for both playback and export compositing.
  */
 
 /** Vertex shader - fullscreen quad with texture coordinates */

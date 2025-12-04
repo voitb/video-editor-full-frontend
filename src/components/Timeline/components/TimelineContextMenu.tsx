@@ -15,11 +15,11 @@ interface TrackHeaderMenuState {
 
 interface TimelineContextMenuProps {
   trackHeaderMenu: TrackHeaderMenuState | null;
-  tracks: Track[];
+  tracks: readonly Track[];
   onClose: () => void;
   onTrackAdd?: (type: TrackType) => void;
   onTrackInsert?: (type: TrackType, referenceTrackId: string, position: 'above' | 'below') => void;
-  onTrackColorChange?: (trackId: string, color: string | null) => void;
+  onTrackColorChange?: (trackId: string, color: string | undefined) => void;
   onTrackRename?: (trackId: string, newLabel: string) => void;
   onTrackRemove?: (trackId: string) => void;
 }

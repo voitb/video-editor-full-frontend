@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useState } from 'react';
 
 interface UseRulerDragOptions {
-  timeRulerScrollRef: React.RefObject<HTMLDivElement>;
+  timeRulerScrollRef: React.RefObject<HTMLDivElement | null>;
   pixelToTime: (pixel: number) => number;
   durationUs: number;
   onSeek?: (timeUs: number) => void;

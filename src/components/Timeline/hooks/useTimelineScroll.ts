@@ -2,7 +2,7 @@
  * Hook for managing scroll synchronization in the Timeline
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 
 interface UseTimelineScrollOptions {
   containerWidth: number;
@@ -20,8 +20,8 @@ interface UseTimelineScrollReturn {
   isScrollSyncingRef: React.MutableRefObject<boolean>;
   handleContentScroll: (e: React.UIEvent<HTMLDivElement>) => void;
   syncScrollPosition: (
-    scrollContainerRef: React.RefObject<HTMLDivElement>,
-    timeRulerScrollRef: React.RefObject<HTMLDivElement>
+    scrollContainerRef: React.RefObject<HTMLDivElement | null>,
+    timeRulerScrollRef: React.RefObject<HTMLDivElement | null>
   ) => void;
 }
 
@@ -31,7 +31,7 @@ interface UseTimelineScrollReturn {
 export function useTimelineScroll({
   containerWidth,
   totalTimelineWidth,
-  viewport,
+  viewport: _viewport,
   onViewportScroll,
   getScrollLeft,
 }: UseTimelineScrollOptions): UseTimelineScrollReturn {
@@ -69,8 +69,8 @@ export function useTimelineScroll({
   // Sync scroll position when viewport changes externally
   const syncScrollPosition = useCallback(
     (
-      scrollContainerRef: React.RefObject<HTMLDivElement>,
-      timeRulerScrollRef: React.RefObject<HTMLDivElement>
+      scrollContainerRef: React.RefObject<HTMLDivElement | null>,
+      timeRulerScrollRef: React.RefObject<HTMLDivElement | null>
     ) => {
       timeRulerScrollRefInternal.current = timeRulerScrollRef.current;
 

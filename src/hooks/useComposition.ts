@@ -5,13 +5,10 @@
 
 import { useState, useCallback, useRef, useMemo } from 'react';
 import { Composition } from '../core/Composition';
-import { Track } from '../core/Track';
-import { Clip } from '../core/Clip';
-import type {
-  CompositionConfig,
-  TrackConfig,
-  ClipConfig,
-} from '../core/types';
+import type { Track } from '../core/Track';
+import type { Clip } from '../core/Clip';
+import type { CompositionConfig, TrackConfig, ClipConfig } from '../core/types';
+import { useTrackManagement, useClipManagement, useClipMovement } from './composition';
 
 export interface UseCompositionReturn {
   /** The composition instance */
@@ -96,187 +93,28 @@ export function useComposition(options: UseCompositionOptions = {}): UseComposit
 
   // Force re-render state
   const [, setRenderCount] = useState(0);
-  const refresh = useCallback(() => setRenderCount(c => c + 1), []);
+  const refresh = useCallback(() => setRenderCount((c) => c + 1), []);
 
   const composition = compositionRef.current;
 
   // Track management
-  const createTrack = useCallback((config: TrackConfig): Track => {
-    const track = composition.createTrack(config);
-    refresh();
-    return track;
-  }, [composition, refresh]);
-
-  const removeTrack = useCallback((trackId: string): boolean => {
-    const result = composition.removeTrack(trackId);
-    if (result) refresh();
-    return result;
-  }, [composition, refresh]);
-
-  const getTrack = useCallback((trackId: string): Track | undefined => {
-    return composition.getTrack(trackId);
-  }, [composition]);
+  const { createTrack, removeTrack, getTrack } = useTrackManagement({
+    composition,
+    refresh,
+  });
 
   // Clip management
-  const addClip = useCallback((trackId: string, config: ClipConfig): Clip | undefined => {
-    const clip = composition.addClipToTrack(trackId, config);
-    if (clip) refresh();
-    return clip;
-  }, [composition, refresh]);
-
-  /**
-   * Add a video clip with automatically created linked audio clip
-   */
-  const addVideoClipWithAudio = useCallback((
-    videoTrackId: string,
-    config: ClipConfig,
-    audioTrackId?: string
-  ): { videoClip: Clip | undefined; audioClip: Clip | undefined } => {
-    // Add video clip
-    const videoClip = composition.addClipToTrack(videoTrackId, config);
-    if (!videoClip) {
-      return { videoClip: undefined, audioClip: undefined };
-    }
-
-    // Check if source has audio
-    const source = composition.getSource(config.sourceId);
-    if (!source?.hasAudio) {
-      refresh();
-      return { videoClip, audioClip: undefined };
-    }
-
-    // Find or create audio track
-    let audioTrack: Track | undefined;
-    if (audioTrackId) {
-      audioTrack = composition.getTrack(audioTrackId);
-    } else {
-      // Use first audio track or create one
-      audioTrack = composition.audioTracks[0];
-      if (!audioTrack) {
-        audioTrack = composition.createTrack({ type: 'audio', label: 'Audio 1' });
-      }
-    }
-
-    if (!audioTrack) {
-      refresh();
-      return { videoClip, audioClip: undefined };
-    }
-
-    // Create linked audio clip with same timing
-    const audioClip = audioTrack.createClip({
-      ...config,
-      label: config.label ? `${config.label} (Audio)` : 'Audio',
-      linkedClipId: videoClip.id,
+  const { addClip, addVideoClipWithAudio, removeClip, getClip, updateClip, unlinkClip } =
+    useClipManagement({
+      composition,
+      refresh,
     });
 
-    // Link video clip back to audio clip
-    videoClip.linkedClipId = audioClip.id;
-
-    refresh();
-    return { videoClip, audioClip };
-  }, [composition, refresh]);
-
-  const removeClip = useCallback((clipId: string): boolean => {
-    const result = composition.removeClip(clipId);
-    if (result) refresh();
-    return result;
-  }, [composition, refresh]);
-
-  const getClip = useCallback((clipId: string): { clip: Clip; track: Track } | undefined => {
-    return composition.getClip(clipId);
-  }, [composition]);
-
-  const updateClip = useCallback((clipId: string, updates: Partial<ClipConfig>): boolean => {
-    const found = composition.getClip(clipId);
-    if (!found) return false;
-
-    const { clip } = found;
-
-    if (updates.startUs !== undefined) clip.startUs = updates.startUs;
-    if (updates.trimIn !== undefined) clip.trimIn = updates.trimIn;
-    if (updates.trimOut !== undefined) clip.trimOut = updates.trimOut;
-    if (updates.opacity !== undefined) clip.opacity = updates.opacity;
-    if (updates.volume !== undefined) clip.volume = updates.volume;
-    if (updates.label !== undefined) clip.label = updates.label;
-
-    refresh();
-    return true;
-  }, [composition, refresh]);
-
-  // Move clip (overlaps allowed - standard NLE behavior)
-  const moveClip = useCallback((clipId: string, newStartUs: number): boolean => {
-    const found = composition.getClip(clipId);
-    if (!found) return false;
-
-    const { clip } = found;
-    clip.moveTo(newStartUs);
-    refresh();
-    return true;
-  }, [composition, refresh]);
-
-  // Move clip along with its linked clip (overlaps allowed - standard NLE behavior)
-  const moveClipWithLinked = useCallback((clipId: string, newStartUs: number): boolean => {
-    const found = composition.getClip(clipId);
-    if (!found) return false;
-
-    // Move using composition method which handles linked clips
-    composition.moveClipWithLinked(clipId, newStartUs);
-    refresh();
-    return true;
-  }, [composition, refresh]);
-
-  // Unlink a clip from its linked clip
-  const unlinkClip = useCallback((clipId: string): boolean => {
-    const result = composition.unlinkClip(clipId);
-    if (result) refresh();
-    return result;
-  }, [composition, refresh]);
-
-  // Move clip to a different track
-  const moveClipToTrack = useCallback((
-    clipId: string,
-    targetTrackId: string,
-    newStartUs?: number
-  ): boolean => {
-    const found = composition.getClip(clipId);
-    if (!found) return false;
-
-    const { clip, track: sourceTrack } = found;
-    const targetTrack = composition.getTrack(targetTrackId);
-
-    if (!targetTrack) return false;
-
-    // Ensure same track type (video to video, audio to audio)
-    if (sourceTrack.type !== targetTrack.type) return false;
-
-    // If same track, just move position
-    if (sourceTrack.id === targetTrackId) {
-      if (newStartUs !== undefined) {
-        return moveClip(clipId, newStartUs);
-      }
-      return true;
-    }
-
-    const startUs = newStartUs ?? clip.startUs;
-
-    // Remove from source track (overlaps allowed - standard NLE behavior)
-    sourceTrack.removeClip(clipId);
-
-    // Create new clip on target track with same properties
-    const newClip = new Clip({
-      sourceId: clip.sourceId,
-      startUs,
-      trimIn: clip.trimIn,
-      trimOut: clip.trimOut,
-      opacity: clip.opacity,
-      volume: clip.volume,
-      label: clip.label,
-    }, clip.id); // Preserve clip ID
-
-    targetTrack.addClip(newClip);
-    refresh();
-    return true;
-  }, [composition, refresh, moveClip]);
+  // Clip movement
+  const { moveClip, moveClipWithLinked, moveClipToTrack } = useClipMovement({
+    composition,
+    refresh,
+  });
 
   // Clear all
   const clear = useCallback(() => {

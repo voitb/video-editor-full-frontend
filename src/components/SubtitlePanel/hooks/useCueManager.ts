@@ -8,8 +8,11 @@ import type { SubtitleClip } from '../../../core/SubtitleClip';
 import type { SubtitleCue, SubtitleStyle } from '../../../core/types';
 import { SUBTITLE } from '../../../constants';
 
+import type { Track } from '../../../core/Track';
+
 interface SelectedClipInfo {
   clip: SubtitleClip;
+  track: Track;
   trackId: string;
 }
 

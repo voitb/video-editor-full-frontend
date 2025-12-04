@@ -7,7 +7,7 @@ import type { Composition } from '../../../core/Composition';
 import type { Track } from '../../../core/Track';
 import type { OverlayClip } from '../../../core/OverlayClip';
 import type { SubtitleClip } from '../../../core/SubtitleClip';
-import type { OverlayPosition } from '../../../core/types';
+import type { OverlayPosition, TrackConfig } from '../../../core/types';
 import type { SidebarTab } from '../../sidebar';
 import { useSourceCallbacks } from './useSourceCallbacks';
 import { useClipCallbacks } from './useClipCallbacks';
@@ -17,7 +17,7 @@ import { useOverlayCallbacks } from './useOverlayCallbacks';
 
 export interface UseEditorCallbacksParams {
   composition: Composition;
-  tracks: Track[];
+  tracks: readonly Track[];
   currentTimeUs: number;
   selectedClipId: string | undefined;
   linkedSelection: boolean;
@@ -32,7 +32,7 @@ export interface UseEditorCallbacksParams {
   moveClipWithLinked: (clipId: string, newStartUs: number) => boolean;
   moveClipToTrack: (clipId: string, targetTrackId: string, newStartUs: number) => boolean;
   unlinkClip: (clipId: string) => void;
-  createTrack: (options: { type: string; label: string; order?: number }) => Track;
+  createTrack: (config: TrackConfig) => Track;
   removeTrack: (trackId: string) => void;
   refresh: () => void;
   // Engine actions

@@ -1,9 +1,19 @@
 /**
- * Export Compositor Types
- * Type definitions for export compositing.
+ * Compositor Types
+ * Shared type definitions for WebGL compositing.
  */
 
-/** Layer for compositing */
+import type { ActiveClip } from '../../core/types';
+
+/** Layer for playback compositing */
+export interface CompositorLayer {
+  /** Video frame to composite */
+  frame: VideoFrame;
+  /** Associated clip info */
+  clip: ActiveClip;
+}
+
+/** Layer for export compositing */
 export interface ExportLayer {
   /** Video frame to composite */
   frame: VideoFrame;

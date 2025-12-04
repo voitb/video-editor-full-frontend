@@ -11,6 +11,7 @@ import type { SubtitleClip } from '../../../core/SubtitleClip';
 interface SelectedClipInfo {
   clip: SubtitleClip;
   track: Track;
+  trackId: string;
 }
 
 interface UseSelectedClipResult {
@@ -29,7 +30,7 @@ export function useSelectedClip(
       if (track.type !== 'subtitle') continue;
       for (const clip of track.clips) {
         if (clip.id === selectedClipId && isSubtitleClip(clip)) {
-          return { clip, track };
+          return { clip, track, trackId: track.id };
         }
       }
     }

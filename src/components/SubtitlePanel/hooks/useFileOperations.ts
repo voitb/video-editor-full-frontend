@@ -11,6 +11,7 @@ import { SUBTITLE } from '../../../constants';
 
 interface SelectedClipInfo {
   clip: SubtitleClip;
+  track: Track;
   trackId: string;
 }
 

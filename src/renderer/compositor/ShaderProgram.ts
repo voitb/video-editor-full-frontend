@@ -3,6 +3,10 @@
  * Handles WebGL shader compilation and program linking.
  */
 
+import { createLogger } from '../../utils/logger';
+
+const logger = createLogger('ShaderProgram');
+
 /**
  * Compile a shader from source
  */
@@ -18,7 +22,7 @@ function createShader(
   gl.compileShader(shader);
 
   if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-    console.error('Shader compile error', gl.getShaderInfoLog(shader));
+    logger.error('Shader compile error', { error: gl.getShaderInfoLog(shader) });
     gl.deleteShader(shader);
     return null;
   }
@@ -46,7 +50,7 @@ export function createProgram(
   gl.linkProgram(program);
 
   if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    console.error('Program link error', gl.getProgramInfoLog(program));
+    logger.error('Program link error', { error: gl.getProgramInfoLog(program) });
     gl.deleteProgram(program);
     return null;
   }

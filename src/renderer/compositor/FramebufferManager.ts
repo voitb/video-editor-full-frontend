@@ -57,6 +57,29 @@ export function createFramebuffer(
 }
 
 /**
+ * Resize a framebuffer's texture
+ */
+export function resizeFramebuffer(
+  gl: WebGL2RenderingContext,
+  texture: WebGLTexture | null,
+  width: number,
+  height: number
+): void {
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texImage2D(
+    gl.TEXTURE_2D,
+    0,
+    gl.RGBA,
+    width,
+    height,
+    0,
+    gl.RGBA,
+    gl.UNSIGNED_BYTE,
+    null
+  );
+}
+
+/**
  * Blit framebuffer contents between read and draw targets
  */
 export function blitFramebuffer(

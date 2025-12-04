@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { getTimeStep, getGridLines } from '../../../../components/timeline/utils/gridLines';
+import { getTimeStep, getGridLines } from '../../../../components/Timeline/utils/gridLines';
 
 describe('getTimeStep', () => {
   it('returns 100ms for very short durations', () => {

@@ -34,3 +34,16 @@ export function uploadTextureWithFlip(
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
   gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
 }
+
+/**
+ * Upload a texture source without Y-axis flip.
+ * Use when the texture coordinates handle the flip.
+ */
+export function uploadTexture(
+  gl: WebGL2RenderingContext,
+  texture: WebGLTexture | null,
+  source: TexImageSource
+): void {
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+}

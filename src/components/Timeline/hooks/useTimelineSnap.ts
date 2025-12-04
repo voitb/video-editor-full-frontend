@@ -9,7 +9,7 @@ import type { SnapTarget, SnapResult } from '../types';
 import { calculateSnapTargets, applySnapToPosition } from '../utils/snapTargets';
 
 interface UseTimelineSnapOptions {
-  tracks: Track[];
+  tracks: readonly Track[];
   currentTimeUs: number;
   pixelToTime: (pixel: number) => number;
 }

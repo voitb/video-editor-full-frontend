@@ -5,7 +5,7 @@
 import { useEffect } from 'react';
 
 interface UseTimelineZoomOptions {
-  timelineContentRef: React.RefObject<HTMLDivElement>;
+  timelineContentRef: React.RefObject<HTMLDivElement | null>;
   onZoomAtPosition?: (positionRatio: number, direction: 'in' | 'out') => void;
 }
 

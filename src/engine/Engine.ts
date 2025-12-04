@@ -1,20 +1,24 @@
 /**
  * Video Editor - Engine
  * Main thread orchestrator for video playback and composition.
+ * Coordinates between audio, video rendering, and source loading.
  */
 
 import type { Composition } from '../core/Composition';
 import type { ActiveClip } from '../core/types';
-import { HlsSource } from '../core/HlsSource';
-import { FileSource } from '../core/FileSource';
-import type { RenderWorkerCommand, RenderWorkerEvent } from '../workers/messages/renderMessages';
-import { TIME, PLAYBACK } from '../constants';
+import type { HlsSource } from '../core/HlsSource';
+import type { FileSource } from '../core/FileSource';
+import type { RenderWorkerEvent } from '../workers/messages/renderMessages';
+import { TIME } from '../constants';
 import { createLogger } from '../utils/logger';
 
-// Import refactored modules
+// Import engine modules
 import type { EngineState, EngineOptions, EngineEventCallback } from './types';
 import { AudioController } from './AudioController';
 import { EngineEventEmitter } from './EngineEvents';
+import { WorkerBridge } from './worker';
+import { SourceLoader } from './sources';
+import { PlaybackCoordinator, SyncManager } from './playback';
 
 const logger = createLogger('Engine');
 
@@ -26,69 +30,84 @@ export type { EngineState, EngineOptions, EngineEvent, EngineEventCallback } fro
  */
 export class Engine {
   private composition: Composition;
-  private worker: Worker | null = null;
-  private offscreenCanvas: OffscreenCanvas | null = null;
 
   private _state: EngineState = 'idle';
   private _currentTimeUs = 0;
   private _isPlaying = false;
 
-  // Refactored modules
+  // Modules
   private audio: AudioController;
   private events: EngineEventEmitter;
+  private workerBridge: WorkerBridge;
+  private sourceLoader: SourceLoader;
+  private playback: PlaybackCoordinator;
+  private syncManager: SyncManager;
 
-  // Sync state
-  private syncIntervalId: number | null = null;
+  // Active clips state
   private lastActiveClips: ActiveClip[] = [];
   private lastHasClipsAtTime = false;
   private lastCompositionDurationUs = 0;
-
-  // Seek acknowledgment state
-  private pendingSeekTimeUs: number | null = null;
-  private isSeekingWhilePlaying = false;
-  private seekInProgress = false;
 
   constructor(options: EngineOptions) {
     this.composition = options.composition;
     this.audio = new AudioController();
     this.events = new EngineEventEmitter();
+    this.workerBridge = new WorkerBridge();
 
-    this.initializeCanvas(options.canvas);
-    this.initializeWorker();
+    // Initialize source loader
+    this.sourceLoader = new SourceLoader({
+      composition: this.composition,
+      events: this.events,
+      audio: this.audio,
+      workerBridge: this.workerBridge,
+      setLoading: () => this.setState('loading'),
+    });
+
+    // Initialize playback coordinator
+    this.playback = new PlaybackCoordinator({
+      composition: this.composition,
+      audio: this.audio,
+      workerBridge: this.workerBridge,
+      getCurrentTimeUs: () => this._currentTimeUs,
+      setCurrentTimeUs: (timeUs) => { this._currentTimeUs = timeUs; },
+      getIsPlaying: () => this._isPlaying,
+      onTimeUpdate: (timeUs) => this.events.emit({ type: 'timeUpdate', currentTimeUs: timeUs }),
+      onSeekStart: () => {},
+      onSeekComplete: () => {},
+      startSyncInterval: () => this.syncManager.start(),
+      stopSyncInterval: () => this.syncManager.stop(),
+      updateActiveClips: () => this.updateActiveClips(),
+    });
+
+    // Initialize sync manager
+    this.syncManager = new SyncManager({
+      composition: this.composition,
+      audio: this.audio,
+      getCurrentTimeUs: () => this._currentTimeUs,
+      getIsPlaying: () => this._isPlaying,
+      isSeekInProgress: () => this.playback.isSeekInProgress,
+      updateActiveClips: () => this.updateActiveClips(),
+      pause: () => this.pause(),
+      seek: (timeUs) => this.seek(timeUs),
+    });
+
+    // Initialize worker
+    this.initializeWorker(options.canvas);
   }
 
   // ============================================================================
   // INITIALIZATION
   // ============================================================================
 
-  private initializeCanvas(canvas: HTMLCanvasElement): void {
-    this.offscreenCanvas = canvas.transferControlToOffscreen();
+  private initializeWorker(canvas: HTMLCanvasElement): void {
+    const offscreenCanvas = canvas.transferControlToOffscreen();
+
+    this.workerBridge.setMessageHandler(this.handleWorkerMessage.bind(this));
+    this.workerBridge.setErrorHandler((error) => this.setError(error));
+    this.workerBridge.initialize(offscreenCanvas);
   }
 
-  private initializeWorker(): void {
-    this.worker = new Worker(
-      new URL('../workers/render/RenderWorker.ts', import.meta.url),
-      { type: 'module' }
-    );
-
-    this.worker.onmessage = this.handleWorkerMessage.bind(this);
-    this.worker.onerror = (err) => {
-      logger.error('Worker error', { error: err.message });
-      this.setError(`Worker error: ${err.message}`);
-    };
-
-    if (this.offscreenCanvas) {
-      const cmd: RenderWorkerCommand = {
-        type: 'INIT_CANVAS',
-        canvas: this.offscreenCanvas,
-      };
-      this.worker.postMessage(cmd, [this.offscreenCanvas]);
-    }
-  }
-
-  private handleWorkerMessage(e: MessageEvent<RenderWorkerEvent>): void {
-    const event = e.data;
-
+  private handleWorkerMessage(event: RenderWorkerEvent): void {
     switch (event.type) {
       case 'WORKER_READY':
         logger.info('RenderWorker ready');
@@ -114,7 +133,7 @@ export class Engine {
       case 'TIME_UPDATE':
         this._currentTimeUs = event.currentTimeUs;
         this.events.emit({ type: 'timeUpdate', currentTimeUs: event.currentTimeUs });
-        if (!this.seekInProgress) {
+        if (!this.playback.isSeekInProgress) {
           this.updateActiveClips();
         }
         break;
@@ -125,17 +144,7 @@ export class Engine {
         break;
 
       case 'SEEK_COMPLETE':
-        this.seekInProgress = false;
-        if (
-          this.isSeekingWhilePlaying &&
-          this.pendingSeekTimeUs === event.timeUs &&
-          this._isPlaying
-        ) {
-          const clips = this.composition.getActiveClipsAt(this._currentTimeUs);
-          this.audio.scheduleAll(clips, this._currentTimeUs);
-        }
-        this.pendingSeekTimeUs = null;
-        this.isSeekingWhilePlaying = false;
+        this.playback.handleSeekComplete(event.timeUs);
         break;
 
       case 'AUDIO_DATA':
@@ -193,214 +202,48 @@ export class Engine {
   }
 
   // ============================================================================
-  // SOURCE LOADING
+  // SOURCE LOADING (Delegated to SourceLoader)
   // ============================================================================
 
   async loadHlsSource(url: string): Promise<HlsSource> {
-    const source = new HlsSource(url);
-    this.composition.registerSource(source);
-
-    if (this.worker) {
-      const cmd: RenderWorkerCommand = {
-        type: 'START_SOURCE_STREAM',
-        sourceId: source.id,
-        durationHint: undefined,
-      };
-      this.worker.postMessage(cmd);
-    }
-
-    source.on((event) => {
-      switch (event.type) {
-        case 'progress':
-          this.events.emit({
-            type: 'sourceLoading',
-            sourceId: source.id,
-            progress: event.total > 0 ? event.loaded / event.total : 0,
-          });
-          break;
-
-        case 'stateChange':
-          if (event.state === 'playable') {
-            this.events.emit({ type: 'sourcePlayable', sourceId: source.id });
-          } else if (event.state === 'ready') {
-            this.events.emit({ type: 'sourceReady', sourceId: source.id });
-          } else if (event.state === 'error') {
-            this.events.emit({
-              type: 'sourceError',
-              sourceId: source.id,
-              message: source.errorMessage ?? 'Unknown error',
-            });
-          }
-          break;
-
-        case 'chunk':
-          this.appendSourceChunk(source.id, event.chunk, event.isLast);
-          break;
-      }
-    });
-
-    this.setState('loading');
-    await source.load();
-
-    return source;
+    return this.sourceLoader.loadHlsSource(url);
   }
 
   async loadFileSource(file: File): Promise<FileSource> {
-    const source = new FileSource(file);
-    this.composition.registerSource(source);
-
-    source.on((event) => {
-      switch (event.type) {
-        case 'progress':
-          this.events.emit({
-            type: 'sourceLoading',
-            sourceId: source.id,
-            progress: event.total > 0 ? event.loaded / event.total : 0,
-          });
-          break;
-
-        case 'stateChange':
-          if (event.state === 'ready') {
-            const buffer = source.getBuffer();
-            if (buffer) {
-              if (source.isAudioOnly) {
-                this.loadAudioOnlySource(source.id, buffer);
-              } else {
-                this.loadSourceBuffer(source.id, buffer, source.durationUs);
-              }
-            }
-            this.events.emit({ type: 'sourceReady', sourceId: source.id });
-          } else if (event.state === 'error') {
-            this.events.emit({
-              type: 'sourceError',
-              sourceId: source.id,
-              message: source.errorMessage ?? 'Unknown error',
-            });
-          }
-          break;
-      }
-    });
-
-    this.setState('loading');
-    await source.load();
-
-    return source;
-  }
-
-  private async loadAudioOnlySource(sourceId: string, buffer: ArrayBuffer): Promise<void> {
-    try {
-      await this.audio.loadAudioOnlySource(sourceId, buffer);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to decode audio';
-      this.events.emit({ type: 'sourceError', sourceId, message });
-    }
-  }
-
-  private appendSourceChunk(sourceId: string, chunk: ArrayBuffer, isLast: boolean): void {
-    if (!this.worker) return;
-
-    const clonedChunk = chunk.slice(0);
-    const cmd: RenderWorkerCommand = {
-      type: 'APPEND_SOURCE_CHUNK',
-      sourceId,
-      chunk: clonedChunk,
-      isLast,
-    };
-    this.worker.postMessage(cmd, [clonedChunk]);
+    return this.sourceLoader.loadFileSource(file);
   }
 
   loadSourceBuffer(sourceId: string, buffer: ArrayBuffer, durationHint?: number): void {
-    if (!this.worker) return;
-
-    const clonedBuffer = buffer.slice(0);
-    const cmd: RenderWorkerCommand = {
-      type: 'LOAD_SOURCE',
-      sourceId,
-      buffer: clonedBuffer,
-      durationHint,
-    };
-    this.worker.postMessage(cmd, [clonedBuffer]);
+    this.sourceLoader.loadSourceBuffer(sourceId, buffer, durationHint);
   }
 
   removeSource(sourceId: string): void {
-    const source = this.composition.getSource(sourceId);
-    if (source) {
-      source.dispose();
-      this.composition.unregisterSource(sourceId);
-    }
-
-    this.audio.removeSource(sourceId);
-
-    if (this.worker) {
-      const cmd: RenderWorkerCommand = {
-        type: 'REMOVE_SOURCE',
-        sourceId,
-      };
-      this.worker.postMessage(cmd);
-    }
+    this.sourceLoader.removeSource(sourceId);
   }
 
   // ============================================================================
-  // PLAYBACK CONTROL
+  // PLAYBACK CONTROL (Delegated to PlaybackCoordinator)
   // ============================================================================
 
   play(): void {
-    if (!this.worker || this._state === 'error') return;
-
-    this.audio.ensureContext();
-    this.audio.resume();
-    this.updateActiveClips();
-
-    const cmd: RenderWorkerCommand = { type: 'PLAY' };
-    this.worker.postMessage(cmd);
-
-    const clips = this.composition.getActiveClipsAt(this._currentTimeUs);
-    this.audio.scheduleAll(clips, this._currentTimeUs);
-    this.startSyncInterval();
+    if (this._state === 'error') return;
+    this.playback.play();
   }
 
   pause(): void {
-    if (!this.worker) return;
-
-    const cmd: RenderWorkerCommand = { type: 'PAUSE' };
-    this.worker.postMessage(cmd);
-
-    this.stopSyncInterval();
-    this.audio.stopAll();
+    this.playback.pause();
   }
 
   seek(timeUs: number): void {
-    if (!this.worker) return;
-
-    this.seekInProgress = true;
-    const clampedTime = Math.max(0, Math.min(timeUs, this.composition.durationUs));
-    this._currentTimeUs = clampedTime;
-
-    this.audio.stopAll();
-    this.updateActiveClips();
-
-    this.isSeekingWhilePlaying = this._isPlaying;
-    this.pendingSeekTimeUs = clampedTime;
-
-    const cmd: RenderWorkerCommand = {
-      type: 'SEEK',
-      timeUs: clampedTime,
-    };
-    this.worker.postMessage(cmd);
-
-    this.events.emit({ type: 'timeUpdate', currentTimeUs: clampedTime });
+    this.playback.seek(timeUs);
   }
 
   seekSeconds(seconds: number): void {
-    this.seek(Math.round(seconds * TIME.US_PER_SECOND));
+    this.playback.seekSeconds(seconds);
   }
 
   togglePlayPause(): void {
-    if (this._isPlaying) {
-      this.pause();
-    } else {
-      this.play();
-    }
+    this.playback.togglePlayPause();
   }
 
   setMasterVolume(volume: number): void {
@@ -412,7 +255,7 @@ export class Engine {
   // ============================================================================
 
   private updateActiveClips(): void {
-    if (!this.worker) return;
+    if (!this.workerBridge.isInitialized) return;
 
     const activeClips = this.composition.getActiveClipsAt(this._currentTimeUs);
     const hasClipsAtTime = activeClips.length > 0;
@@ -430,17 +273,16 @@ export class Engine {
     this.lastHasClipsAtTime = hasClipsAtTime;
     this.lastCompositionDurationUs = compositionDurationUs;
 
-    const cmd: RenderWorkerCommand = {
+    this.workerBridge.postCommand({
       type: 'SET_ACTIVE_CLIPS',
       clips: activeClips,
       hasClipsAtTime,
       compositionDurationUs,
-    };
-    this.worker.postMessage(cmd);
+    });
 
     if (clipsChanged) {
       this.audio.stopAll();
-      if (this._isPlaying && !this.seekInProgress) {
+      if (this._isPlaying && !this.playback.isSeekInProgress) {
         this.audio.scheduleAll(activeClips, this._currentTimeUs);
       }
     }
@@ -462,68 +304,6 @@ export class Engine {
   }
 
   // ============================================================================
-  // SYNC
-  // ============================================================================
-
-  private startSyncInterval(): void {
-    if (this.syncIntervalId !== null) return;
-
-    this.syncIntervalId = window.setInterval(() => {
-      this.syncCheck();
-    }, PLAYBACK.SYNC_CHECK_INTERVAL_MS);
-  }
-
-  private stopSyncInterval(): void {
-    if (this.syncIntervalId !== null) {
-      clearInterval(this.syncIntervalId);
-      this.syncIntervalId = null;
-    }
-  }
-
-  private syncCheck(): void {
-    if (this._currentTimeUs >= this.composition.durationUs) {
-      this.pause();
-      this.seek(this.composition.durationUs);
-      return;
-    }
-
-    if (this.seekInProgress) return;
-
-    this.updateActiveClips();
-
-    // Check for audio-video drift
-    const minStablePlaybackMs = 200;
-    const { atTimeUs, atAudioContextTime } = this.audio.scheduledTiming;
-    const playbackElapsedMs = this.audio.currentTime
-      ? (this.audio.currentTime - atAudioContextTime) * 1000
-      : 0;
-
-    if (
-      this._isPlaying &&
-      this.audio.playingNodeCount > 0 &&
-      atAudioContextTime > 0 &&
-      playbackElapsedMs > minStablePlaybackMs
-    ) {
-      const expectedVideoTimeUs = this._currentTimeUs;
-      const audioElapsed = this.audio.currentTime - atAudioContextTime;
-      const expectedAudioTimeUs = atTimeUs + audioElapsed * TIME.US_PER_SECOND;
-      const driftUs = Math.abs(expectedVideoTimeUs - expectedAudioTimeUs);
-
-      if (driftUs > PLAYBACK.AUDIO_DRIFT_THRESHOLD_US) {
-        logger.warn('Audio drift detected, rescheduling', {
-          driftUs,
-          expectedVideoTimeUs,
-          expectedAudioTimeUs,
-          playbackElapsedMs,
-        });
-        this.audio.stopAll();
-        const clips = this.composition.getActiveClipsAt(this._currentTimeUs);
-        this.audio.scheduleAll(clips, this._currentTimeUs);
-      }
-    }
-  }
-
-  // ============================================================================
   // EVENT SYSTEM
   // ============================================================================
 
@@ -537,14 +317,9 @@ export class Engine {
 
   dispose(): void {
     this.pause();
-    this.stopSyncInterval();
+    this.syncManager.stop();
     this.audio.dispose();
-
-    if (this.worker) {
-      this.worker.terminate();
-      this.worker = null;
-    }
-
+    this.workerBridge.terminate();
     this.events.clear();
     this._state = 'idle';
   }
