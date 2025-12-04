@@ -2,7 +2,7 @@
  * Video Editor V2 - Main Application Component
  */
 
-import { EditorApp } from './components/EditorApp';
+import { EditorApp } from './components/editor';
 
 export function App() {
   return (

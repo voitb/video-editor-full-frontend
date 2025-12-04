@@ -10,6 +10,8 @@ export type {
   SourceDecodeState,
   WorkerState,
   MP4ArrayBuffer,
+  SourceState,
+  WorkerContext,
 } from './types';
 
 // Frame handling
@@ -40,3 +42,31 @@ export type {
   AudioDecoderOutputCallback,
   AudioDecoderErrorCallback,
 } from './AudioDecoderWrapper';
+
+// Source state management
+export {
+  createSourceState,
+  loadSource,
+  startSourceStream,
+  appendSourceChunk,
+  removeSource,
+} from './SourceStateManager';
+
+// Audio processing
+export { sendAudioChunks, flushAudioDecoder } from './AudioProcessor';
+
+// Playback control
+export {
+  handleSetActiveClips,
+  play,
+  pause,
+  seek,
+  syncToTime,
+  playbackLoop,
+} from './PlaybackController';
+
+// Frame rendering
+export { renderFrame, requestFirstFrame, isClipActiveAt } from './FrameRenderer';
+
+// Decoder queue
+export { feedDecoders, flushAllDecoders } from './DecoderQueue';

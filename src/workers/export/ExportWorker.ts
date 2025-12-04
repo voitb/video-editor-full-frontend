@@ -6,21 +6,19 @@
  */
 
 import { Muxer, ArrayBufferTarget } from 'mp4-muxer';
-import type {
-  ExportWorkerCommand,
-  ExportWorkerEvent,
-  StartExportCommand,
-} from '../messages/exportMessages';
-import type { TrackJSON, ExportPhase, SubtitleClipJSON } from '../../core/types';
+import type { ExportWorkerCommand, StartExportCommand } from '../messages/exportMessages';
+import type { TrackJSON } from '../../core/types';
 import { ExportCompositor, type ExportLayer, type SubtitleLayer } from '../../export/ExportCompositor';
 import { SubtitleRenderer, getActiveSubtitleCuesAt } from '../../renderer/SubtitleRenderer';
 import { EXPORT, TIME } from '../../constants';
 
-// Import refactored modules
-import type { ExportSourceState, ActiveClipInfo, ActiveOverlayInfo } from './types';
+// Import modules
+import type { ExportSourceState, ActiveOverlayInfo } from './types';
 import { loadSources, cleanupSources } from './SourceLoader';
 import { decodeFrameForClip } from './FrameDecoder';
 import { mixAudioTracks, encodeAudioBuffer, type AudioMixerConfig } from './AudioMixer';
+import { postProgress, postError, postCancelled, postComplete, postReady } from './ProgressReporter';
+import { getActiveClipsAt, getSubtitleTracks, getActiveOverlaysAt } from './ActiveClipResolver';
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
 
@@ -34,42 +32,7 @@ let subtitleRenderer: SubtitleRenderer | null = null;
 const sources = new Map<string, ExportSourceState>();
 let tracks: TrackJSON[] = [];
 let exportStartTime = 0;
-/** Pre-rendered overlay data for compositing */
 let overlayData: ActiveOverlayInfo[] = [];
-
-// ============================================================================
-// POST RESPONSE
-// ============================================================================
-
-function postResponse(event: ExportWorkerEvent, transfer?: Transferable[]): void {
-  ctx.postMessage(event, { transfer: transfer ?? [] });
-}
-
-function postProgress(
-  currentFrame: number,
-  totalFrames: number,
-  phase: ExportPhase,
-  estimatedTimeRemainingMs?: number
-): void {
-  const percent = Math.round((currentFrame / totalFrames) * 100);
-  postResponse({
-    type: 'EXPORT_PROGRESS',
-    currentFrame,
-    totalFrames,
-    percent,
-    phase,
-    estimatedTimeRemainingMs,
-  });
-}
-
-function postError(message: string, phase: ExportPhase, details?: string): void {
-  postResponse({
-    type: 'EXPORT_ERROR',
-    message,
-    phase,
-    details,
-  });
-}
 
 // ============================================================================
 // MESSAGE HANDLER
@@ -95,10 +58,10 @@ ctx.onmessage = async (e: MessageEvent<ExportWorkerCommand>) => {
 };
 
 // Post ready event
-postResponse({ type: 'EXPORT_WORKER_READY' });
+postReady();
 
 // ============================================================================
-// EXPORT LOGIC
+// EXPORT ORCHESTRATION
 // ============================================================================
 
 async function startExport(cmd: StartExportCommand): Promise<void> {
@@ -121,31 +84,86 @@ async function startExport(cmd: StartExportCommand): Promise<void> {
   compositor = new ExportCompositor(outputWidth, outputHeight);
   subtitleRenderer = new SubtitleRenderer(outputWidth, outputHeight);
 
-  // Load all sources using the SourceLoader module
+  // Load all sources
   await loadSources(cmd.sources, sources);
 
   // Load pre-rendered overlays
-  if (cmd.overlays && cmd.overlays.length > 0) {
-    overlayData = cmd.overlays.map((overlay) => ({
-      clipId: overlay.clipId,
-      trackIndex: overlay.trackIndex,
-      startUs: overlay.startUs,
-      endUs: overlay.startUs + overlay.durationUs,
-      bitmap: overlay.bitmap,
-      position: overlay.position,
-      opacity: overlay.opacity,
-    }));
-  } else {
-    overlayData = [];
-  }
+  overlayData = cmd.overlays?.map((overlay) => ({
+    clipId: overlay.clipId,
+    trackIndex: overlay.trackIndex,
+    startUs: overlay.startUs,
+    endUs: overlay.startUs + overlay.durationUs,
+    bitmap: overlay.bitmap,
+    position: overlay.position,
+    opacity: overlay.opacity,
+  })) ?? [];
 
   if (cancelled) {
     cleanup();
-    postResponse({ type: 'EXPORT_CANCELLED' });
+    postCancelled();
     return;
   }
 
-  // Create muxer
+  // Create muxer and encoders
+  const { muxer, muxerTarget, videoEncoder, audioEncoder } = createEncoders(
+    outputWidth,
+    outputHeight,
+    videoBitrate,
+    audioBitrate,
+    frameRate
+  );
+
+  // Process audio
+  postProgress(0, totalFrames, 'encoding_audio');
+  await processAudio(audioEncoder, inPointUs, outPointUs);
+
+  if (cancelled) {
+    cleanup();
+    videoEncoder.close();
+    audioEncoder.close();
+    postCancelled();
+    return;
+  }
+
+  // Process video frames
+  postProgress(0, totalFrames, 'encoding_video');
+  const subtitleTracksData = getSubtitleTracks(tracks);
+
+  for (let frameNum = 0; frameNum < totalFrames; frameNum++) {
+    if (cancelled) {
+      cleanup();
+      videoEncoder.close();
+      audioEncoder.close();
+      postCancelled();
+      return;
+    }
+
+    await processFrame(
+      frameNum,
+      totalFrames,
+      inPointUs,
+      frameIntervalUs,
+      frameRate,
+      videoEncoder,
+      subtitleTracksData
+    );
+  }
+
+  // Finalize export
+  await finalizeExport(totalFrames, muxer, muxerTarget, videoEncoder, audioEncoder);
+}
+
+// ============================================================================
+// ENCODER SETUP
+// ============================================================================
+
+function createEncoders(
+  outputWidth: number,
+  outputHeight: number,
+  videoBitrate: number,
+  audioBitrate: number,
+  frameRate: number
+) {
   const muxerTarget = new ArrayBufferTarget();
   const muxer = new Muxer({
     target: muxerTarget,
@@ -162,18 +180,13 @@ async function startExport(cmd: StartExportCommand): Promise<void> {
     fastStart: 'in-memory',
   });
 
-  // Create encoders
   const videoEncoder = new VideoEncoder({
-    output: (chunk, meta) => {
-      muxer.addVideoChunk(chunk, meta);
-    },
-    error: (err) => {
-      postError(`Video encoder error: ${err.message}`, 'encoding_video');
-    },
+    output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+    error: (err) => postError(`Video encoder error: ${err.message}`, 'encoding_video'),
   });
 
   videoEncoder.configure({
-    codec: 'avc1.640028', // H.264 High Profile Level 4.0
+    codec: 'avc1.640028',
     width: outputWidth,
     height: outputHeight,
     bitrate: videoBitrate,
@@ -181,221 +194,91 @@ async function startExport(cmd: StartExportCommand): Promise<void> {
   });
 
   const audioEncoder = new AudioEncoder({
-    output: (chunk, meta) => {
-      muxer.addAudioChunk(chunk, meta);
-    },
-    error: (err) => {
-      postError(`Audio encoder error: ${err.message}`, 'encoding_audio');
-    },
+    output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
+    error: (err) => postError(`Audio encoder error: ${err.message}`, 'encoding_audio'),
   });
 
   audioEncoder.configure({
-    codec: 'mp4a.40.2', // AAC-LC
+    codec: 'mp4a.40.2',
     numberOfChannels: EXPORT.AUDIO_CHANNELS,
     sampleRate: EXPORT.DEFAULT_AUDIO_SAMPLE_RATE,
     bitrate: audioBitrate,
   });
 
-  // Process audio first using AudioMixer module
-  postProgress(0, totalFrames, 'encoding_audio');
-  await processAudio(audioEncoder, inPointUs, outPointUs);
+  return { muxer, muxerTarget, videoEncoder, audioEncoder };
+}
 
-  if (cancelled) {
-    cleanup();
-    videoEncoder.close();
-    audioEncoder.close();
-    postResponse({ type: 'EXPORT_CANCELLED' });
-    return;
-  }
+// ============================================================================
+// FRAME PROCESSING
+// ============================================================================
 
-  // Process video frames
-  postProgress(0, totalFrames, 'encoding_video');
+async function processFrame(
+  frameNum: number,
+  totalFrames: number,
+  inPointUs: number,
+  frameIntervalUs: number,
+  frameRate: number,
+  videoEncoder: VideoEncoder,
+  subtitleTracksData: ReturnType<typeof getSubtitleTracks>
+): Promise<void> {
+  const frameTimeUs = inPointUs + frameNum * frameIntervalUs;
 
-  // Extract subtitle tracks for burn-in
-  const subtitleTracks = getSubtitleTracks();
+  // Get active clips at this time
+  const activeClips = getActiveClipsAt(tracks, frameTimeUs);
 
-  for (let frameNum = 0; frameNum < totalFrames; frameNum++) {
-    if (cancelled) {
-      cleanup();
-      videoEncoder.close();
-      audioEncoder.close();
-      postResponse({ type: 'EXPORT_CANCELLED' });
-      return;
-    }
+  // Get video clips only (sorted by track index)
+  const videoClips = activeClips
+    .filter((c) => c.trackType === 'video')
+    .sort((a, b) => a.trackIndex - b.trackIndex);
 
-    const frameTimeUs = inPointUs + frameNum * frameIntervalUs;
-
-    // Get active clips at this time
-    const activeClips = getActiveClipsAt(frameTimeUs);
-
-    // Get video clips only (sorted by track index)
-    const videoClips = activeClips
-      .filter((c) => c.trackType === 'video')
-      .sort((a, b) => a.trackIndex - b.trackIndex);
-
-    // Decode frames for each video clip using FrameDecoder module
-    const layers: ExportLayer[] = [];
-
-    for (const clip of videoClips) {
-      const frame = await decodeFrameForClip(clip, sources);
-      if (frame) {
-        layers.push({
-          frame,
-          opacity: clip.opacity,
-        });
-      }
-    }
-
-    // Get active subtitle cues and render if any
-    let subtitleLayer: SubtitleLayer | undefined;
-    if (subtitleTracks.length > 0 && subtitleRenderer) {
-      const activeCues = getActiveSubtitleCuesAt(subtitleTracks, frameTimeUs);
-      if (activeCues.length > 0) {
-        const subtitleCanvas = subtitleRenderer.render(activeCues);
-        subtitleLayer = { canvas: subtitleCanvas };
-      }
-    }
-
-    // Get active overlays at this time
-    const activeOverlays = getActiveOverlaysAt(frameTimeUs);
-
-    // Composite layers with optional subtitle and overlay layers
-    const compositedFrame = compositor!.composite(
-      layers,
-      frameTimeUs,
-      subtitleLayer,
-      activeOverlays.length > 0 ? activeOverlays : undefined
-    );
-
-    // Close input frames
-    for (const layer of layers) {
-      layer.frame.close();
-    }
-
-    // Encode composited frame
-    const keyFrame = frameNum % (frameRate * 2) === 0; // Keyframe every 2 seconds
-    videoEncoder.encode(compositedFrame, { keyFrame });
-    compositedFrame.close();
-
-    // Report progress
-    if (frameNum % EXPORT.PROGRESS_UPDATE_FRAMES === 0 || frameNum === totalFrames - 1) {
-      const elapsed = performance.now() - exportStartTime;
-      const framesPerMs = (frameNum + 1) / elapsed;
-      const remainingFrames = totalFrames - frameNum - 1;
-      const estimatedTimeRemainingMs = Math.round(remainingFrames / framesPerMs);
-
-      postProgress(frameNum + 1, totalFrames, 'encoding_video', estimatedTimeRemainingMs);
+  // Decode frames for each video clip
+  const layers: ExportLayer[] = [];
+  for (const clip of videoClips) {
+    const frame = await decodeFrameForClip(clip, sources);
+    if (frame) {
+      layers.push({ frame, opacity: clip.opacity });
     }
   }
 
-  // Finalize
-  postProgress(totalFrames, totalFrames, 'finalizing');
+  // Render subtitle layer if needed
+  let subtitleLayer: SubtitleLayer | undefined;
+  if (subtitleTracksData.length > 0 && subtitleRenderer) {
+    const activeCues = getActiveSubtitleCuesAt(subtitleTracksData, frameTimeUs);
+    if (activeCues.length > 0) {
+      subtitleLayer = { canvas: subtitleRenderer.render(activeCues) };
+    }
+  }
 
-  await videoEncoder.flush();
-  await audioEncoder.flush();
-  videoEncoder.close();
-  audioEncoder.close();
+  // Get active overlays
+  const activeOverlays = getActiveOverlaysAt(overlayData, frameTimeUs);
 
-  muxer.finalize();
-
-  const mp4Data = muxerTarget.buffer;
-  const durationMs = Math.round(performance.now() - exportStartTime);
-
-  cleanup();
-
-  postResponse(
-    {
-      type: 'EXPORT_COMPLETE',
-      mp4Data,
-      durationMs,
-      fileSizeBytes: mp4Data.byteLength,
-    },
-    [mp4Data]
+  // Composite and encode
+  const compositedFrame = compositor!.composite(
+    layers,
+    frameTimeUs,
+    subtitleLayer,
+    activeOverlays.length > 0 ? activeOverlays : undefined
   );
-}
 
-// ============================================================================
-// ACTIVE CLIPS
-// ============================================================================
-
-function getActiveClipsAt(timelineTimeUs: number): ActiveClipInfo[] {
-  const activeClips: ActiveClipInfo[] = [];
-
-  for (let trackIndex = 0; trackIndex < tracks.length; trackIndex++) {
-    const track = tracks[trackIndex]!;
-
-    // Skip subtitle and overlay tracks - they are handled separately
-    if (track.type === 'subtitle' || track.type === 'overlay') continue;
-
-    for (const clip of track.clips) {
-      const clipDurationUs = clip.trimOut - clip.trimIn;
-      const clipEndUs = clip.startUs + clipDurationUs;
-
-      if (timelineTimeUs >= clip.startUs && timelineTimeUs < clipEndUs) {
-        const offsetWithinClip = timelineTimeUs - clip.startUs;
-        const sourceTimeUs = clip.trimIn + offsetWithinClip;
-
-        activeClips.push({
-          clipId: clip.id,
-          sourceId: clip.sourceId,
-          trackType: track.type,
-          trackIndex,
-          timelineStartUs: clip.startUs,
-          sourceStartUs: sourceTimeUs,
-          sourceEndUs: clip.trimOut,
-          opacity: clip.opacity,
-          volume: clip.volume,
-        });
-      }
-    }
+  // Close input frames
+  for (const layer of layers) {
+    layer.frame.close();
   }
 
-  return activeClips;
-}
+  // Encode composited frame
+  const keyFrame = frameNum % (frameRate * 2) === 0;
+  videoEncoder.encode(compositedFrame, { keyFrame });
+  compositedFrame.close();
 
-/**
- * Get subtitle tracks formatted for subtitle rendering.
- * Extracts subtitle clips from tracks for use with getActiveSubtitleCuesAt.
- */
-function getSubtitleTracks(): Array<{
-  clips: Array<{
-    startUs: number;
-    cues: SubtitleClipJSON['cues'];
-    style: SubtitleClipJSON['style'];
-  }>;
-}> {
-  const subtitleTracks: Array<{
-    clips: Array<{
-      startUs: number;
-      cues: SubtitleClipJSON['cues'];
-      style: SubtitleClipJSON['style'];
-    }>;
-  }> = [];
+  // Report progress
+  if (frameNum % EXPORT.PROGRESS_UPDATE_FRAMES === 0 || frameNum === totalFrames - 1) {
+    const elapsed = performance.now() - exportStartTime;
+    const framesPerMs = (frameNum + 1) / elapsed;
+    const remainingFrames = totalFrames - frameNum - 1;
+    const estimatedTimeRemainingMs = Math.round(remainingFrames / framesPerMs);
 
-  for (const track of tracks) {
-    if (track.type !== 'subtitle') continue;
-    if (!track.subtitleClips || track.subtitleClips.length === 0) continue;
-
-    const clips = track.subtitleClips.map((clip) => ({
-      startUs: clip.startUs,
-      cues: clip.cues,
-      style: clip.style,
-    }));
-
-    subtitleTracks.push({ clips });
+    postProgress(frameNum + 1, totalFrames, 'encoding_video', estimatedTimeRemainingMs);
   }
-
-  return subtitleTracks;
-}
-
-/**
- * Get active overlays at a specific timeline time.
- * Returns overlays sorted by trackIndex so that top tracks (lower index) render last (on top).
- */
-function getActiveOverlaysAt(timelineTimeUs: number): ActiveOverlayInfo[] {
-  return overlayData
-    .filter((overlay) => timelineTimeUs >= overlay.startUs && timelineTimeUs < overlay.endUs)
-    .sort((a, b) => b.trackIndex - a.trackIndex); // Higher trackIndex first, so lower (top) tracks render last = on top
 }
 
 // ============================================================================
@@ -414,11 +297,35 @@ async function processAudio(
     outPointUs,
   };
 
-  // Mix audio tracks using AudioMixer module
   const mixedAudio = mixAudioTracks(tracks, sources, config);
-
-  // Encode the mixed audio buffer
   await encodeAudioBuffer(audioEncoder, mixedAudio, config, () => cancelled);
+}
+
+// ============================================================================
+// FINALIZE
+// ============================================================================
+
+async function finalizeExport(
+  totalFrames: number,
+  muxer: Muxer<ArrayBufferTarget>,
+  muxerTarget: ArrayBufferTarget,
+  videoEncoder: VideoEncoder,
+  audioEncoder: AudioEncoder
+): Promise<void> {
+  postProgress(totalFrames, totalFrames, 'finalizing');
+
+  await videoEncoder.flush();
+  await audioEncoder.flush();
+  videoEncoder.close();
+  audioEncoder.close();
+
+  muxer.finalize();
+
+  const mp4Data = muxerTarget.buffer;
+  const durationMs = Math.round(performance.now() - exportStartTime);
+
+  cleanup();
+  postComplete(mp4Data, durationMs);
 }
 
 // ============================================================================
@@ -426,7 +333,6 @@ async function processAudio(
 // ============================================================================
 
 function cleanup(): void {
-  // Close all decoders using SourceLoader module
   cleanupSources(sources);
 
   if (compositor) {
@@ -434,10 +340,8 @@ function cleanup(): void {
     compositor = null;
   }
 
-  // Clear subtitle renderer
   subtitleRenderer = null;
 
-  // Close overlay ImageBitmaps
   for (const overlay of overlayData) {
     overlay.bitmap.close();
   }

@@ -4,6 +4,14 @@
  */
 
 import type { MP4File, MP4VideoTrack, MP4AudioTrack, MP4Sample } from 'mp4box';
+import type { ActiveClip } from '../../core/types';
+import type { RenderWorkerEvent } from '../messages/renderMessages';
+import type { Demuxer } from './Demuxer';
+import type { VideoDecoderWrapper } from './VideoDecoderWrapper';
+import type { AudioDecoderWrapper } from './AudioDecoderWrapper';
+import type { FrameBuffer } from './FrameBuffer';
+import type { WebGLRenderer } from '../../renderer/WebGLRenderer';
+import type { Compositor } from '../../renderer/Compositor';
 
 /**
  * Decoded frame entry in the frame queue
@@ -60,4 +68,51 @@ export type WorkerState = 'idle' | 'ready' | 'playing';
  */
 export interface MP4ArrayBuffer extends ArrayBuffer {
   fileStart: number;
+}
+
+/**
+ * Source state managed by SourceStateManager
+ */
+export interface SourceState {
+  sourceId: string;
+  demuxer: Demuxer;
+  videoDecoder: VideoDecoderWrapper;
+  audioDecoder: AudioDecoderWrapper | null;
+  frameBuffer: FrameBuffer;
+  durationUs: number;
+  width: number;
+  height: number;
+  isReady: boolean;
+  isStreaming: boolean;
+  audioDecodingComplete: boolean;
+}
+
+/**
+ * Shared worker context passed between modules
+ */
+export interface WorkerContext {
+  // Canvas and renderers
+  canvas: OffscreenCanvas | null;
+  renderer: WebGLRenderer | null;
+  compositor: Compositor | null;
+
+  // Source management
+  sources: Map<string, SourceState>;
+
+  // Active clip state
+  activeClips: ActiveClip[];
+  hasClipsAtCurrentTime: boolean;
+  compositionDurationUs: number;
+
+  // Playback state
+  state: WorkerState;
+  currentTimeUs: number;
+  playbackStartTimeUs: number;
+  playbackStartWallTime: number;
+  animationFrameId: number | null;
+  pendingPausedRender: boolean;
+
+  // Communication
+  postResponse: (event: RenderWorkerEvent, transfer?: Transferable[]) => void;
+  postError: (message: string, sourceId?: string) => void;
 }
