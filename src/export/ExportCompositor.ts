@@ -185,33 +185,32 @@ export class ExportCompositor {
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
     // Blend subsequent layers
+    // Use proper ping-pong: always draw to screen, then copy to framebuffer if more layers follow
     gl.useProgram(this.blendProgram);
 
     for (let i = 1; i < layers.length; i++) {
       const layer = layers[i]!;
-      const isLastVideoLayer = i === layers.length - 1;
+      const isLastLayer = i === layers.length - 1 && !hasSubtitles && !hasOverlays;
 
-      if (isLastVideoLayer && !hasSubtitles && !hasOverlays) {
-        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-      }
-
+      // Always draw to screen to avoid read-write hazard
+      // (can't read from framebufferTexture while writing to its attached framebuffer)
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       this.blendLayer(layer.frame, layer.opacity);
 
-      if (!isLastVideoLayer || hasSubtitles || hasOverlays) {
+      // If more layers follow, copy result to framebuffer for next iteration
+      if (!isLastLayer) {
         this.copyToFramebuffer();
       }
     }
 
     // Draw subtitle overlay
+    // Use proper ping-pong: always draw to screen to avoid read-write hazard
     if (hasSubtitles) {
-      const isLastLayer = !hasOverlays;
-      if (isLastLayer) {
-        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-      }
-
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       this.blendCanvas(subtitleLayer.canvas, 1.0);
 
-      if (!isLastLayer) {
+      // If overlays follow, copy result to framebuffer for them to read
+      if (hasOverlays) {
         this.copyToFramebuffer();
       }
     }
