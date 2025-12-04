@@ -129,7 +129,7 @@ export const COMPOSITION = {
   /** Default height */
   DEFAULT_HEIGHT: 1080,
   /** Default frame rate */
-  DEFAULT_FRAME_RATE: 30,
+  DEFAULT_FRAME_RATE: 60,
 } as const;
 
 /** HLS loading constants */

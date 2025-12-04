@@ -63,7 +63,7 @@ export function EditorApp(props: EditorAppProps) {
     unlinkClip,
     refresh,
   } = useComposition({
-    config: { width: 1920, height: 1080, frameRate: 30 },
+    config: { width: 1920, height: 1080, frameRate: 60 },
   });
 
   const {
@@ -328,7 +328,7 @@ export function EditorApp(props: EditorAppProps) {
         compositionConfig={{
           width: 1920,
           height: 1080,
-          frameRate: 30,
+          frameRate: 60,
         }}
         getTracksJSON={getTracksJSON}
         getSourceData={getSourceData}

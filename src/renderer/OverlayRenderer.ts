@@ -70,8 +70,8 @@ export class OverlayRenderer {
     // Clear canvas (transparent)
     ctx.clearRect(0, 0, renderWidth, renderHeight);
 
-    // Scale font size based on canvas height (reference: 1080p) AND render scale
-    const scale = (this.height / 1080) * this.renderScale;
+    // Scale font size based on canvas width (matching preview) AND render scale
+    const scale = (this.width / 1920) * this.renderScale;
     const scaledFontSize = Math.round(style.fontSize * scale);
     const scaledPadding = Math.round(style.padding * scale);
     const scaledBorderRadius = Math.round(style.borderRadius * scale);
@@ -158,8 +158,8 @@ export class OverlayRenderer {
     style: OverlayStyle,
     position: OverlayPosition
   ): Promise<ImageBitmap> {
-    // Scale based on output resolution (reference: 1080p)
-    const scale = this.height / 1080;
+    // Scale based on output width to match preview behavior (reference: 1920px)
+    const scale = this.width / 1920;
     const scaledFontSize = Math.round(style.fontSize * scale);
     const scaledPadding = Math.round(style.padding * scale);
     const scaledBorderRadius = Math.round(style.borderRadius * scale);
