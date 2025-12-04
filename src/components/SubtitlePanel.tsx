@@ -1,6 +1,10 @@
 /**
  * SubtitlePanel - Re-export
- * This file re-exports from the SubtitlePanel module for backward compatibility.
+ * @deprecated Use SubtitlesTab from './sidebar/components/subtitles' instead.
+ * This file re-exports SubtitlesTab as SubtitlePanel for backward compatibility.
  */
 
-export { SubtitlePanel } from './SubtitlePanel/index';
+export {
+  SubtitlesTab as SubtitlePanel,
+  type SubtitlesTabProps as SubtitlePanelProps,
+} from './sidebar/components/subtitles';

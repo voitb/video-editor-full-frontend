@@ -5,7 +5,7 @@
 import { TIMELINE_COLORS } from '../../../constants';
 import { formatTimecodeAdaptive } from '../../../utils/time';
 
-interface TimeMarker {
+export interface TimeMarker {
   timeUs: number;
   label: string;
 }
