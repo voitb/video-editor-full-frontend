@@ -41,6 +41,7 @@ export class VideoDecoderWrapper {
 
   /**
    * Configure the decoder for a video track.
+   * After configure, the decoder requires a keyframe for the first decode.
    */
   configure(mp4File: MP4File, videoTrack: MP4VideoTrack): void {
     const codecDescription = this.getCodecDescription(mp4File, videoTrack.id);
@@ -63,6 +64,9 @@ export class VideoDecoderWrapper {
       codedHeight: videoTrack.video.height,
       description: codecDescription ?? undefined,
     });
+
+    // After configure, the decoder requires a keyframe for the first decode
+    this.lastQueuedSample = -1;
   }
 
   /**
@@ -108,10 +112,13 @@ export class VideoDecoderWrapper {
 
   /**
    * Flush the decoder and wait for all pending frames.
+   * After flush, the decoder requires a keyframe, so we reset lastQueuedSample.
    */
   async flush(): Promise<void> {
     if (this.decoder?.state === 'configured') {
       await this.decoder.flush();
+      // After flush, the decoder requires a keyframe for the next decode
+      this.lastQueuedSample = -1;
     }
   }
 
