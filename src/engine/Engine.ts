@@ -95,11 +95,16 @@ export class Engine {
         this.setState('ready');
         break;
 
-      case 'SOURCE_READY':
-        logger.info('Source ready', { sourceId: event.sourceId, durationUs: event.durationUs });
+      case 'SOURCE_READY': {
+        const source = this.composition.getSource(event.sourceId);
+        if (source && event.width && event.height) {
+          source.setDimensions(event.width, event.height);
+        }
+        logger.info('Source ready', { sourceId: event.sourceId, durationUs: event.durationUs, width: event.width, height: event.height });
         this.events.emit({ type: 'sourceReady', sourceId: event.sourceId });
         this.events.emit({ type: 'durationChange', durationUs: this.composition.durationUs });
         break;
+      }
 
       case 'SOURCE_PLAYABLE':
         logger.info('Source playable', { sourceId: event.sourceId });

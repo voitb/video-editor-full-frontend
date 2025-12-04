@@ -97,6 +97,15 @@ export abstract class Source {
     this._hasAudio = value;
   }
 
+  /**
+   * Set video dimensions
+   * (called by Engine when dimensions are detected from RenderWorker)
+   */
+  setDimensions(width: number, height: number): void {
+    this._width = width;
+    this._height = height;
+  }
+
   // ============================================================================
   // ABSTRACT METHODS
   // ============================================================================

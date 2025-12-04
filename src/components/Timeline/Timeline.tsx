@@ -1,7 +1,7 @@
 /**
  * Video Editor V2 - Timeline Component
  * Professional NLE-style timeline with tracks, clips, minimap, and zoom controls.
- * Refactored to use extracted subcomponents.
+ * Refactored to use extracted subcomponents and hooks.
  */
 
 import { useCallback, useMemo, useRef, useState, useEffect } from 'react';
@@ -21,16 +21,17 @@ import {
   sortableKeyboardCoordinates,
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
-import { formatTimecodeAdaptive } from '../../utils/time';
-import { TIMELINE, TIMELINE_COLORS, TRACK_COLOR_OPTIONS } from '../../constants';
-import { ContextMenu, MenuItem, MenuSeparator, MenuHeader } from '../ui';
-import { Dropdown } from '../ui';
+import { TIMELINE, TIMELINE_COLORS } from '../../constants';
+import { Dropdown, MenuItem } from '../ui';
 
 // Import types
-import type { TimelineProps, SnapTarget, SnapResult } from './types';
+import type { TimelineProps } from './types';
 
 // Import utilities
 import { getGridLines } from './utils/gridLines';
+
+// Import hooks
+import { useTimelineSnap, useRulerDrag, useTimelineZoom } from './hooks';
 
 // Import components
 import {
@@ -40,6 +41,12 @@ import {
   SortableTrackRow,
   TrackHeader,
   TrackLane,
+  TimeRuler,
+  generateTimeMarkers,
+  PlayheadMarker,
+  InOutMarker,
+  SnapIndicator,
+  TimelineContextMenu,
 } from './components';
 
 export function Timeline(props: TimelineProps) {
@@ -100,15 +107,17 @@ export function Timeline(props: TimelineProps) {
     onOverlaySplit,
   } = props;
 
+  // Refs
   const containerRef = useRef<HTMLDivElement>(null);
   const timelineContentRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const timeRulerScrollRef = useRef<HTMLDivElement>(null);
   const isScrollSyncingRef = useRef(false);
+
+  // Local state
   const [activeSnapLine, setActiveSnapLine] = useState<number | null>(null);
   const [dropTargetTrackId, setDropTargetTrackId] = useState<string | null>(null);
   const [containerWidth, setContainerWidth] = useState(0);
-  const [isRulerDragging, setIsRulerDragging] = useState(false);
   const [scrollLeft, setScrollLeft] = useState(0);
   const [hoveredLinkedClipId, setHoveredLinkedClipId] = useState<string | null>(null);
   const [dragPreviewMap, setDragPreviewMap] = useState<Map<string, number>>(new Map());
@@ -122,50 +131,9 @@ export function Timeline(props: TimelineProps) {
 
   // Configure sensors for track reordering drag-and-drop
   const sensors = useSensors(
-    useSensor(PointerSensor, {
-      activationConstraint: { distance: 8 },
-    }),
-    useSensor(KeyboardSensor, {
-      coordinateGetter: sortableKeyboardCoordinates,
-    })
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   );
-
-  // Handle track drag start
-  const handleTrackDragStart = useCallback((event: DragStartEvent) => {
-    setActiveTrackId(event.active.id as string);
-  }, []);
-
-  // Handle track drag end - reorder tracks
-  const handleTrackDragEnd = useCallback((event: DragEndEvent) => {
-    const { active, over } = event;
-    setActiveTrackId(null);
-
-    if (over && active.id !== over.id) {
-      const oldIndex = tracks.findIndex(t => t.id === active.id);
-      const newIndex = tracks.findIndex(t => t.id === over.id);
-
-      if (oldIndex !== -1 && newIndex !== -1) {
-        onTrackReorder?.(active.id as string, newIndex);
-      }
-    }
-  }, [tracks, onTrackReorder]);
-
-  // Track container width for responsive timeline
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-
-    const updateWidth = () => {
-      const width = container.clientWidth - TIMELINE.TRACK_HEADER_WIDTH;
-      setContainerWidth(Math.max(width, 100));
-    };
-
-    updateWidth();
-    const resizeObserver = new ResizeObserver(updateWidth);
-    resizeObserver.observe(container);
-
-    return () => resizeObserver.disconnect();
-  }, []);
 
   // Calculate effective durations
   const effectiveDuration = Math.max(durationUs, TIMELINE.MIN_VISIBLE_DURATION_US);
@@ -194,21 +162,45 @@ export function Timeline(props: TimelineProps) {
     return (pixel / pixelsPerSecond) * 1_000_000;
   }, [pixelsPerSecond]);
 
+  // Use extracted hooks
+  const { applySnap } = useTimelineSnap({ tracks, currentTimeUs, pixelToTime });
+  const { isRulerDragging, handleRulerMouseDown } = useRulerDrag({
+    timeRulerScrollRef,
+    pixelToTime,
+    durationUs,
+    onSeek,
+  });
+  useTimelineZoom({ timelineContentRef, onZoomAtPosition });
+
+  // Track container width for responsive timeline
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const updateWidth = () => {
+      const width = container.clientWidth - TIMELINE.TRACK_HEADER_WIDTH;
+      setContainerWidth(Math.max(width, 100));
+    };
+
+    updateWidth();
+    const resizeObserver = new ResizeObserver(updateWidth);
+    resizeObserver.observe(container);
+
+    return () => resizeObserver.disconnect();
+  }, []);
+
   // Handle scroll synchronization
   const handleContentScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
     if (isScrollSyncingRef.current) return;
 
     isScrollSyncingRef.current = true;
-
     const target = e.currentTarget;
     const newScrollLeft = target.scrollLeft;
 
     setScrollLeft(newScrollLeft);
-
     if (timeRulerScrollRef.current) {
       timeRulerScrollRef.current.scrollLeft = newScrollLeft;
     }
-
     if (onViewportScroll) {
       onViewportScroll(newScrollLeft, containerWidth, totalTimelineWidth);
     }
@@ -229,59 +221,6 @@ export function Timeline(props: TimelineProps) {
       scrollContainerRef.current.scrollLeft = targetScroll;
     }
   }, [viewport.startTimeUs, viewport.zoomLevel, containerWidth, totalTimelineWidth, getScrollLeft]);
-
-  // Calculate snap targets
-  const snapTargets = useMemo((): SnapTarget[] => {
-    const targets: SnapTarget[] = [
-      { timeUs: 0, type: 'timeline-start' },
-      { timeUs: currentTimeUs, type: 'playhead' },
-    ];
-
-    for (const track of tracks) {
-      for (const clip of track.clips) {
-        targets.push({ timeUs: clip.startUs, type: 'clip-start', clipId: clip.id });
-        targets.push({ timeUs: clip.endUs, type: 'clip-end', clipId: clip.id });
-      }
-    }
-
-    return targets;
-  }, [tracks, currentTimeUs]);
-
-  // Apply snapping to a proposed position
-  const applySnap = useCallback((
-    proposedStartUs: number,
-    clipDurationUs: number,
-    excludeClipId?: string
-  ): SnapResult => {
-    const snapThresholdUs = pixelToTime(TIMELINE.SNAP_THRESHOLD_PX) - pixelToTime(0);
-    const clipEndUs = proposedStartUs + clipDurationUs;
-    let bestSnap: SnapTarget | null = null;
-    let bestDelta = Infinity;
-    let snappedStartUs = proposedStartUs;
-
-    const filteredTargets = snapTargets.filter(target => {
-      if (!excludeClipId) return true;
-      return target.clipId !== excludeClipId;
-    });
-
-    for (const target of filteredTargets) {
-      const deltaStart = Math.abs(proposedStartUs - target.timeUs);
-      if (deltaStart < snapThresholdUs && deltaStart < bestDelta) {
-        bestDelta = deltaStart;
-        bestSnap = target;
-        snappedStartUs = target.timeUs;
-      }
-
-      const deltaEnd = Math.abs(clipEndUs - target.timeUs);
-      if (deltaEnd < snapThresholdUs && deltaEnd < bestDelta) {
-        bestDelta = deltaEnd;
-        bestSnap = target;
-        snappedStartUs = target.timeUs - clipDurationUs;
-      }
-    }
-
-    return { snappedTimeUs: Math.max(0, snappedStartUs), snappedTo: bestSnap };
-  }, [snapTargets, pixelToTime]);
 
   // Get track height from state or default
   const getTrackHeight = useCallback((trackId: string): number => {
@@ -315,33 +254,6 @@ export function Timeline(props: TimelineProps) {
     }
   }, [tracks]);
 
-  // Handle wheel events for zooming
-  useEffect(() => {
-    const el = timelineContentRef.current;
-    if (!el) return;
-
-    const handleWheelNative = (e: WheelEvent) => {
-      if (!e.ctrlKey && !e.metaKey) return;
-
-      e.preventDefault();
-
-      if (!onZoomAtPosition) return;
-
-      const rect = el.getBoundingClientRect();
-      const mouseX = e.clientX - rect.left;
-      const positionRatio = Math.max(0, Math.min(1, mouseX / rect.width));
-      const direction = e.deltaY < 0 ? 'in' : 'out';
-
-      onZoomAtPosition(positionRatio, direction);
-    };
-
-    el.addEventListener('wheel', handleWheelNative, { passive: false });
-
-    return () => {
-      el.removeEventListener('wheel', handleWheelNative);
-    };
-  }, [onZoomAtPosition]);
-
   // Handle timeline click for seeking
   const handleTimelineClick = useCallback((e: React.MouseEvent) => {
     if (!onSeek || !timelineContentRef.current) return;
@@ -353,64 +265,29 @@ export function Timeline(props: TimelineProps) {
     onSeek(clampedTime);
   }, [onSeek, pixelToTime, durationUs]);
 
-  // Handle ruler mouse down for drag-to-seek
-  const handleRulerMouseDown = useCallback((e: React.MouseEvent) => {
-    if (!onSeek || !timeRulerScrollRef.current) return;
+  // Handle track drag start/end
+  const handleTrackDragStart = useCallback((event: DragStartEvent) => {
+    setActiveTrackId(event.active.id as string);
+  }, []);
 
-    setIsRulerDragging(true);
+  const handleTrackDragEnd = useCallback((event: DragEndEvent) => {
+    const { active, over } = event;
+    setActiveTrackId(null);
 
-    const rect = timeRulerScrollRef.current.getBoundingClientRect();
-    const scrollLeftVal = timeRulerScrollRef.current.scrollLeft;
-    const x = e.clientX - rect.left + scrollLeftVal;
-    const time = pixelToTime(x);
-    const clampedTime = Math.max(0, Math.min(time, durationUs));
-    onSeek(clampedTime);
-  }, [onSeek, pixelToTime, durationUs]);
+    if (over && active.id !== over.id) {
+      const oldIndex = tracks.findIndex(t => t.id === active.id);
+      const newIndex = tracks.findIndex(t => t.id === over.id);
 
-  // Handle ruler drag for scrubbing playhead
-  useEffect(() => {
-    if (!isRulerDragging) return;
-
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!timeRulerScrollRef.current || !onSeek) return;
-
-      const rect = timeRulerScrollRef.current.getBoundingClientRect();
-      const scrollLeftVal = timeRulerScrollRef.current.scrollLeft;
-      const x = e.clientX - rect.left + scrollLeftVal;
-      const time = pixelToTime(x);
-      const clampedTime = Math.max(0, Math.min(time, durationUs));
-      onSeek(clampedTime);
-    };
-
-    const handleMouseUp = () => {
-      setIsRulerDragging(false);
-    };
-
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', handleMouseUp);
-
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
-    };
-  }, [isRulerDragging, pixelToTime, durationUs, onSeek]);
+      if (oldIndex !== -1 && newIndex !== -1) {
+        onTrackReorder?.(active.id as string, newIndex);
+      }
+    }
+  }, [tracks, onTrackReorder]);
 
   // Generate grid lines and time markers
   const { timeMarkers, gridLines } = useMemo(() => {
-    const lines = getGridLines(
-      effectiveVisibleDuration,
-      viewport.startTimeUs,
-      viewport.endTimeUs
-    );
-
-    const markers = lines
-      .filter(l => l.type === 'major')
-      .map(l => ({
-        timeUs: l.timeUs,
-        label: formatTimecodeAdaptive(l.timeUs, effectiveVisibleDuration),
-      }))
-      .filter(m => timeToPixel(m.timeUs) < totalTimelineWidth - 40);
-
+    const lines = getGridLines(effectiveVisibleDuration, viewport.startTimeUs, viewport.endTimeUs);
+    const markers = generateTimeMarkers(lines, effectiveVisibleDuration, timeToPixel, totalTimelineWidth);
     return { timeMarkers: markers, gridLines: lines };
   }, [effectiveVisibleDuration, viewport.startTimeUs, viewport.endTimeUs, timeToPixel, totalTimelineWidth]);
 
@@ -555,80 +432,21 @@ export function Timeline(props: TimelineProps) {
         </div>
 
         {/* Time ruler */}
-        <div
-          ref={timeRulerScrollRef}
+        <TimeRuler
+          timeMarkers={timeMarkers}
+          totalTimelineWidth={totalTimelineWidth}
+          timeToPixel={timeToPixel}
+          isRulerDragging={isRulerDragging}
           onMouseDown={handleRulerMouseDown}
-          className="timeline-scroll-hide"
-          style={{
-            flex: 1,
-            backgroundColor: TIMELINE_COLORS.rulerBg,
-            overflowX: 'auto',
-            overflowY: 'hidden',
-            position: 'relative',
-            zIndex: 5,
-            boxShadow: '0 2px 4px rgba(0, 0, 0, 0.3)',
-            cursor: isRulerDragging ? 'grabbing' : 'pointer',
-          }}
-        >
-          <div
-            style={{
-              width: totalTimelineWidth,
-              height: '100%',
-              position: 'relative',
-            }}
-          >
-            {timeMarkers.map((marker, index) => {
-              const isFirstMarker = index === 0 && marker.timeUs === 0;
-              return (
-                <div
-                  key={marker.timeUs}
-                  style={{
-                    position: 'absolute',
-                    left: timeToPixel(marker.timeUs),
-                    top: 0,
-                    height: '100%',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: isFirstMarker ? 'flex-start' : 'center',
-                    justifyContent: 'flex-end',
-                    paddingBottom: 2,
-                    transform: isFirstMarker ? 'none' : 'translateX(-50%)',
-                    pointerEvents: 'none',
-                  }}
-                >
-                  <div
-                    style={{
-                      position: 'absolute',
-                      top: 0,
-                      width: 1,
-                      height: '100%',
-                      backgroundColor: TIMELINE_COLORS.gridMajor,
-                    }}
-                  />
-                  <span
-                    style={{
-                      fontSize: 10,
-                      color: TIMELINE_COLORS.textMuted,
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {marker.label}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
+          scrollRef={timeRulerScrollRef}
+        />
       </div>
 
       {/* TRACKS AREA */}
       <div
         ref={scrollContainerRef}
         className="timeline-scroll-hide"
-        style={{
-          flex: 1,
-          overflow: 'auto',
-        }}
+        style={{ flex: 1, overflow: 'auto' }}
         onScroll={handleContentScroll}
       >
         <div
@@ -801,138 +619,22 @@ export function Timeline(props: TimelineProps) {
 
           {/* Snap indicator line */}
           {activeSnapLine !== null && (
-            <div
-              style={{
-                position: 'absolute',
-                left: TIMELINE.TRACK_HEADER_WIDTH + timeToPixel(activeSnapLine),
-                top: 0,
-                bottom: 0,
-                width: 2,
-                backgroundColor: TIMELINE_COLORS.snapLine,
-                pointerEvents: 'none',
-                zIndex: 90,
-              }}
-            />
+            <SnapIndicator timeUs={activeSnapLine} timeToPixel={timeToPixel} />
           )}
 
           {/* In-point marker */}
-          {inPointPosition !== null && (
-            <div
-              style={{
-                position: 'absolute',
-                left: TIMELINE.TRACK_HEADER_WIDTH + inPointPosition,
-                top: 0,
-                bottom: 0,
-                width: 2,
-                backgroundColor: '#00ffff',
-                pointerEvents: 'none',
-                zIndex: 95,
-              }}
-            >
-              <div
-                style={{
-                  position: 'absolute',
-                  top: 0,
-                  left: -5,
-                  width: 12,
-                  height: 10,
-                  backgroundColor: '#00ffff',
-                  clipPath: 'polygon(50% 100%, 0 0, 100% 0)',
-                }}
-              />
-              <div
-                style={{
-                  position: 'absolute',
-                  top: 12,
-                  left: -4,
-                  fontSize: 9,
-                  fontWeight: 'bold',
-                  color: '#00ffff',
-                  userSelect: 'none',
-                }}
-              >
-                I
-              </div>
-            </div>
-          )}
+          {inPointPosition !== null && <InOutMarker position={inPointPosition} type="in" />}
 
           {/* Out-point marker */}
-          {outPointPosition !== null && (
-            <div
-              style={{
-                position: 'absolute',
-                left: TIMELINE.TRACK_HEADER_WIDTH + outPointPosition,
-                top: 0,
-                bottom: 0,
-                width: 2,
-                backgroundColor: '#ff00ff',
-                pointerEvents: 'none',
-                zIndex: 95,
-              }}
-            >
-              <div
-                style={{
-                  position: 'absolute',
-                  top: 0,
-                  left: -5,
-                  width: 12,
-                  height: 10,
-                  backgroundColor: '#ff00ff',
-                  clipPath: 'polygon(50% 100%, 0 0, 100% 0)',
-                }}
-              />
-              <div
-                style={{
-                  position: 'absolute',
-                  top: 12,
-                  left: -4,
-                  fontSize: 9,
-                  fontWeight: 'bold',
-                  color: '#ff00ff',
-                  userSelect: 'none',
-                }}
-              >
-                O
-              </div>
-            </div>
-          )}
+          {outPointPosition !== null && <InOutMarker position={outPointPosition} type="out" />}
 
           {/* Playhead */}
-          <div
-            style={{
-              position: 'absolute',
-              left: TIMELINE.TRACK_HEADER_WIDTH + playheadPosition,
-              top: 0,
-              bottom: 0,
-              width: 2,
-              backgroundColor: TIMELINE_COLORS.playhead,
-              pointerEvents: 'none',
-              zIndex: 100,
-            }}
-          >
-            <div
-              style={{
-                position: 'absolute',
-                top: 0,
-                left: -5,
-                width: 12,
-                height: 12,
-                backgroundColor: TIMELINE_COLORS.playhead,
-                clipPath: 'polygon(50% 100%, 0 0, 100% 0)',
-              }}
-            />
-          </div>
+          <PlayheadMarker position={playheadPosition} />
         </div>
       </div>
 
       {/* FOOTER ROW */}
-      <div
-        style={{
-          display: 'flex',
-          flexDirection: 'row',
-          flexShrink: 0,
-        }}
-      >
+      <div style={{ display: 'flex', flexDirection: 'row', flexShrink: 0 }}>
         {/* Minimap label */}
         <div
           style={{
@@ -995,97 +697,16 @@ export function Timeline(props: TimelineProps) {
       </div>
 
       {/* Track Header Context Menu */}
-      <ContextMenu
-        open={trackHeaderMenu !== null}
+      <TimelineContextMenu
+        trackHeaderMenu={trackHeaderMenu}
+        tracks={tracks}
         onClose={() => setTrackHeaderMenu(null)}
-        x={trackHeaderMenu?.x ?? 0}
-        y={trackHeaderMenu?.y ?? 0}
-      >
-        {onTrackAdd && trackHeaderMenu && (
-          <>
-            <MenuHeader>Add Track</MenuHeader>
-            {[
-              { type: 'video' as const, label: 'Video Track Above' },
-              { type: 'audio' as const, label: 'Audio Track Above' },
-              { type: 'subtitle' as const, label: 'Subtitle Track Above' },
-              { type: 'overlay' as const, label: 'Overlay Track Above' },
-            ].map((item) => (
-              <MenuItem
-                key={item.type}
-                onClick={() => {
-                  onTrackInsert?.(item.type, trackHeaderMenu.trackId, 'above');
-                  setTrackHeaderMenu(null);
-                }}
-              >
-                {item.label}
-              </MenuItem>
-            ))}
-            <MenuSeparator />
-          </>
-        )}
-
-        {onTrackColorChange && trackHeaderMenu && (
-          <>
-            <MenuHeader>Track Color</MenuHeader>
-            <div
-              style={{
-                padding: '4px 12px 8px',
-                display: 'flex',
-                gap: 4,
-                flexWrap: 'wrap',
-              }}
-            >
-              {TRACK_COLOR_OPTIONS.map((option) => (
-                <button
-                  key={option.name}
-                  onClick={() => {
-                    onTrackColorChange(trackHeaderMenu.trackId, option.value);
-                    setTrackHeaderMenu(null);
-                  }}
-                  style={{
-                    width: 20,
-                    height: 20,
-                    padding: 0,
-                    backgroundColor: option.value || '#333',
-                    border: option.value ? 'none' : `1px dashed ${TIMELINE_COLORS.border}`,
-                    borderRadius: 3,
-                    cursor: 'pointer',
-                  }}
-                  title={option.name}
-                />
-              ))}
-            </div>
-            <MenuSeparator />
-          </>
-        )}
-
-        {onTrackRename && trackHeaderMenu && (
-          <MenuItem
-            onClick={() => {
-              const track = tracks.find(t => t.id === trackHeaderMenu.trackId);
-              const newLabel = window.prompt('Enter new track name:', track?.label || '');
-              if (newLabel && newLabel.trim()) {
-                onTrackRename(trackHeaderMenu.trackId, newLabel.trim());
-              }
-              setTrackHeaderMenu(null);
-            }}
-          >
-            Rename Track
-          </MenuItem>
-        )}
-
-        {onTrackRemove && trackHeaderMenu && (
-          <MenuItem
-            onClick={() => {
-              onTrackRemove(trackHeaderMenu.trackId);
-              setTrackHeaderMenu(null);
-            }}
-            danger
-          >
-            Delete Track
-          </MenuItem>
-        )}
-      </ContextMenu>
+        onTrackAdd={onTrackAdd}
+        onTrackInsert={onTrackInsert}
+        onTrackColorChange={onTrackColorChange}
+        onTrackRename={onTrackRename}
+        onTrackRemove={onTrackRemove}
+      />
     </div>
   );
 }

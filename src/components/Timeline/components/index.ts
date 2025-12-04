@@ -12,3 +12,7 @@ export { TrackLane } from './TrackLane';
 export { ClipBlock } from './ClipBlock';
 export { SubtitleClipBlock } from './SubtitleClipBlock';
 export { OverlayClipBlock } from './OverlayClipBlock';
+export { TimeRuler, generateTimeMarkers } from './TimeRuler';
+export { PlayheadMarker, InOutMarker } from './PlayheadMarker';
+export { SnapIndicator } from './SnapIndicator';
+export { TimelineContextMenu } from './TimelineContextMenu';
