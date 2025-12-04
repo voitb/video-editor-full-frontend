@@ -5,7 +5,15 @@
  * Runs in main thread (requires DOM access for html2canvas).
  */
 
-import html2canvas from 'html2canvas';
+// Lazy load html2canvas only when HTML rendering is needed (reduces initial bundle)
+let html2canvasModule: typeof import('html2canvas') | null = null;
+async function getHtml2Canvas() {
+  if (!html2canvasModule) {
+    html2canvasModule = await import('html2canvas');
+  }
+  return html2canvasModule.default;
+}
+
 import type {
   OverlayClipJSON,
   OverlayStyle,
@@ -172,7 +180,8 @@ export class OverlayRenderer {
     document.body.appendChild(container);
 
     try {
-      // Render the HTML to canvas using html2canvas
+      // Render the HTML to canvas using html2canvas (lazy loaded)
+      const html2canvas = await getHtml2Canvas();
       const htmlCanvas = await html2canvas(container, {
         backgroundColor: null, // Transparent background
         scale: 1,

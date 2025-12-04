@@ -3,7 +3,7 @@
  * Demonstrates how to use the video editor components together.
  */
 
-import { useRef, useEffect, useCallback, useState } from 'react';
+import { useRef, useEffect, useCallback, useState, lazy, Suspense } from 'react';
 import { useComposition } from '../hooks/useComposition';
 import { useEngine } from '../hooks/useEngine';
 import { useTimeline } from '../hooks/useTimeline';
@@ -12,9 +12,20 @@ import { VideoPreview, type VideoPreviewHandle } from './VideoPreview';
 import { Timeline } from './Timeline';
 import { PlaybackControls } from './PlaybackControls';
 import { TabbedSidebar, type SidebarTab } from './TabbedSidebar';
-import { ExportModal } from './ExportModal';
 import { SubtitleOverlay } from './SubtitleOverlay';
 import { HtmlOverlay } from './HtmlOverlay';
+
+// Lazy load ExportModal - only loaded when export button is clicked
+const ExportModal = lazy(() => import('./ExportModal').then(m => ({ default: m.ExportModal })));
+
+// Simple debounce utility
+function debounce<T extends (...args: Parameters<T>) => void>(fn: T, delay: number): T {
+  let timeoutId: ReturnType<typeof setTimeout>;
+  return ((...args: Parameters<T>) => {
+    clearTimeout(timeoutId);
+    timeoutId = setTimeout(() => fn(...args), delay);
+  }) as T;
+}
 import type { OverlayClip } from '../core/OverlayClip';
 import type { OverlayPosition } from '../core/types';
 import type { ExportSourceData } from '../workers/messages/exportMessages';
@@ -141,20 +152,25 @@ export function EditorApp(props: EditorAppProps) {
   }, [volume, setMasterVolume]);
 
   // Measure actual preview container dimensions for accurate overlay positioning
+  // Using debounced updates to prevent excessive re-renders during resize
   useEffect(() => {
     const container = previewContainerRef.current;
     if (!container) return;
 
-    const updateSize = () => {
+    const updateSize = debounce(() => {
       const rect = container.getBoundingClientRect();
       if (rect.width > 0 && rect.height > 0) {
         setActualContainerSize({ width: rect.width, height: rect.height });
       }
-    };
+    }, 100);
 
     const resizeObserver = new ResizeObserver(updateSize);
     resizeObserver.observe(container);
-    updateSize(); // Initial measurement
+    // Initial measurement (immediate, not debounced)
+    const rect = container.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) {
+      setActualContainerSize({ width: rect.width, height: rect.height });
+    }
 
     return () => resizeObserver.disconnect();
   }, []);
@@ -1104,20 +1120,36 @@ export function EditorApp(props: EditorAppProps) {
         />
       </footer>
 
-      {/* Export Modal */}
-      <ExportModal
-        isOpen={showExportModal}
-        onClose={() => setShowExportModal(false)}
-        inPointUs={inPointUs}
-        outPointUs={outPointUs}
-        compositionConfig={{
-          width: 1920,
-          height: 1080,
-          frameRate: 30,
-        }}
-        getTracksJSON={getTracksJSON}
-        getSourceData={getSourceData}
-      />
+      {/* Export Modal - Lazy loaded only when needed */}
+      {showExportModal && (
+        <Suspense fallback={
+          <div style={{
+            position: 'fixed',
+            inset: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            backgroundColor: 'rgba(0, 0, 0, 0.8)',
+            zIndex: 1000,
+          }}>
+            <div style={{ color: '#fff', fontSize: 14 }}>Loading export...</div>
+          </div>
+        }>
+          <ExportModal
+            isOpen={showExportModal}
+            onClose={() => setShowExportModal(false)}
+            inPointUs={inPointUs}
+            outPointUs={outPointUs}
+            compositionConfig={{
+              width: 1920,
+              height: 1080,
+              frameRate: 30,
+            }}
+            getTracksJSON={getTracksJSON}
+            getSourceData={getSourceData}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }
