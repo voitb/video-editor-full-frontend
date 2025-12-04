@@ -3,7 +3,6 @@
  * Displays export range, quality preset, and file size estimate.
  */
 
-import { useState } from 'react';
 import type { ExportPresetKey } from '../../../core/types';
 import { EXPORT_PRESETS, TIME } from '../../../constants';
 import { formatTimecode } from '../../../utils/time';

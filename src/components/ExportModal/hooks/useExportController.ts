@@ -83,7 +83,7 @@ export function useExportController({
         console.warn('Failed to pre-render some overlays:', overlayError);
       }
 
-      createWorker((worker) => {
+      createWorker(() => {
         const command: StartExportCommand = {
           type: 'START_EXPORT',
           compositionConfig,

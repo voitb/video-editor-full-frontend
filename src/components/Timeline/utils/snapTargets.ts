@@ -8,7 +8,7 @@ import type { Track } from '../../../core/Track';
 /**
  * Calculate all snap targets from tracks and playhead
  */
-export function calculateSnapTargets(tracks: Track[], currentTimeUs: number): SnapTarget[] {
+export function calculateSnapTargets(tracks: readonly Track[], currentTimeUs: number): SnapTarget[] {
   const targets: SnapTarget[] = [
     { timeUs: 0, type: 'timeline-start' },
     { timeUs: currentTimeUs, type: 'playhead' },

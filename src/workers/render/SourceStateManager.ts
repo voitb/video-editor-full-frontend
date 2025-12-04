@@ -16,9 +16,6 @@ import { PLAYBACK } from '../../constants';
 import { sendAudioChunks, flushAudioDecoder } from './AudioProcessor';
 import { renderFrame } from './FrameRenderer';
 import { feedDecoders, flushAllDecoders } from './DecoderQueue';
-import { createLogger } from '../../utils/logger';
-
-const logger = createLogger('SourceStateManager');
 
 /**
  * Create a new source state with decoder and demuxer

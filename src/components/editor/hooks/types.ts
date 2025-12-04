@@ -4,6 +4,7 @@
 
 import type { Composition } from '../../../core/Composition';
 import type { Track } from '../../../core/Track';
+import type { TrackConfig } from '../../../core/types';
 import type { SidebarTab } from '../../sidebar';
 
 /**
@@ -11,7 +12,7 @@ import type { SidebarTab } from '../../sidebar';
  */
 export interface CallbackDependencies {
   composition: Composition;
-  tracks: Track[];
+  tracks: readonly Track[];
   refresh: () => void;
   notifyCompositionChanged: () => void;
 }
@@ -50,7 +51,7 @@ export interface ClipCallbackDeps extends CallbackDependencies {
  * Dependencies for track callbacks
  */
 export interface TrackCallbackDeps extends CallbackDependencies {
-  createTrack: (options: { type: string; label: string; order?: number }) => Track;
+  createTrack: (config: TrackConfig) => Track;
   removeTrack: (trackId: string) => void;
 }
 

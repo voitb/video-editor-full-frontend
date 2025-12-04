@@ -87,7 +87,7 @@ export class SourceLoader {
    * Load a file-based source.
    */
   async loadFileSource(file: File): Promise<FileSource> {
-    const { composition, events, audio, setLoading } = this.deps;
+    const { composition, events, setLoading } = this.deps;
 
     const source = new FileSource(file);
     composition.registerSource(source);

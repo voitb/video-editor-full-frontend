@@ -13,7 +13,7 @@ import type {
 import type { WorkerContext, SourceState } from './types';
 import { WebGLRenderer } from '../../renderer/WebGLRenderer';
 import { Compositor } from '../../renderer/Compositor';
-import { createLogger, setLogLevel } from '../../utils/logger';
+import { setLogLevel } from '../../utils/logger';
 
 // Import specialized modules
 import {
@@ -33,7 +33,6 @@ import { requestFirstFrame } from './FrameRenderer';
 
 const workerCtx = self as unknown as DedicatedWorkerGlobalScope;
 setLogLevel('debug');
-const logger = createLogger('RenderWorker');
 
 // ============================================================================
 // WORKER CONTEXT

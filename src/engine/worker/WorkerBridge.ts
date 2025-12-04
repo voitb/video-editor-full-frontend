@@ -34,8 +34,9 @@ export class WorkerBridge {
     };
 
     this.worker.onerror = (err) => {
-      logger.error('Worker error', { error: err.message });
-      this.errorHandler?.(`Worker error: ${err.message}`);
+      const errorMessage = err.message || (err as unknown as { error?: Error })?.error?.message || 'Unknown worker error';
+      logger.error('Worker error', { error: errorMessage, filename: err.filename, lineno: err.lineno });
+      this.errorHandler?.(`Worker error: ${errorMessage}`);
     };
 
     const cmd: RenderWorkerCommand = {

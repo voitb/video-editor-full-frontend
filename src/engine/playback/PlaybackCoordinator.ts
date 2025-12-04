@@ -4,7 +4,6 @@
  */
 
 import type { Composition } from '../../core/Composition';
-import type { ActiveClip } from '../../core/types';
 import type { AudioController } from '../AudioController';
 import type { WorkerBridge } from '../worker/WorkerBridge';
 import type { RenderWorkerCommand } from '../../workers/messages/renderMessages';

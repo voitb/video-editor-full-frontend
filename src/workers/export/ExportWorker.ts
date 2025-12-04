@@ -17,7 +17,7 @@ import type { ExportSourceState, ActiveOverlayInfo } from './types';
 import { loadSources, cleanupSources } from './SourceLoader';
 import { decodeFrameForClip } from './FrameDecoder';
 import { mixAudioTracks, encodeAudioBuffer, type AudioMixerConfig } from './AudioMixer';
-import { postProgress, postError, postCancelled, postComplete, postReady, postResponse } from './ProgressReporter';
+import { postProgress, postError, postCancelled, postComplete, postReady } from './ProgressReporter';
 import { getActiveClipsAt, getSubtitleTracks, getActiveOverlaysAt } from './ActiveClipResolver';
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
