@@ -9,7 +9,7 @@ describe('Composition', () => {
 
       expect(comp.config.width).toBe(1920);
       expect(comp.config.height).toBe(1080);
-      expect(comp.config.frameRate).toBe(30);
+      expect(comp.config.frameRate).toBe(60);
       expect(comp.id).toMatch(/^comp-/);
     });
 
