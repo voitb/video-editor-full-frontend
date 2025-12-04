@@ -106,6 +106,12 @@ export class HlsSource extends Source {
           bandwidth: this.selectedQuality.bandwidth,
         });
 
+        // Set dimensions from quality level
+        if (this.selectedQuality.width > 0 && this.selectedQuality.height > 0) {
+          this._width = this.selectedQuality.width;
+          this._height = this.selectedQuality.height;
+        }
+
         // Fetch media playlist
         const mediaContent = await fetchManifest(this.selectedQuality.uri, {
           timeout: this.options.fetchTimeout,
