@@ -234,6 +234,8 @@ export const SUBTITLE = {
   DEFAULT_CUE_DURATION_US: 2_000_000,
   /** Panel width in pixels */
   PANEL_WIDTH: 320,
+  /** Rendering quality scale factor for subtitles (2 = 2x supersampling for better anti-aliasing) */
+  RENDER_SCALE: 2,
 } as const;
 
 /** Track organization colors (for labeling tracks like DaVinci Resolve) */
@@ -288,4 +290,6 @@ export const OVERLAY = {
   DEFAULT_DURATION_US: 5_000_000,
   /** Minimum duration in microseconds (500ms) */
   MIN_DURATION_US: 500_000,
+  /** Rendering quality scale factor for overlays (2 = 2x supersampling for better anti-aliasing) */
+  RENDER_SCALE: 2,
 } as const;

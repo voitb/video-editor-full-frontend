@@ -10,7 +10,7 @@ import type { ExportWorkerCommand, StartExportCommand } from '../messages/export
 import type { TrackJSON } from '../../core/types';
 import { ExportCompositor, type ExportLayer, type SubtitleLayer } from '../../export/ExportCompositor';
 import { SubtitleRenderer, getActiveSubtitleCuesAt } from '../../renderer/SubtitleRenderer';
-import { EXPORT, TIME } from '../../constants';
+import { EXPORT, TIME, SUBTITLE } from '../../constants';
 
 // Import modules
 import type { ExportSourceState, ActiveOverlayInfo } from './types';
@@ -82,7 +82,7 @@ async function startExport(cmd: StartExportCommand): Promise<void> {
 
   // Initialize compositor and subtitle renderer
   compositor = new ExportCompositor(outputWidth, outputHeight);
-  subtitleRenderer = new SubtitleRenderer(outputWidth, outputHeight);
+  subtitleRenderer = new SubtitleRenderer(outputWidth, outputHeight, SUBTITLE.RENDER_SCALE);
 
   // Load all sources
   await loadSources(cmd.sources, sources);
