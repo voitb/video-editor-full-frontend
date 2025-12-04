@@ -2,6 +2,7 @@
  * Video Editor - Subtitle Renderer
  * Renders subtitle text to an OffscreenCanvas for burn-in during export.
  * Uses Canvas 2D API for text rendering, output is used as WebGL texture.
+ * Supports supersampling for better text quality.
  */
 
 import type { SubtitleCue, SubtitleStyle } from '../core/types';
@@ -17,38 +18,54 @@ export interface ActiveSubtitleCue {
 /**
  * Renders subtitles to an OffscreenCanvas.
  * The canvas can be used as a texture source for WebGL compositing.
+ * Uses supersampling (rendering at higher resolution) for better text quality.
  */
 export class SubtitleRenderer {
   private canvas: OffscreenCanvas;
   private ctx: OffscreenCanvasRenderingContext2D;
   private width: number;
   private height: number;
+  private renderScale: number;
+  /** Canvas for scaled-down output */
+  private outputCanvas: OffscreenCanvas | null = null;
 
-  constructor(width: number, height: number) {
+  constructor(width: number, height: number, renderScale: number = 2) {
     this.width = width;
     this.height = height;
-    this.canvas = new OffscreenCanvas(width, height);
+    this.renderScale = renderScale;
+
+    // Create canvas at render resolution (scaled up for supersampling)
+    const renderWidth = width * renderScale;
+    const renderHeight = height * renderScale;
+    this.canvas = new OffscreenCanvas(renderWidth, renderHeight);
 
     const ctx = this.canvas.getContext('2d');
     if (!ctx) throw new Error('Failed to get 2D context for subtitle rendering');
+
+    // Enable high-quality rendering
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
     this.ctx = ctx;
   }
 
   /**
    * Render active cues to the canvas.
    * Returns the canvas for use as a texture source.
+   * The canvas is scaled down from the internal high-resolution render.
    *
    * @param cues - Array of active cues with their styles
-   * @returns The OffscreenCanvas with rendered subtitles
+   * @returns The OffscreenCanvas with rendered subtitles at output resolution
    */
   render(cues: ActiveSubtitleCue[]): OffscreenCanvas {
-    const { ctx, width, height } = this;
+    const { ctx, renderScale } = this;
+    const renderWidth = this.width * renderScale;
+    const renderHeight = this.height * renderScale;
 
     // Clear canvas (transparent)
-    ctx.clearRect(0, 0, width, height);
+    ctx.clearRect(0, 0, renderWidth, renderHeight);
 
     if (cues.length === 0) {
-      return this.canvas;
+      return this.getScaledCanvas();
     }
 
     // Render each cue (bottom to top if multiple)
@@ -59,11 +76,12 @@ export class SubtitleRenderer {
       yOffset = this.renderCue(text, style, yOffset);
     }
 
-    return this.canvas;
+    return this.getScaledCanvas();
   }
 
   /**
    * Render a single cue at the bottom of the canvas.
+   * Uses scaled dimensions for supersampling.
    *
    * @param text - The subtitle text
    * @param style - Style settings
@@ -71,10 +89,12 @@ export class SubtitleRenderer {
    * @returns New yOffset for next cue
    */
   private renderCue(text: string, style: SubtitleStyle, yOffset: number): number {
-    const { ctx, width, height } = this;
+    const { ctx, renderScale } = this;
+    const width = this.width * renderScale;
+    const height = this.height * renderScale;
 
-    // Scale font size based on canvas height (reference: 1080p)
-    const scale = height / 1080;
+    // Scale font size based on canvas height (reference: 1080p) AND render scale
+    const scale = (this.height / 1080) * renderScale;
     const scaledFontSize = Math.round(style.fontSize * scale);
 
     // Set font
@@ -176,14 +196,46 @@ export class SubtitleRenderer {
    * Clear the canvas.
    */
   clear(): void {
-    this.ctx.clearRect(0, 0, this.width, this.height);
+    const renderWidth = this.width * this.renderScale;
+    const renderHeight = this.height * this.renderScale;
+    this.ctx.clearRect(0, 0, renderWidth, renderHeight);
   }
 
   /**
    * Get the underlying canvas for texture upload.
+   * Returns the scaled-down output canvas.
    */
   getCanvas(): OffscreenCanvas {
-    return this.canvas;
+    return this.getScaledCanvas();
+  }
+
+  /**
+   * Get the canvas scaled down to output resolution.
+   * Uses high-quality downscaling for anti-aliasing.
+   */
+  private getScaledCanvas(): OffscreenCanvas {
+    // If no scaling needed, return the render canvas directly
+    if (this.renderScale === 1) {
+      return this.canvas;
+    }
+
+    // Create or reuse output canvas at target resolution
+    if (!this.outputCanvas) {
+      this.outputCanvas = new OffscreenCanvas(this.width, this.height);
+    }
+
+    const ctx = this.outputCanvas.getContext('2d');
+    if (!ctx) return this.canvas;
+
+    // Enable high-quality downscaling
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+
+    // Clear and draw scaled-down image
+    ctx.clearRect(0, 0, this.width, this.height);
+    ctx.drawImage(this.canvas, 0, 0, this.width, this.height);
+
+    return this.outputCanvas;
   }
 
   /**
@@ -194,8 +246,22 @@ export class SubtitleRenderer {
 
     this.width = width;
     this.height = height;
-    this.canvas.width = width;
-    this.canvas.height = height;
+
+    // Update render canvas at scaled resolution
+    const renderWidth = width * this.renderScale;
+    const renderHeight = height * this.renderScale;
+    this.canvas.width = renderWidth;
+    this.canvas.height = renderHeight;
+
+    // Re-apply quality settings after resize
+    this.ctx.imageSmoothingEnabled = true;
+    this.ctx.imageSmoothingQuality = 'high';
+
+    // Update output canvas if it exists
+    if (this.outputCanvas) {
+      this.outputCanvas.width = width;
+      this.outputCanvas.height = height;
+    }
   }
 }
 

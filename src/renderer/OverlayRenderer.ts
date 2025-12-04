@@ -11,18 +11,22 @@ import type {
   OverlayStyle,
   OverlayPosition,
 } from '../core/types';
+import { OVERLAY } from '../constants';
 
 /**
  * Renders overlay clips to ImageBitmap.
  * The bitmaps can be transferred to a worker for WebGL compositing.
+ * Uses supersampling (rendering at higher resolution) for better text quality.
  */
 export class OverlayRenderer {
   private width: number;
   private height: number;
+  private renderScale: number;
 
-  constructor(width: number, height: number) {
+  constructor(width: number, height: number, renderScale: number = 2) {
     this.width = width;
     this.height = height;
+    this.renderScale = renderScale;
   }
 
   /**
@@ -44,21 +48,30 @@ export class OverlayRenderer {
   /**
    * Render text content using Canvas 2D API.
    * Similar approach to SubtitleRenderer but positioned anywhere on screen.
+   * Uses supersampling for better text quality.
    */
   private async renderText(
     content: string,
     style: OverlayStyle,
     position: OverlayPosition
   ): Promise<ImageBitmap> {
-    const canvas = new OffscreenCanvas(this.width, this.height);
+    // Render at higher resolution for better quality (supersampling)
+    const renderWidth = this.width * this.renderScale;
+    const renderHeight = this.height * this.renderScale;
+
+    const canvas = new OffscreenCanvas(renderWidth, renderHeight);
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('Failed to get 2D context for overlay rendering');
 
-    // Clear canvas (transparent)
-    ctx.clearRect(0, 0, this.width, this.height);
+    // Enable high-quality rendering
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
 
-    // Scale font size based on canvas height (reference: 1080p)
-    const scale = this.height / 1080;
+    // Clear canvas (transparent)
+    ctx.clearRect(0, 0, renderWidth, renderHeight);
+
+    // Scale font size based on canvas height (reference: 1080p) AND render scale
+    const scale = (this.height / 1080) * this.renderScale;
     const scaledFontSize = Math.round(style.fontSize * scale);
     const scaledPadding = Math.round(style.padding * scale);
     const scaledBorderRadius = Math.round(style.borderRadius * scale);
@@ -84,9 +97,9 @@ export class OverlayRenderer {
     const boxWidth = maxWidth + scaledPadding * 2;
     const boxHeight = textHeight + scaledPadding * 2;
 
-    // Calculate position (percentage to pixels)
-    const centerX = (position.xPercent / 100) * this.width;
-    const centerY = (position.yPercent / 100) * this.height;
+    // Calculate position (percentage to pixels, at render resolution)
+    const centerX = (position.xPercent / 100) * renderWidth;
+    const centerY = (position.yPercent / 100) * renderHeight;
 
     // Box position (centered on position point)
     const boxX = centerX - boxWidth / 2;
@@ -127,12 +140,18 @@ export class OverlayRenderer {
 
     ctx.globalAlpha = 1;
 
+    // Scale down to target resolution with high-quality filtering
+    if (this.renderScale !== 1) {
+      return this.scaleDownCanvas(canvas, this.width, this.height);
+    }
+
     return canvas.transferToImageBitmap();
   }
 
   /**
    * Render HTML content using html2canvas.
    * Creates a temporary DOM element, renders it, then removes it.
+   * Uses supersampling for better text quality.
    */
   private async renderHtml(
     content: string,
@@ -172,10 +191,10 @@ export class OverlayRenderer {
     document.body.appendChild(container);
 
     try {
-      // Render the HTML to canvas using html2canvas
+      // Render the HTML to canvas using html2canvas with supersampling
       const htmlCanvas = await html2canvas(container, {
         backgroundColor: null, // Transparent background
-        scale: 1,
+        scale: this.renderScale, // Use render scale for better quality
         logging: false,
         useCORS: true,
         allowTaint: true,
@@ -184,22 +203,33 @@ export class OverlayRenderer {
       // Remove the container
       document.body.removeChild(container);
 
-      // Create full-frame canvas with overlay positioned correctly
-      const canvas = new OffscreenCanvas(this.width, this.height);
+      // Create full-frame canvas at render resolution
+      const renderWidth = this.width * this.renderScale;
+      const renderHeight = this.height * this.renderScale;
+      const canvas = new OffscreenCanvas(renderWidth, renderHeight);
       const ctx = canvas.getContext('2d');
       if (!ctx) throw new Error('Failed to get 2D context');
 
-      // Clear canvas (transparent)
-      ctx.clearRect(0, 0, this.width, this.height);
+      // Enable high-quality rendering
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
 
-      // Calculate position (percentage to pixels, centered)
-      const centerX = (position.xPercent / 100) * this.width;
-      const centerY = (position.yPercent / 100) * this.height;
+      // Clear canvas (transparent)
+      ctx.clearRect(0, 0, renderWidth, renderHeight);
+
+      // Calculate position (percentage to pixels, at render resolution)
+      const centerX = (position.xPercent / 100) * renderWidth;
+      const centerY = (position.yPercent / 100) * renderHeight;
       const drawX = centerX - htmlCanvas.width / 2;
       const drawY = centerY - htmlCanvas.height / 2;
 
       // Draw the rendered HTML
       ctx.drawImage(htmlCanvas, drawX, drawY);
+
+      // Scale down to target resolution with high-quality filtering
+      if (this.renderScale !== 1) {
+        return this.scaleDownCanvas(canvas, this.width, this.height);
+      }
 
       return canvas.transferToImageBitmap();
     } catch (error) {
@@ -209,6 +239,29 @@ export class OverlayRenderer {
       }
       throw error;
     }
+  }
+
+  /**
+   * Scale down a high-resolution canvas to target dimensions.
+   * Uses high-quality filtering for anti-aliasing.
+   */
+  private async scaleDownCanvas(
+    sourceCanvas: OffscreenCanvas,
+    targetWidth: number,
+    targetHeight: number
+  ): Promise<ImageBitmap> {
+    const targetCanvas = new OffscreenCanvas(targetWidth, targetHeight);
+    const ctx = targetCanvas.getContext('2d');
+    if (!ctx) throw new Error('Failed to get 2D context for scaling');
+
+    // Enable high-quality downscaling
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+
+    // Draw scaled-down image
+    ctx.drawImage(sourceCanvas, 0, 0, targetWidth, targetHeight);
+
+    return targetCanvas.transferToImageBitmap();
   }
 
   /**
@@ -251,7 +304,7 @@ export async function preRenderOverlays(
   outputWidth: number,
   outputHeight: number
 ): Promise<RenderedOverlay[]> {
-  const renderer = new OverlayRenderer(outputWidth, outputHeight);
+  const renderer = new OverlayRenderer(outputWidth, outputHeight, OVERLAY.RENDER_SCALE);
   const results: RenderedOverlay[] = [];
 
   // Find all overlay tracks and their clips
